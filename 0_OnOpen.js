@@ -4,9 +4,9 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('📅 Scheduler')
     .addItem('1. Ingest Season (goParent)', 'goParent')
     .addItem('2. Explode Dates (goLineup)', 'goLineup')
-    .addItem('3. Sync Calendars (goSync)', 'Engine.runMasterSync')
+    .addItem('3. Sync Calendars (goSync)', 'Engine.runMasterSync') //Does not call properly
     .addSeparator()
-    .addItem('System Health Check', 'goHealthCheck')
+    .addItem('System Health Check', 'goHealthCheck') //replaced by Engine.Maitenance.runHealthCheck
     .addToUi();
 }
 

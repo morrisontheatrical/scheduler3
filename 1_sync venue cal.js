@@ -273,7 +273,11 @@ function handleSyncDrift(row, map, event, isAdopted, calLastUpdated, sheetLastSy
   return null; // No drift
 }
 
-function verifyCrewLogAndCalendar() {
+function verifyCrewLogAndCalendar(ctx) {
+//UPDATE_NOTES 8/17/26
+//Pass ctx as parameter and replace direct sheet updates with batchWrite / patchRows
+//Not called anywhere else
+
   const CONFIG = getGlobalConfig();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   // USE THE LIBRARY TO GET THE MAP

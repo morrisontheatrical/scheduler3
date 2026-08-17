@@ -1,23 +1,3 @@
-
-
-
-/*
-0_opt
-goImport (not built)
-goParent / processAndReconcileLineup (still using old version)
-goLineup / Parent to Lineup (new version in use)
-
-3_
-syncLineupToCrewLog 
-
-0_newseason
-writeNewSeason (Pushes Crew Calendar Log to Draft 26-27)
-syncCrewLogWithCalendar 
-
-
-
-*/
-
 function getParentData(identifier){
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName("Parent Lineup");

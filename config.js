@@ -98,6 +98,9 @@ function setControlPanelValue(fieldName, value) {
  * Run this if you ever delete a core tab by accident.
  */
 function runSystemHealthCheck() {
+  //UPDATE_NOTES 8/17/26
+  //What is the difference between this function and Engine.Maintenance.runHealthCheck()
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
   // --- 1. VERIFY CONTROL PANEL ---

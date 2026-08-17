@@ -4,6 +4,10 @@
  * Respects Tags: Bypass, Push to Calendar, Delete from Calendar, AutoSync.
  */
 function writeNewSeason() {
+  //UPDATE_NOTES 8/17/26
+  //Refactor column references to ctx.sheets.CREWCAL.map and replace direct CalendarApp calls with Engine.Calendar.
+  //Not called
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const CONFIG = getGlobalConfig(); 
   const ui = SpreadsheetApp.getUi();
