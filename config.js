@@ -12,72 +12,18 @@ What is worth keeping?
 // ==============================================================================
 
 /**
- * Loads the Control Panel settings into a simple object.
+ * Legacy compatibility wrappers.
+ * These old config helpers now delegate to the canonical engine context so the
+ * older scripts keep working while the engine remains the single source of truth.
  */
 function getGlobalConfig() {
-  //UPDATE_NOTES 8/17/26
-  //reads the wrong column
-  //REMOVE
-  
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const config = {};
-
-  const cpSheet = ss.getSheetByName("ControlPanel");
-  if (cpSheet) {
-    const data = cpSheet.getRange("A2:B40").getValues(); 
-    data.forEach(row => {
-      if (row[0]) {
-        let val = row[1];
-        
-        // Normalize Booleans
-        if (val === "TRUE" || val === true) val = true;
-        if (val === "FALSE" || val === false) val = false;
-
-        const cleanKey = row[0].toString().replace(/[^a-zA-Z0-9]/g, ''); 
-        config[cleanKey] = val;
-        
-        // Explicit Overrides
-        if (row[0].includes("Start Sync Date")) config.StartSyncDate = parseInt(val) || 14;
-        if (row[0].includes("End Sync Date"))   config.EndSyncDate = parseInt(val) || 365;
-        if (row[0].includes("Push All"))        config.PushAll = (val === true);
-        if (row[0].includes("Mode"))            config.Mode = val;
-      }
-    });
-  }
-  
-  const durationHours = parseFloat(config.DefaultEventDurationHours) || 2;
-  config.DefaultDurationMs = durationHours * 60 * 60 * 1000;
-
-  return config;
+  const ctx = Engine.getContext();
+  return ctx.config || {};
 }
 
-/**
- * Loads column indices from the Map_Registry sheet.
- * Returns: { "Lineup": { "EventName": 0, "Series": 1 }, "import": { ... } }
- */
 function loadDynamicMaps() {
-  //UPDATE_NOTES 8/17/26
-  //REMOVE 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const mapSheet = ss.getSheetByName("Map_Registry");
-  if (!mapSheet) return {};
-
-  const data = mapSheet.getDataRange().getValues();
-  data.shift(); // Remove header row
-
-  const maps = {};
-  data.forEach(row => {
-    const sheetName = String(row[0]).trim();
-    const fieldName = String(row[1]).trim();
-    const colIndex = parseInt(row[2], 10);
-
-    if (sheetName && fieldName && !isNaN(colIndex)) {
-      if (!maps[sheetName]) maps[sheetName] = {};
-      maps[sheetName][fieldName] = colIndex;
-    }
-  });
-
-  return maps;
+  const ctx = Engine.getContext();
+  return ctx.maps || {};
 }
 /**
  * Writes or updates a Field:Value pair in the Control Panel.
@@ -178,8 +124,6 @@ function runSystemHealthCheck() {
  * Maintenance: Run this to align all log sheets to the current Maps.
  */
 function runMasterHeaderReset() {
-  //UPDATE_NOTE 8/17/26
-  //KEEP AS ALIAS
   const ctx = Engine.getContext();
   Engine.Maintenance.resetHeaders(ctx);
 }
@@ -197,33 +141,27 @@ function runFirstTimeSetup() {
 }
 
 /**
- * RECONCILER: Loads the Sheet_Settings (ID Keys and Behaviors).
- * This tells the engine which column acts as the Unique ID for each sheet.
+ * Legacy compatibility for older sheet-setting lookups.
+ * This now delegates to the canonical engine context instead of a separate,
+ * stale config cache.
  */
 function loadSheetSettings() {
-  //UPDATE_NOTE 8/17/26
-  //REMOVE
+  const ctx = Engine.getContext();
+  const out = {};
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const setSheet = ss.getSheetByName("Sheet_Settings");
-  if (!setSheet) return {};
-
-  const data = setSheet.getDataRange().getValues();
-  data.shift(); // Remove headers
-
-  const settings = {};
-  data.forEach(row => {
-    const [sheetName, idKey, behavior, syncMode, protectedStatus] = row;
-    if (sheetName) {
-      settings[sheetName] = { 
-        idKey: idKey, 
-        behavior: behavior, 
-        syncMode: syncMode,
-        protected: (protectedStatus === "Yes" || protectedStatus === true)
+  Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
+    const def = ctx.sheetDefs[sheetName];
+    if (def && def.settings) {
+      out[sheetName] = {
+        idKey: def.settings.idKey,
+        behavior: def.settings.behavior,
+        syncMode: def.settings.syncMode,
+        protected: def.settings.isProtected === true
       };
     }
   });
-  return settings;
+
+  return out;
 }
 
 /**

@@ -9,7 +9,7 @@ Engine.Sync = {
 
   runMasterSync: function() {
     // 1. Get Context
-  const ctx = Engine.Core.getContext();
+  const ctx = Engine.getContext();
   
   // 2. LOAD REGISTRY into Context (Crucial for Drift Detection)
   // This builds a map of { sourceID: { SyncHash, Location } }
