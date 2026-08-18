@@ -108,7 +108,7 @@ function writeNewSeason() {
 function pullDraftCal(){
   //scan calendar for events to add to crew calendar log
   // Get the target calendar (Draft 26-27)
-  const target = scriptLib.getCalID("Draft 26-27"); 
+  const target = SL.getCalID("Draft 26-27"); 
   const cal = CalendarApp.getCalendarById(target.id);
   if (!cal) {
     SpreadsheetApp.getUi().alert("Draft Calendar not found.");
@@ -128,7 +128,7 @@ function wipeDraftSeasonCal() {
   // 1. Get the Calendar ID (Using your getCalendar helper or manual ID)
   // Example: target = getCalendar("Draft 26-27");
   
-  const cal = scriptLib.getDraftCalendar();
+  const cal = SL.getDraftCalendar();
   if (!cal) {
     ui.alert("Error: Calendar not found. Check the ID.");
     return;

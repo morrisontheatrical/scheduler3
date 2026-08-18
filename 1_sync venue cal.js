@@ -24,10 +24,10 @@ function syncVenueCalendarsToLog(ctx) {
   const endDate = new Date(today.getTime() + ((ctx.config.endDays || 365) * 24 * 60 * 60 * 1000));
 
   // Fetch venue objects: [{displayName, id, venueName}, ...]
-  const venues = (typeof scriptLib !== 'undefined' && scriptLib.calendarIDs) ? scriptLib.calendarIDs() : []; 
+  const venues = (typeof SL !== 'undefined' && SL.calendarIDs) ? SL.calendarIDs() : []; 
   let allVenueEvents = [];
 
-  scriptLib.notify("Mirroring Venue Calendars...", "Facility Sync");
+  SL.notify("Mirroring Venue Calendars...", "Facility Sync");
 
   venues.forEach(venueObj => {
     // SKIP: Avoid mirroring our own draft/work-in-progress calendars
@@ -185,7 +185,7 @@ function syncPerformanceSpaces() {
   });
 
   // 2. Calendar Settings (Replace with your Library Name, e.g., 'Lib')
-  const calendars = scriptLib.calendarIDs();
+    const calendars = SL.calendarIDs();
   const start = new Date(new Date().getTime() - (20 * 24 * 60 * 60 * 1000));
   const end = new Date(new Date().getTime() + (60 * 24 * 60 * 60 * 1000));
   
@@ -209,11 +209,11 @@ function syncPerformanceSpaces() {
       finalRows.push([
         eTitle,                                  // A: Title
         eStart,                                  // B: Date Object
-        scriptLib.helperFormatTime(eStart),            // C: Start Time (String prevents 1899)
+        SL.helperFormatTime(eStart),            // C: Start Time (String prevents 1899)
         event.getDescription(),                  // D: Details
         event.getLastUpdated(),                  // E: Last Updated
         space,                                   // F: Location
-        scriptLib.helperFormatTime(event.getEndTime()),// G: End Time
+        SL.helperFormatTime(event.getEndTime()),// G: End Time
         event.getId(),                           // H: Event ID
         status,                                  // I: Status (Imported from Venue)
         match.pID,                               // J: parentID
@@ -245,8 +245,8 @@ function handleSyncDrift(row, map, event, isAdopted, calLastUpdated, sheetLastSy
     if (CONFIG["Automatic Changes when possible?"] === "TRUE" && isAutoSyncEnabled) {//Outdated decision logic
       // Modify the array in memory (NO SpreadsheetApp calls here!)
       row[map.Title] = event.getTitle();
-      row[map.Start] = scriptLib.helperFormatTime(event.getStartTime());
-      row[map.End]   = scriptLib.helperFormatTime(event.getEndTime());
+      row[map.Start] = SL.helperFormatTime(event.getStartTime());
+      row[map.End]   = SL.helperFormatTime(event.getEndTime());
       row[map.Location] = event.getLocation();
       row[map.LastSynced] = new Date();
       row[map.SyncStatus] = isAdopted ? "Adopted from Venue" : "Pulled from Calendar";
@@ -273,11 +273,11 @@ function handleSyncDrift(row, map, event, isAdopted, calLastUpdated, sheetLastSy
       row[map.SyncStatus] = "Adopted from Venue";
       return { action: "Ignored", details: "Cannot push to Read-Only Venue Calendar." };
     } else {
-      // 1. Get Valid Times using your new scriptLib function
-      const times = scriptLib.getValidEventTimes(ctx, row[map.Date], row[map.Start], row[map.End]);
+      // 1. Get Valid Times using your new SL function
+      const times = SL.getValidEventTimes(ctx, row[map.Date], row[map.Start], row[map.End]);
       
       // Update array in memory to match the calculated end time
-      row[map.End] = scriptLib.helperFormatTime(times.end);
+      row[map.End] = SL.helperFormatTime(times.end);
       
       // 2. Push to Google Calendar API
       event.setTitle(row[map.Title]);
@@ -304,11 +304,11 @@ function verifyCrewLogAndCalendar(ctx) {
   const CONFIG = getGlobalConfig();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   // USE THE LIBRARY TO GET THE MAP
-  const MAP = scriptLib.getMap("Crew_Calendar_Log"); 
+  const MAP = SL.getMap("Crew_Calendar_Log"); 
   const sheet = ctx.sheets.CREWCAL
   const data = sheet.getDataRange().getValues();
   
-  const draftCalInfo = scriptLib.getCalID(CONFIG.DraftSeasonCalendarName);
+  const draftCalInfo = SL.getCalID(CONFIG.DraftSeasonCalendarName);
   const draftCal = draftCalInfo ? CalendarApp.getCalendarById(draftCalInfo.id) : null;
 
   for (let i = 1; i < data.length; i++) {
@@ -327,7 +327,7 @@ function verifyCrewLogAndCalendar(ctx) {
 
     // --- STRATEGY B: EXTERNAL VENUE (Off-Site) ---
     // Check if this location exists in our facility list
-    const venueInfo = scriptLib.getCalID(location);
+    const venueInfo = SL.getCalID(location);
     if (!venueInfo && !isAdopted) {
       // This is an external venue. We can't sync it, so we mark it as "External".
       applyStatus(sheet, rowIdx, "External Venue", { details: "No Google Calendar for this location." });
@@ -358,7 +358,7 @@ function verifyCrewLogAndCalendar(ctx) {
     
     // Check if they are actually in sync right now
     const calTitle = event.getTitle();
-    const calStart = scriptLib.helperFormatTime(event.getStartTime());
+    const calStart = SL.helperFormatTime(event.getStartTime());
     const match = (calTitle === String(row[CREWCALMAP.Title]) && calStart === String(row[CREWCALMAP.Start]));
 
     if (match) {
@@ -437,14 +437,14 @@ function pullCalendarUpdatesToLog(calendarId, sourceName) {
     if (rowIdx) {
       const existing = logData[rowIdx - 1];
       const calTitle = event.getTitle();
-      const calStart = scriptLib.helperFormatTime(event.getStartTime());
+      const calStart = SL.helperFormatTime(event.getStartTime());
 
       // If the Calendar has been edited manually
       if (existing[1] !== calTitle || existing[3] !== calStart) {
         const updatedRow = [...existing];
         updatedRow[1] = calTitle;
         updatedRow[3] = event.getStartTime();
-        updatedRow[4] = scriptLib.helperFormatTime(event.getEndTime());
+        updatedRow[4] = SL.helperFormatTime(event.getEndTime());
         updatedRow[9] = new Date(); // Last Synced
         
         logDetailedChange(sourceName, eID, existing, updatedRow);

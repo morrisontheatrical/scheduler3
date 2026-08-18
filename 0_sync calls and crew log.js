@@ -36,7 +36,7 @@ function syncCallsToCrewLog() {
     // Calls: C=Title, D=Date, E=Time, F=Type, G=Description
     const title = cRow[2];
     const date = cRow[3];
-    const startTime = scriptLib.helperFormatTime(cRow[4]);
+    const startTime = SL.helperFormatTime(cRow[4]);
     const callType = cRow[5];
     const description = `${callType} | ${cRow[6]}`; 
 

@@ -39,7 +39,7 @@ function batchWrite(role, dataObjects, ctx) {
   const output = dataObjects.map(obj => {
     // 1. Generate Identity Hash (using scriptLib / SL)
     if (map.SyncHash !== undefined) {
-      const identity = scriptLib.Identity.generate({
+      const identity = SL.Identity.generate({
         title: obj.Title || obj.EventName, // Handle naming discrepancies
         date: obj.Date,
         time: obj.Start || obj.CallTime,
@@ -75,7 +75,7 @@ function patchRows(role, updatedObjects, ctx) {
   updatedObjects.forEach(obj => {
     if (!obj._rowNum) return; // We need to know which row to hit
     
-    const identity = scriptLib && scriptLib.Identity && scriptLib.Identity.generate ? scriptLib.Identity.generate({
+    const identity = SL && SL.Identity && SL.Identity.generate ? SL.Identity.generate({
       title: obj.Title, date: obj.Date, time: obj.Start, venue: obj.Location
     }) : null;
     if (identity) obj.SyncHash = identity.hash;

@@ -134,7 +134,7 @@ function updateCCL(){
   //Not called
 
   const data = logSheet.getDataRange().getValues();
-  const target = scriptLib.getCalID("Draft 26-27"); 
+  const target = SL.getCalID("Draft 26-27"); 
   const destCal = CalendarApp.getCalendarById(target.id);
 
   for (let i = 1; i < data.length; i++) {
@@ -206,7 +206,7 @@ function updateCrewCalLog() {
   let count = 0;
 
   // --- THIS IS WHERE YOU DEFINE THE DESTINATION ---
-  const target = scriptLib.getCalID("Draft 26-27"); 
+  const target = SL.getCalID("Draft 26-27"); 
   const destCal = CalendarApp.getCalendarById(target.id);
 
   //for each line on log sheet
@@ -250,14 +250,14 @@ function updateCrewCalLog() {
     if (rowIdx) {
       const existing = logData[rowIdx - 1];
       const calTitle = event.getTitle();
-      const calStart = scriptLib.helperFormatTime(event.getStartTime());
+      const calStart = SL.helperFormatTime(event.getStartTime());
 
       // If the Calendar has been edited manually
       if (existing[1] !== calTitle || existing[3] !== calStart) {
         const updatedRow = [...existing];
         updatedRow[1] = calTitle;
         updatedRow[3] = event.getStartTime();
-        updatedRow[4] = scriptLib.helperFormatTime(event.getEndTime());
+        updatedRow[4] = SL.helperFormatTime(event.getEndTime());
         updatedRow[9] = new Date(); // Last Synced
         
         logDetailedChange(sourceName, eID, existing, updatedRow);

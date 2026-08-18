@@ -13,7 +13,7 @@ function goParent() {
 
   
   if (!iSheet || !pSheet) {
-    scriptlib.Lib.notify("Import or Parent Lineup sheet not found.", "Error");
+    SL.notify("Import or Parent Lineup sheet not found.", "Error");
     return;
   }
 

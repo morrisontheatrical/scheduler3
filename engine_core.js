@@ -227,7 +227,7 @@ var Engine = {
 
       Object.keys(map).forEach(fieldName => {
         const colIdx = map[fieldName].index !== undefined ? map[fieldName].index : Number(map[fieldName]);
-        lookups.lists[fieldName] = scriptLib.getCleanColumn(listData, colIdx);
+        lookups.lists[fieldName] = SL.Utils.getCleanColumn(listData, colIdx);
       });
     }
     
