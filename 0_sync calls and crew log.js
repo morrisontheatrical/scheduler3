@@ -1,8 +1,8 @@
-//Version 2
-/**
- * Phase 3 & 5: Syncs Calls to Log with Change Detection.
- * Anchored by sourceID (Column I).
- */
+/*UPDATE_NOTES 8/17/26
+This script file seems to be largely out of date.
+This is from before the engine architecture existed. I think I kept it for reference or because it worked, at least at some point. 
+*/
+
 function syncCallsToCrewLog() {
   //UPDATE_NOTES 8/17/26
   //Bind to ctx.sheets.CALLS.map and route UUID assignments through Engine.IDService

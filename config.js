@@ -1,3 +1,11 @@
+/*UPDATE_NOTES 8/17/26
+It seems like much of this is now in the engine_core.gs 
+What is worth keeping? 
+- setControlPanelValue()
+- getUIFriendlySchema()
+- runSystemHealthCheck()
+*/
+
 // ==============================================================================
 // FILE: Config.gs
 // PURPOSE: Loads UI Settings, Status Colors, and the dynamic Map Registry.
@@ -7,6 +15,10 @@
  * Loads the Control Panel settings into a simple object.
  */
 function getGlobalConfig() {
+  //UPDATE_NOTES 8/17/26
+  //reads the wrong column
+  //REMOVE
+  
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const config = {};
 
@@ -44,6 +56,8 @@ function getGlobalConfig() {
  * Returns: { "Lineup": { "EventName": 0, "Series": 1 }, "import": { ... } }
  */
 function loadDynamicMaps() {
+  //UPDATE_NOTES 8/17/26
+  //REMOVE 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const mapSheet = ss.getSheetByName("Map_Registry");
   if (!mapSheet) return {};
@@ -69,6 +83,9 @@ function loadDynamicMaps() {
  * Writes or updates a Field:Value pair in the Control Panel.
  */
 function setControlPanelValue(fieldName, value) {
+  //UPDATE_NOTES 8/17/26
+  //KEEP
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let cpSheet = ss.getSheetByName("ControlPanel");
   
@@ -95,11 +112,13 @@ function setControlPanelValue(fieldName, value) {
 
 /**
  * SYSTEM HEALTH: Verifies and repairs the infrastructure sheets.
+ * creates missing infrastructure sheets (ControlPanel/Status/Lookup) with defaults if they don't exist.
  * Run this if you ever delete a core tab by accident.
  */
 function runSystemHealthCheck() {
   //UPDATE_NOTES 8/17/26
   //What is the difference between this function and Engine.Maintenance.runHealthCheck()
+  //KEEP
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
@@ -159,12 +178,17 @@ function runSystemHealthCheck() {
  * Maintenance: Run this to align all log sheets to the current Maps.
  */
 function runMasterHeaderReset() {
+  //UPDATE_NOTE 8/17/26
+  //KEEP AS ALIAS
   const ctx = Engine.getContext();
   Engine.Maintenance.resetHeaders(ctx);
 }
 
 // Ensure ALL setup logic is inside this function, not floating in the file
 function runFirstTimeSetup() {
+  //UPDATE_NOTE 8/17/26
+  //KEEP for now
+
   runSystemHealthCheck();
   // Add basic defaults to Control Panel if empty
   setControlPanelValue("Default Event Duration Hours", 2);
@@ -177,6 +201,9 @@ function runFirstTimeSetup() {
  * This tells the engine which column acts as the Unique ID for each sheet.
  */
 function loadSheetSettings() {
+  //UPDATE_NOTE 8/17/26
+  //REMOVE
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const setSheet = ss.getSheetByName("Sheet_Settings");
   if (!setSheet) return {};
@@ -203,6 +230,9 @@ function loadSheetSettings() {
  * UI BRIDGE: Returns the schema for a sheet so the UI can build forms.
  */
 function getUIFriendlySchema(sheetName) {
+  //UPDATE_NOTE 8/17/26
+  //KEEP
+
   const ctx = Engine.getContext();
   const map = ctx.maps[sheetName];
   const registrySheet = ctx.ss.getSheetByName("Map_Registry");

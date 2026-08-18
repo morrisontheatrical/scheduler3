@@ -1,9 +1,16 @@
+/*UPDATE_NOTES 8/17/26
+This script file seems to be largely out of date.
+It appears to have some conflict checking functions as well as sync functions. 
+I don't ever want to lose functionality that I have built. I may have made a more efficient function that is capable of the same action, but if I don't have a good way to trigger that, like a "preset", then it almost is like losing functionality. Maybe these turn into alias's or we make a series of aliases for common uses.
+*/
+
 /**
  * ONE-WAY MIRROR: Pulls facility data into Venue_Cal_Log for comparison.
  * Respects the 18-column VENUECALMAP and 10-column ID Registry.
  */
 function syncVenueCalendarsToLog(ctx) {
-  
+  //UPDATE_NOTES 8/17/26
+  //Not called
   
   const vLogSheet = ctx.sheets.VENUECAL;
   
@@ -75,6 +82,11 @@ function syncVenueCalendarsToLog(ctx) {
 
 
 function checkRoomConflicts() {
+  //UPDATE_NOTES 8/17/26
+  //Not called
+  //Originally intended to identify when a room was double-booked. Am I trying to schedule over an existing event? Am I about to make a duplicate event?
+
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const crewLog = ss.getSheetByName("Crew_Calendar_Log").getDataRange().getValues();
   const venueLog = ss.getSheetByName("Venue_Cal_Log").getDataRange().getValues();
@@ -116,6 +128,9 @@ function checkRoomConflicts() {
  * @return {string|null} Returns the EventID if found, else null.
  */
 function findExistingVenueEvent(plannedRow, vData) {
+  //UPDATE_NOTES 8/17/26
+  //Called by writeNewSeason() in 0_draft season.gs
+
   const pTitle = String(plannedRow[CREWCALMAP.Title]).toLowerCase();
   const pDate = new Date(plannedRow[CREWCALMAP.Date]).toDateString();
   const pLoc = plannedRow[CREWCALMAP.Location];
@@ -141,12 +156,16 @@ function findExistingVenueEvent(plannedRow, vData) {
   }
   return null;
 }
+
+
 /**
  * Syncs external venue calendars and attempts to map them to Lineup IDs.
  */
-
-////Version 4
 function syncPerformanceSpaces() {
+  //UPDATE_NOTES 8/17/26
+  //Called by masterAggregatorSync() in 0_onOpen.gs
+
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const perfSheet = ss.getSheetByName("Performance Spaces");
   const lineupSheet = ss.getSheetByName("Lineup");
@@ -208,11 +227,15 @@ function syncPerformanceSpaces() {
     perfSheet.getRange(2, 1, finalRows.length, 11).setValues(finalRows);
   }
 }
+
 /**
  * Now acts purely as a logic engine. Mutates the 'row' array in memory.
  * Returns a log object for the Drift Summary.
  */
 function handleSyncDrift(row, map, event, isAdopted, calLastUpdated, sheetLastSynced, ctx) {
+  //UPDATE_NOTES 8/17/26
+  //Called by VerifyCrewLogAndCalendar(ctx)
+
   const CONFIG = ctx.settings; // Passed from ControlPanel
   const isAutoSyncEnabled = row[map.AutoSync] === true;
   const calendarIsNewer = calLastUpdated > (sheetLastSynced + 5000); 
@@ -350,10 +373,12 @@ function verifyCrewLogAndCalendar(ctx) {
   }
 }
 /**
- * Stage 7: Confirm Final Status
  * Provides a high-level summary of the season's health.
  */
 function finalizeCrewLogStatus() {
+  //UPDATE_NOTES 8/17/26
+  //Not called
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const logSheet = ss.getSheetByName("Crew_Calendar_Log");
   const data = logSheet.getDataRange().getValues();
@@ -383,10 +408,14 @@ function finalizeCrewLogStatus() {
 
   return masterStatus;
 }
+
 /**
- * Phase 2 & 5: Pulls external calendar edits into the Log.
+ Pulls external calendar edits into the Log.
  */
 function pullCalendarUpdatesToLog(calendarId, sourceName) {
+  //UPDATE_NOTES 8/17/26
+  //Called by PullDraftCal() in 0_draft season.gs
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const logSheet = ss.getSheetByName("Crew_Calendar_Log");
   const cal = CalendarApp.getCalendarById(calendarId);

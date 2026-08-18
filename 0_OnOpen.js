@@ -1,15 +1,49 @@
 function onOpen() {
-    //repairMapRegistry();
-  
-  SpreadsheetApp.getUi().createMenu('📅 Scheduler')
-    .addItem('1. Ingest Season (goParent)', 'goParent')
-    .addItem('2. Explode Dates (goLineup)', 'goLineup')
-    .addItem('3. Sync Calendars (goSync)', 'Engine.runMasterSync') //Does not call properly
+  const ui = SpreadsheetApp.getUi();
+
+  ui.createMenu('🧪 Dev / Test')
+    .addItem('Diagnostic Dump', 'test_DiagnosticDump')
+    .addItem('Mirror Venues Test', 'test_MirrorVenues')
+    .addItem('Run Health Check', 'goHealthCheck')
+    .addItem('Open Audit Log', 'openAuditLog')
     .addSeparator()
-    .addItem('System Health Check', 'goHealthCheck') //replaced by Engine.Maitenance.runHealthCheck
+    .addItem('Repair Map Registry', 'repairMapRegistry')
+    .addItem('Reset Headers', 'resetHeadersMenu')
+    .addToUi();
+
+  ui.createMenu('📅 Scheduler')
+    .addItem('1. Ingest Season', 'goParent')
+    .addItem('2. Explode Dates', 'goLineup')
+    .addItem('3. Sync Calendars', 'goSync')
+    .addSeparator()
+    .addItem('View Audit Log', 'openAuditLog')
     .addToUi();
 }
 
+function goSync() {
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    Engine.Sync.runMasterSync();
+    return;
+  }
+
+  SpreadsheetApp.getUi().alert('Sync engine is not available.');
+}
+
+function goHealthCheck() {
+  if (!Engine || !Engine.Maintenance || !Engine.Maintenance.runHealthCheck) {
+    SpreadsheetApp.getUi().alert('Maintenance engine is not available.');
+    return;
+  }
+
+  const reports = Engine.Maintenance.runHealthCheck();
+  const msg = reports.join('\n');
+  SpreadsheetApp.getUi().alert('System Health Check', msg, SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+function resetHeadersMenu() {
+  const ctx = Engine.getContext();
+  Engine.Maintenance.resetHeaders(ctx);
+}
 
 /**
  * HELPER: Simple UI jump to the Audit_Log sheet
@@ -24,11 +58,11 @@ function openAuditLog() {
   }
 }
 
-/**
- * REPLACES aggregateToMasterLog
- * This is your Phase 1 & 3 "Master Hub" script.
- */
+
 function masterAggregatorSync() {
+  //UPDATE_NOTES 8/17/26
+  //This used to be how I would run a master sync. It seems depreciated and likely needs to be removed. I am leaving it for now as context. 
+
   // 1. Sync Lineup data to Log (Phase 1)
   syncLineupToCrewLog(); 
   
@@ -39,7 +73,7 @@ function masterAggregatorSync() {
   syncCallsToCrewLog(); 
   
   // 4. Update the Snapshot for Phase 5 comparison
-  updateLogSnapshot();
+  //updateLogSnapshot();
   
-  postToExecutionLog("Master Aggregation Complete. All sources synced to Log.","SYSTEM");
+  //postToExecutionLog("Master Aggregation Complete. All sources synced to Log.","SYSTEM");
 }

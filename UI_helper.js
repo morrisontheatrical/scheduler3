@@ -2,6 +2,10 @@
  * UI Search: Find an ID and jump to its sheet location.
  */
 function findIdAndJump(id) {
+  //UPDATE_NOTES 8/17/26
+  //seems similar to getRowByUuid(uuid) in 0_helper.gs
+
+
   const ui = SpreadsheetApp.getUi();
   const response = ui.prompt("🔍 Find ID", "Enter UUID, parentID, or callID:", ui.ButtonSet.OK_CANCEL);
   if (response.getSelectedButton() !== ui.Button.OK) return;

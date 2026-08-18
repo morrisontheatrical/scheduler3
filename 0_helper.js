@@ -1,3 +1,8 @@
+/*UPDATE_NOTES 8/17/26
+All helper functions or other oddball short functions should live here
+*/
+
+
 function getParentData(identifier){
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName("Parent Lineup");
@@ -57,6 +62,9 @@ function getChildData(identifier) {
 }
 
 function getRowByUuid(uuid) {
+  //UPDATE_NOTES 8/17/26
+  //seems similar to findIdAndJump(id) in UI_helper.gs
+
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Lineup");
   const data = sheet.getDataRange().getValues();
   
@@ -122,6 +130,9 @@ function getCalEvents(calendarId) {
 }
 
 function updateCCL(){
+  //UPDATE_NOTES 8/17/26
+  //Not called
+
   const data = logSheet.getDataRange().getValues();
   const target = scriptLib.getCalID("Draft 26-27"); 
   const destCal = CalendarApp.getCalendarById(target.id);
@@ -139,12 +150,16 @@ function updateCCL(){
 
     }
 
-}
+}}
+
 /**
  * Example of how to use your logMap to update a specific event 
  * found during a calendar crawl.
  */
 function updateLogFromCalendar(calendarEvent) {
+  //UPDATE_NOTES 8/17/26
+  //Not called
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const logSheet = ss.getSheetByName("Crew_Calendar_Log");
   
@@ -177,13 +192,16 @@ function updateLogFromCalendar(calendarEvent) {
     console.log("New event detected. Should append to log.");
   }
 }
-}
+
 
 
 
 
 
 function updateCrewCalLog() {
+  //UPDATE_NOTES 8/17/26
+  //Not called
+
   const data = logSheet.getDataRange().getValues();
   let count = 0;
 
@@ -268,3 +286,28 @@ function updateCrewCalLog() {
 
 
 }
+
+/**
+ * REVISED: Checks for duplicates via ID and sorts the Log by time.
+ */
+function finalizeLogAndSort() {
+//UPDATE_NOTES 8/17/26
+//Moved from e_double check me.gs
+
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheet = ss.getSheetByName("Crew_Calendar_Log");
+  const lastRow = logSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const range = logSheet.getRange(2, 1, lastRow - 1, 14);
+  
+  // Sort by Date (Col C / index 2) then Start Time (Col D / index 3)
+  range.sort([
+    {column: 3, ascending: true}, 
+    {column: 4, ascending: true}
+  ]);
+  
+  postToLog("SYSTEM", "Log sorted by Date and Start Time.");
+}
+

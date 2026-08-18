@@ -1,3 +1,14 @@
+/*UPDATE_NOTES 8/17/26
+ctx.maps is referenced constantly but never created
+Engine.getContext() (in engine_core.js) builds ctx.sheets and gives you ctx.getMap(identifier) as a method — but it never sets a ctx.maps property.
+Fix direction: either add ctx.maps = ctx.sheets mapping logic (each .map extracted) during getContext(), or replace every ctx.maps.X reference with ctx.getMap("X"). Pick one and standardize — don't keep two names for the same thing.
+
+ctx.settings and ctx.mode are referenced but never created either
+
+
+
+*/
+
 /* GLOBAL CONSTANTS
  * Use these for initializing 'System' sheets that the Engine requires to boot. getContext will update this with current values
  */
@@ -25,16 +36,23 @@ var Engine = {
     
     let ctx = {
       ss: ss,
-      sheets: {}, 
+      sheets: {},
+      maps: {},
+      schema: {},
       roles: {},
+      settings: { ControlPanel: {} },
+      mode: { logTypes: "", writeToCalendar: false },
       runtime: { bypassList: [], isCustom: false, reportOnly: false }
     };
 
     // 1. Build the Map Schema (This is the foundation)
     this.assembleSheetMap(ctx);
+    this.buildLegacyMapAliases(ctx);
 
     // 2. Load basic config and status rules
     ctx.config = this.loadConfig(ss);
+    ctx.mode = Object.assign({}, ctx.config, { logTypes: "", writeToCalendar: false });
+    ctx.settings.ControlPanel = this.loadControlPanelSettings(ss);
     ctx.status = this.loadStatusRules(ss);
     
     // 3. Load Registry (Fast-lookup for Identity)
@@ -70,12 +88,13 @@ var Engine = {
      * Usage: const lineupMap = ctx.getMap('LINEUPCURRENT');
      */
     ctx.getMap = function(identifier) {
-      const sheetObj = this.sheets[identifier];
-      if (!sheetObj) {
+      const sheetObj = this.sheets[identifier] || this.schema[identifier];
+      const map = sheetObj && sheetObj.map ? sheetObj.map : this.maps[identifier];
+      if (!map) {
         console.error(`Map not found for identifier: ${identifier}`);
         return null;
       }
-      return sheetObj.map;
+      return map;
     };
 
     /**
@@ -85,7 +104,11 @@ var Engine = {
     ctx.getCol = function(identifier, fieldName) {
       const map = this.getMap(identifier);
       if (map && map[fieldName] !== undefined) {
-        return map[fieldName].index;
+        const fieldDef = map[fieldName];
+        if (typeof fieldDef === "object" && fieldDef !== null && fieldDef.index !== undefined) {
+          return Number(fieldDef.index);
+        }
+        return Number(fieldDef);
       }
       return -1;
     };
@@ -98,6 +121,10 @@ var Engine = {
    */
   loadConfig: function(ss) {
     const sheet = ss.getSheetByName("ControlPanel");
+    if (!sheet) {
+      return { mode: "Draft 26-27", syncWindow: { start: 14, end: 365 }, defaultDuration: 2 };
+    }
+
     const data = sheet.getDataRange().getValues();
     let config = { mode: "Draft 26-27", syncWindow: { start: 14, end: 365 }, defaultDuration: 2 };
 
@@ -109,8 +136,35 @@ var Engine = {
       if (key === "StartSync") config.syncWindow.startDays = Number(val);
       if (key === "EndSync") config.syncWindow.endDays = Number(val);
       if (key === "defaultDuration") config.defaultDuration = Number(val);
+      if (key === "logTypes") config.logTypes = val;
+      if (key === "writeToCalendar") config.writeToCalendar = String(val).toLowerCase() === "true" || val === true;
+      if (key === "Crew Draft Calendar ID") config.crewDraftCalendarId = val;
+      if (nam && nam.toLowerCase() === "mode") config.mode = val;
     });
     return config;
+  },
+
+  loadControlPanelSettings: function(ss) {
+    const sheet = ss.getSheetByName("ControlPanel");
+    if (!sheet) return {};
+
+    const data = sheet.getDataRange().getValues();
+    const settings = {};
+
+    data.forEach(row => {
+      const label = row[0];
+      const key = row[1] || row[0];
+      const value = row[2];
+      if (!key && value === undefined) return;
+
+      const normalizedKey = String(key || label || "").trim();
+      if (!normalizedKey) return;
+
+      settings[normalizedKey] = value;
+      if (label) settings[String(label).trim()] = value;
+    });
+
+    return settings;
   },
 
   /**
@@ -216,9 +270,8 @@ var Engine = {
         const fieldName = m[1];
         const colIndex = Number(m[2]);
         
-        // KEY CHANGE: Save the index number directly to the field name
-        // This allows iRow[iMap.EventName] to work like iRow[0]
-        sheetConfig.map[fieldName] = colIndex;
+        // Store the index as an object to support reads like map.Field.index
+        sheetConfig.map[fieldName] = { index: colIndex };
       });
 
       // 4. Store by Sheet Name
@@ -226,6 +279,23 @@ var Engine = {
       
       // 5. Store a reference by Role (This is just a pointer, not a full copy)
       if (role) ctx.sheets[role] = ctx.sheets[sheetName]; 
+    });
+  },
+
+  buildLegacyMapAliases: function(ctx) {
+    ctx.maps = {};
+    ctx.schema = {};
+
+    Object.keys(ctx.sheets).forEach(sheetName => {
+      const sheetDef = ctx.sheets[sheetName];
+      const map = sheetDef && sheetDef.map ? sheetDef.map : {};
+      ctx.maps[sheetName] = map;
+      ctx.schema[sheetName] = sheetDef;
+
+      if (sheetDef && sheetDef.role) {
+        ctx.maps[sheetDef.role] = map;
+        ctx.schema[sheetDef.role] = sheetDef;
+      }
     });
   },
 
