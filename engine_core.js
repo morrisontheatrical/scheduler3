@@ -37,6 +37,7 @@ var Engine = {
     let ctx = {
       ss: ss,
       sheets: {},
+      sheetDefs: {},
       maps: {},
       schema: {},
       roles: {},
@@ -88,8 +89,8 @@ var Engine = {
      * Usage: const lineupMap = ctx.getMap('LINEUPCURRENT');
      */
     ctx.getMap = function(identifier) {
-      const sheetObj = this.sheets[identifier] || this.schema[identifier];
-      const map = sheetObj && sheetObj.map ? sheetObj.map : this.maps[identifier];
+      const sheetDef = this.sheetDefs[identifier] || this.schema[identifier] || this.sheets[identifier];
+      const map = (sheetDef && sheetDef.map) || this.maps[identifier] || (this.sheets[identifier] && this.sheets[identifier].map);
       if (!map) {
         console.error(`Map not found for identifier: ${identifier}`);
         return null;
@@ -218,14 +219,14 @@ var Engine = {
 
     // 2. Process Lookup Lists using ctx.sheets["Lookup"].map
     const listSheet = ss.getSheetByName("Lookup");
-    const lookupSheetObj = ctx.sheets["Lookup"];
+    const lookupSheetDef = ctx.sheetDefs["Lookup"] || ctx.schema["Lookup"] || ctx.getMap("Lookup");
     
-    if (listSheet && lookupSheetObj && lookupSheetObj.map) {
+    if (listSheet && lookupSheetDef && lookupSheetDef.map) {
       const listData = listSheet.getDataRange().getValues();
-      const map = lookupSheetObj.map;
+      const map = lookupSheetDef.map;
 
       Object.keys(map).forEach(fieldName => {
-        const colIdx = map[fieldName].index;
+        const colIdx = map[fieldName].index !== undefined ? map[fieldName].index : Number(map[fieldName]);
         lookups.lists[fieldName] = scriptLib.getCleanColumn(listData, colIdx);
       });
     }
@@ -252,42 +253,47 @@ var Engine = {
       const role = row[7]; // Your log confirmed Role is at index 7
       if (!sheetName) return;
 
-      // Register the Role
       if (role) ctx.roles[role] = sheetName;
 
+      const actualSheet = ctx.ss.getSheetByName(sheetName) || null;
+      if (actualSheet) {
+        ctx.sheets[sheetName] = actualSheet;
+      }
 
-      //Sheet_Settings Map
-      // 2. Create the configuration object
       const sheetConfig = {
         name: sheetName,
         role: role,
+        sheet: actualSheet,
         settings: { idKey: row[1], behavior: row[2], syncMode: row[3], isProtected: row[4] === "Yes" },
         map: {}
       };
 
-      // 3. Map the registry columns - SIMPLIFIED
       mapData.filter(m => m[0] === sheetName).forEach(m => {
         const fieldName = m[1];
         const colIndex = Number(m[2]);
-        
-        // Store the index as an object to support reads like map.Field.index
-        sheetConfig.map[fieldName] = { index: colIndex };
+        if (fieldName && !isNaN(colIndex)) {
+          sheetConfig.map[fieldName] = { index: colIndex };
+        }
       });
 
-      // 4. Store by Sheet Name
-      ctx.sheets[sheetName] = sheetConfig;
-      
-      // 5. Store a reference by Role (This is just a pointer, not a full copy)
-      if (role) ctx.sheets[role] = ctx.sheets[sheetName]; 
+      ctx.sheetDefs[sheetName] = sheetConfig;
+      ctx.schema[sheetName] = sheetConfig;
+      ctx.maps[sheetName] = sheetConfig.map;
+
+      if (role) {
+        ctx.schema[role] = sheetConfig;
+        ctx.maps[role] = sheetConfig.map;
+        if (actualSheet) ctx.sheets[role] = actualSheet;
+      }
     });
   },
 
   buildLegacyMapAliases: function(ctx) {
-    ctx.maps = {};
-    ctx.schema = {};
+    ctx.maps = ctx.maps || {};
+    ctx.schema = ctx.schema || {};
 
-    Object.keys(ctx.sheets).forEach(sheetName => {
-      const sheetDef = ctx.sheets[sheetName];
+    Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
+      const sheetDef = ctx.sheetDefs[sheetName];
       const map = sheetDef && sheetDef.map ? sheetDef.map : {};
       ctx.maps[sheetName] = map;
       ctx.schema[sheetName] = sheetDef;
@@ -321,19 +327,18 @@ var Engine = {
   Status: {
     apply: function(ctx, sheetName, rowIdx, statusName, logContext = {}) {
       const sheet = ctx.ss.getSheetByName(sheetName);
-      const sheetObj = ctx.sheets[sheetName];
-      if (!sheet || !sheetObj) return;
+      const map = ctx.getMap(sheetName) || (ctx.sheetDefs[sheetName] && ctx.sheetDefs[sheetName].map);
+      if (!sheet || !map) return;
 
       const theme = ctx.status[statusName] || { hex: "#ffffff", behavior: "DEFAULT" };
       const now = new Date();
-      const map = sheetObj.map;
 
       // Update columns based on Map_Registry
-      if (map.SyncStatus) sheet.getRange(rowIdx, Number(map.SyncStatus.index) + 1).setValue(statusName);
-      if (map.LastSynced) sheet.getRange(rowIdx, Number(map.LastSynced.index) + 1).setValue(now);
+      if (map.SyncStatus) sheet.getRange(rowIdx, Number((map.SyncStatus.index !== undefined ? map.SyncStatus.index : map.SyncStatus)) + 1).setValue(statusName);
+      if (map.LastSynced) sheet.getRange(rowIdx, Number((map.LastSynced.index !== undefined ? map.LastSynced.index : map.LastSynced)) + 1).setValue(now);
       
       if (logContext.details && map.UpdateDetails) {
-         sheet.getRange(rowIdx, Number(map.UpdateDetails.index) + 1).setValue(logContext.details);
+         sheet.getRange(rowIdx, Number((map.UpdateDetails.index !== undefined ? map.UpdateDetails.index : map.UpdateDetails)) + 1).setValue(logContext.details);
       }
 
       sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
@@ -412,4 +417,10 @@ var Engine = {
   }
 
 
+};
+
+Engine.Core = {
+  getContext: function() {
+    return Engine.getContext();
+  }
 };

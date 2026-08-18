@@ -2,15 +2,18 @@
  * Converts a sheet into an array of objects based on the Map_Registry
  */
 function scanSheet(role, ctx) {
-  const sheet = ctx.sheets[role];
-  const map = ctx.maps[role];
+  const sheet = ctx.sheets[role] || ctx.ss.getSheetByName(ctx.getRole(role));
+  const map = ctx.getMap(role) || ctx.maps[role];
+  if (!sheet || !map) return [];
+
   const data = sheet.getDataRange().getValues();
-  const headers = data.shift(); // Remove headers
+  data.shift(); // Remove headers
   
   return data.map((row, index) => {
     const obj = { _rowNum: index + 2 }; // Keep track of the actual row for individual updates
     for (const field in map) {
-      obj[field] = row[map[field]];
+      const colIndex = map[field] && map[field].index !== undefined ? map[field].index : map[field];
+      obj[field] = row[colIndex];
     }
     return obj;
   });
@@ -65,21 +68,23 @@ function batchWrite(role, dataObjects, ctx) {
 }
 
 function patchRows(role, updatedObjects, ctx) {
-  const sheet = ctx.sheets[role];
-  const map = ctx.maps[role];
+  const sheet = ctx.sheets[role] || ctx.ss.getSheetByName(ctx.getRole(role));
+  const map = ctx.getMap(role) || ctx.maps[role];
+  if (!sheet || !map) return;
   
   updatedObjects.forEach(obj => {
     if (!obj._rowNum) return; // We need to know which row to hit
     
-    // Auto-hash before patching
-    const identity = SL.Identity.generate({
+    const identity = scriptLib && scriptLib.Identity && scriptLib.Identity.generate ? scriptLib.Identity.generate({
       title: obj.Title, date: obj.Date, time: obj.Start, venue: obj.Location
-    });
-    obj.SyncHash = identity.hash;
+    }) : null;
+    if (identity) obj.SyncHash = identity.hash;
 
-    const rowArray = new Array(Math.max(...Object.values(map)) + 1).fill("");
+    const indices = Object.keys(map).map(field => Number(map[field] && map[field].index !== undefined ? map[field].index : map[field]));
+    const rowArray = new Array(Math.max(...indices, 0) + 1).fill("");
     for (const field in map) {
-      rowArray[map[field]] = obj[field];
+      const colIndex = map[field] && map[field].index !== undefined ? map[field].index : map[field];
+      rowArray[colIndex] = obj[field];
     }
     
     // Update only this specific row
