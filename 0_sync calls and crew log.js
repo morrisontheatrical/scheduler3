@@ -1,9 +1,14 @@
-/*UPDATE_NOTES 8/17/26
-This script file seems to be largely out of date.
-This is from before the engine architecture existed. I think I kept it for reference or because it worked, at least at some point. 
-*/
+/*
+ * Deprecated legacy sync script.
+ * Prefer Engine.Sync.runMasterSync() and the Engine.* modules.
+ */
+console.warn("Legacy call-sync script is deprecated; use Engine.Sync.runMasterSync() instead.");
 
 function syncCallsToCrewLog() {
+  console.warn("syncCallsToCrewLog() is deprecated; use Engine.Sync.runMasterSync() instead.");
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    return Engine.Sync.runMasterSync();
+  }
   //UPDATE_NOTES 8/17/26
   //Bind to ctx.sheets.CALLS.map and route UUID assignments through Engine.IDService
   //Called by masterAggregatorSync()
@@ -81,6 +86,10 @@ function syncCallsToCrewLog() {
  * Ensures labor shifts match the performance times.
  */
 function verifyCallsAndCrewLog() {
+  console.warn("verifyCallsAndCrewLog() is deprecated; use Engine.Sync or Engine.Maintenance validation instead.");
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    return Engine.Sync.runMasterSync();
+  }
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const logData = ss.getSheetByName("Crew_Calendar_Log").getDataRange().getValues();
   const callsSheet = ss.getSheetByName("Calls");

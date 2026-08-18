@@ -52,7 +52,11 @@ var Engine = {
 
     // 2. Load basic config and status rules
     ctx.config = this.loadConfig(ss);
-    ctx.mode = Object.assign({}, ctx.config, { logTypes: "", writeToCalendar: false });
+    const modeConfig = this.loadModeConfig(ss);
+    ctx.mode = Object.assign({}, ctx.config, modeConfig, {
+      logTypes: Array.isArray(modeConfig.logTypes) ? modeConfig.logTypes.join(", ") : (modeConfig.logTypes || ctx.config.logTypes || ""),
+      writeToCalendar: modeConfig.writeToCalendar !== undefined ? Boolean(modeConfig.writeToCalendar) : Boolean(ctx.config.writeToCalendar)
+    });
     ctx.settings.ControlPanel = this.loadControlPanelSettings(ss);
     ctx.status = this.loadStatusRules(ss);
     
@@ -117,17 +121,111 @@ var Engine = {
     return ctx;
   },
 
+  parseModeList: function(value) {
+    if (value === undefined || value === null || value === "") return [];
+    if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);
+    return String(value)
+      .split(/[;,]/)
+      .map(v => v.trim())
+      .filter(Boolean);
+  },
+
+  coerceBoolean: function(value) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "yes", "y", "1", "on"].includes(normalized)) return true;
+      if (["false", "no", "n", "0", "off"].includes(normalized)) return false;
+    }
+    return Boolean(value);
+  },
+
+  loadModeConfig: function(ss) {
+    const sheet = ss.getSheetByName("Mode_Config");
+    if (!sheet) return {};
+
+    const data = sheet.getDataRange().getValues();
+    if (!data.length) return {};
+
+    const headers = data[0].map(h => String(h || "").trim().toLowerCase());
+    const getIdx = (candidates) => {
+      for (const key of candidates) {
+        const idx = headers.indexOf(String(key).trim().toLowerCase());
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    const modeRowIdx = getIdx(["mode", "selectedmode", "active_mode", "active mode"]);
+    const syncModeIdx = getIdx(["syncmode", "sync_mode", "mode type", "current mode"]);
+    const logTypesIdx = getIdx(["logtypes", "allowedlogtypes", "log_types", "selectedlogs"]);
+    const behaviorsIdx = getIdx(["allowedbehaviors", "behaviors", "allowed_behaviors"]);
+    const boolIdx = getIdx(["writetocalendar", "write_to_calendar", "calendarwrite", "publish"]);
+    const activeIdx = getIdx(["isactive", "active", "selected", "enabled"]);
+
+    let selectedMode = "";
+    let modeConfig = {};
+
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      if (!row || row.every(v => v === "" || v === null || v === undefined)) continue;
+
+      const rowMode = modeRowIdx !== -1 ? row[modeRowIdx] : "";
+      const rowSyncMode = syncModeIdx !== -1 ? row[syncModeIdx] : "";
+      const activeFlag = activeIdx !== -1 ? row[activeIdx] : "";
+      const isSelected = this.coerceBoolean(activeFlag) || (rowMode && String(rowMode).toLowerCase() === String(selectedMode || "").toLowerCase());
+
+      if (!selectedMode && (isSelected || (!modeRowIdx && !selectedMode))) {
+        selectedMode = rowMode || rowSyncMode || selectedMode || "Default";
+      }
+
+      const key = String(rowMode || rowSyncMode || row[0] || "").trim();
+      if (!key) continue;
+
+      modeConfig[key] = modeConfig[key] || {};
+      modeConfig[key].mode = rowMode || rowSyncMode || modeConfig[key].mode;
+      modeConfig[key].syncMode = rowSyncMode || modeConfig[key].syncMode;
+      modeConfig[key].logTypes = logTypesIdx !== -1 ? this.parseModeList(row[logTypesIdx]) : modeConfig[key].logTypes || [];
+      modeConfig[key].allowedBehaviors = behaviorsIdx !== -1 ? this.parseModeList(row[behaviorsIdx]) : modeConfig[key].allowedBehaviors || [];
+      modeConfig[key].writeToCalendar = boolIdx !== -1 ? this.coerceBoolean(row[boolIdx]) : modeConfig[key].writeToCalendar || false;
+
+      if (isSelected) {
+        modeConfig.selected = modeConfig[key];
+      }
+    }
+
+    const chosen = modeConfig.selected || modeConfig[Object.keys(modeConfig)[0]] || {};
+    const normalized = {
+      mode: chosen.mode || selectedMode || "Draft 26-27",
+      syncMode: chosen.syncMode || "",
+      logTypes: chosen.logTypes && chosen.logTypes.length ? chosen.logTypes.join(", ") : "",
+      allowedBehaviors: chosen.allowedBehaviors || [],
+      allowedLogTypes: chosen.logTypes || [],
+      writeToCalendar: this.coerceBoolean(chosen.writeToCalendar)
+    };
+
+    if (behaviorsIdx !== -1 || logTypesIdx !== -1) {
+      normalized.behaviors = normalized.allowedBehaviors;
+    }
+
+    return normalized;
+  },
+
   /**
    * Reads 'ControlPanel' to set global variables
    */
   loadConfig: function(ss) {
     const sheet = ss.getSheetByName("ControlPanel");
+    const modeConfig = this.loadModeConfig(ss);
+    const defaults = { mode: modeConfig.mode || "Draft 26-27", syncWindow: { start: 14, end: 365 }, defaultDuration: 2, logTypes: modeConfig.logTypes || "", writeToCalendar: Boolean(modeConfig.writeToCalendar) };
+
     if (!sheet) {
-      return { mode: "Draft 26-27", syncWindow: { start: 14, end: 365 }, defaultDuration: 2 };
+      return defaults;
     }
 
     const data = sheet.getDataRange().getValues();
-    let config = { mode: "Draft 26-27", syncWindow: { start: 14, end: 365 }, defaultDuration: 2 };
+    let config = Object.assign({}, defaults);
 
     data.forEach(row => {
       const nam = row[0]; 
@@ -142,6 +240,10 @@ var Engine = {
       if (key === "Crew Draft Calendar ID") config.crewDraftCalendarId = val;
       if (nam && nam.toLowerCase() === "mode") config.mode = val;
     });
+
+    if (modeConfig.mode) config.mode = modeConfig.mode;
+    if (modeConfig.logTypes) config.logTypes = modeConfig.logTypes;
+    if (modeConfig.writeToCalendar !== undefined) config.writeToCalendar = Boolean(modeConfig.writeToCalendar);
     return config;
   },
 

@@ -1,14 +1,16 @@
-/*UPDATE_NOTES 8/17/26
-This script file seems to be largely out of date.
-It appears to have some conflict checking functions as well as sync functions. 
-I don't ever want to lose functionality that I have built. I may have made a more efficient function that is capable of the same action, but if I don't have a good way to trigger that, like a "preset", then it almost is like losing functionality. Maybe these turn into alias's or we make a series of aliases for common uses.
-*/
+/*
+ * Deprecated legacy sync script.
+ * This file is kept for reference and compatibility while the engine-based sync
+ * flow is authoritative. Prefer Engine.Sync.runMasterSync() and the Engine.* modules.
+ */
+console.warn("Legacy venue sync script is deprecated; use Engine.Sync.runMasterSync() instead.");
 
 /**
  * ONE-WAY MIRROR: Pulls facility data into Venue_Cal_Log for comparison.
  * Respects the 18-column VENUECALMAP and 10-column ID Registry.
  */
 function syncVenueCalendarsToLog(ctx) {
+  console.warn("syncVenueCalendarsToLog() is deprecated; use Engine.Sync.mirrorVenues(ctx) instead.");
   //UPDATE_NOTES 8/17/26
   //Not called
   
@@ -82,8 +84,7 @@ function syncVenueCalendarsToLog(ctx) {
 
 
 function checkRoomConflicts() {
-  //UPDATE_NOTES 8/17/26
-  //Not called
+  console.warn("checkRoomConflicts() is deprecated; use Engine.Sync.reconcileLogs(ctx) instead.");
   //Originally intended to identify when a room was double-booked. Am I trying to schedule over an existing event? Am I about to make a duplicate event?
 
 

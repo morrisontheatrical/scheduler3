@@ -207,14 +207,65 @@ Engine.Maintenance.resetHeaders = function(ctx) {
  * Scans physical sheet headers and updates Map_Registry to match reality.
  * Run this if columns have been moved or added.
  */
+function ensureRegistryRowsForSheet(ss, sheetName, fieldNames) {
+  const registrySheet = ss.getSheetByName("Map_Registry");
+  if (!registrySheet) return 0;
+
+  const data = registrySheet.getDataRange().getValues();
+  if (!data.length) return 0;
+
+  const headers = data[0];
+  const colSheetName = headers.indexOf("Sheet Name");
+  const colFieldName = headers.indexOf("Field Name");
+  const colIndex = headers.indexOf("Column Index");
+  const colRole = headers.indexOf("Role");
+
+  const existing = new Set();
+  for (let i = 1; i < data.length; i++) {
+    const sName = data[i][colSheetName];
+    const fName = data[i][colFieldName];
+    if (sName && fName) existing.add(`${sName}::${fName}`);
+  }
+
+  let added = 0;
+  fieldNames.forEach((fieldName, index) => {
+    const key = `${sheetName}::${fieldName}`;
+    if (existing.has(key)) return;
+
+    const nextRow = data.length + added + 1;
+    registrySheet.getRange(nextRow, colSheetName + 1).setValue(sheetName);
+    registrySheet.getRange(nextRow, colFieldName + 1).setValue(fieldName);
+    if (colIndex !== -1) registrySheet.getRange(nextRow, colIndex + 1).setValue(index);
+    if (colRole !== -1) registrySheet.getRange(nextRow, colRole + 1).setValue("System");
+    added += 1;
+  });
+
+  return added;
+}
+
 function repairMapRegistry() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const registrySheet = ss.getSheetByName("Map_Registry");
-  if (!registrySheet) return;
+  if (!registrySheet) {
+    const newSheet = ss.insertSheet("Map_Registry");
+    newSheet.appendRow(["Sheet Name", "Field Name", "Column Index", "Header Name", "Label", "Role", "Behavior", "Sync Mode"]);
+    return;
+  }
+
+  const requiredSheetRows = {
+    "Mode_Config": ["Mode", "SyncMode", "AllowedBehaviors", "LogTypes", "WriteToCalendar", "Description"],
+    "Lookup": ["Venue", "CalendarID", "CallType", "Series", "Crew", "Options"]
+  };
+
+  let addedTotal = 0;
+  Object.keys(requiredSheetRows).forEach(function(sheetName) {
+    addedTotal += ensureRegistryRowsForSheet(ss, sheetName, requiredSheetRows[sheetName]);
+  });
 
   const data = registrySheet.getDataRange().getValues();
+  if (!data.length) return;
+
   const headers = data[0];
-  
   const col_sheetName = headers.indexOf("Sheet Name");
   const col_fieldName = headers.indexOf("Field Name");
   const col_index = headers.indexOf("Column Index");
@@ -232,26 +283,26 @@ function repairMapRegistry() {
     const actualHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
     const actualIdx = actualHeaders.indexOf(fName);
 
-    // If the field exists but the index is wrong, fix it in the Registry
     if (actualIdx !== -1 && actualIdx !== data[i][col_index]) {
       registrySheet.getRange(i + 1, col_index + 1).setValue(actualIdx);
       repairs++;
     }
   }
-  
-  console.log(`Repair Complete: Updated ${repairs} column mappings.`);
+
+  console.log(`Repair Complete: Added ${addedTotal} rows and updated ${repairs} column mappings.`);
 }
 
 /**
- * Resets the Maintenance flag in the ControlPanel and logs completion.
+ * Deprecated: this placeholder was left over from the old maintenance flow.
+ * The engine now owns environment validation and header repair directly.
  */
 function finalizeMaintenance(summary) {
-  // Logic to find 'Maintenance' in ControlPanel and set Value to FALSE
-  // This prevents the maintenance script from running every sync cycle.
+  console.warn("finalizeMaintenance() is deprecated; use Engine.Maintenance.runHealthCheck() or Engine.Maintenance.resetHeaders(ctx) instead.");
+  return summary || "Deprecated maintenance call";
 }
 /**
- * Moved from engine_sync.gs. 
- * Place this inside engine_maintenance.gs or execute it only when necessary.
+ * Deprecated bootstrap helper. Prefer using Engine.getContext() and the maintenance
+ * primitives in Engine.Maintenance directly.
  */
 function repairEngineEnvironmentDefaults() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();

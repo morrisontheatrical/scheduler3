@@ -1,18 +1,9 @@
 /**
- * Scans a Source sheet against a Destination sheet and logs discrepancies.
- * Automatically resolves 'Date' vs 'DatesAndTimes' column mappings.
- *
- * @param {string} stageName - Workflow stage for logging.
- * @param {string} sourceName - Source sheet name.
- * @param {string} destName - Destination sheet name.
- * @param {Object} sourceMap - Mapping object for source sheet columns.
- * @param {Object} destMap - Mapping object for destination sheet columns.
- * @param {string} sourceIdKey - Map key for source ID.
- * @param {string} destIdKey - Map key for destination ID.
- * @param {string} [dateKey] - Optional map key for date column override.
- * @return {number} Count of discrepancies found.
+ * Deprecated legacy verification helper.
+ * Prefer Engine.Maintenance.runHealthCheck() and the engine sync/reconcile flow.
  */
 function verifySheetSync(stageName, sourceName, destName, sourceMap, destMap, sourceIdKey, destIdKey, dateKey) {
+  console.warn("verifySheetSync() is deprecated; use Engine.Sync and Engine.Maintenance instead.");
   //UPDATE_NOTES 8/17/26
   //This is a combined function of verifyImport / verifyTDL / verifyEvent from 0_verify.gs
   //Not called

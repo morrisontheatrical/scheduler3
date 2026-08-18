@@ -130,11 +130,13 @@ function getCalEvents(calendarId) {
 }
 
 function updateCCL(){
-  //UPDATE_NOTES 8/17/26
-  //Not called
+  console.warn("updateCCL() is deprecated; use Engine.Sync.runMasterSync() instead.");
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    return Engine.Sync.runMasterSync();
+  }
 
   const data = logSheet.getDataRange().getValues();
-  const target = SL.getCalID("Draft 26-27"); 
+  const target = SL && SL.getCalID ? SL.getCalID("Draft 26-27") : null;
   const destCal = CalendarApp.getCalendarById(target.id);
 
   for (let i = 1; i < data.length; i++) {
@@ -199,14 +201,16 @@ function updateLogFromCalendar(calendarEvent) {
 
 
 function updateCrewCalLog() {
-  //UPDATE_NOTES 8/17/26
-  //Not called
+  console.warn("updateCrewCalLog() is deprecated; use Engine.Sync.runMasterSync() instead.");
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    return Engine.Sync.runMasterSync();
+  }
 
   const data = logSheet.getDataRange().getValues();
   let count = 0;
 
   // --- THIS IS WHERE YOU DEFINE THE DESTINATION ---
-  const target = SL.getCalID("Draft 26-27"); 
+  const target = SL && SL.getCalID ? SL.getCalID("Draft 26-27") : null;
   const destCal = CalendarApp.getCalendarById(target.id);
 
   //for each line on log sheet

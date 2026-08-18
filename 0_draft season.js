@@ -1,12 +1,13 @@
 
 /**
- * STAGE 5: Promotes rows from Crew_Calendar_Log to the Calendar.
- * Respects Tags: Bypass, Push to Calendar, Delete from Calendar, AutoSync.
+ * Deprecated legacy entrypoint.
+ * Prefer Engine.Sync.runMasterSync() and the Engine.* modules.
  */
 function writeNewSeason() {
-  //UPDATE_NOTES 8/17/26
-  //Refactor column references to ctx.sheets.CREWCAL.map and replace direct CalendarApp calls with Engine.Calendar.
-  //Not called
+  console.warn("writeNewSeason() is deprecated; use Engine.Sync.runMasterSync() instead.");
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    return Engine.Sync.runMasterSync();
+  }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const CONFIG = getGlobalConfig(); 
@@ -106,16 +107,18 @@ function writeNewSeason() {
 }
 
 function pullDraftCal(){
-  //scan calendar for events to add to crew calendar log
-  // Get the target calendar (Draft 26-27)
-  const target = SL.getCalID("Draft 26-27"); 
-  const cal = CalendarApp.getCalendarById(target.id);
+  console.warn("pullDraftCal() is deprecated; use Engine.Sync or Engine.Calendar helpers instead.");
+  if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
+    return Engine.Sync.runMasterSync();
+  }
+
+  const target = SL && SL.getCalID ? SL.getCalID("Draft 26-27") : null;
+  const cal = target ? CalendarApp.getCalendarById(target.id) : null;
   if (!cal) {
     SpreadsheetApp.getUi().alert("Draft Calendar not found.");
     return;
   }
-  pullCalendarUpdatesToLog(cal,"Draft 26-27")
-
+  pullCalendarUpdatesToLog(cal, "Draft 26-27");
 }
 
  /**
@@ -123,12 +126,10 @@ function pullDraftCal(){
  * Use with caution!
  */
 function wipeDraftSeasonCal() {
+  console.warn("wipeDraftSeasonCal() is deprecated; use Engine.Maintenance or a dedicated delete utility instead.");
   const ui = SpreadsheetApp.getUi();
   
-  // 1. Get the Calendar ID (Using your getCalendar helper or manual ID)
-  // Example: target = getCalendar("Draft 26-27");
-  
-  const cal = SL.getDraftCalendar();
+  const cal = SL && SL.getDraftCalendar ? SL.getDraftCalendar() : null;
   if (!cal) {
     ui.alert("Error: Calendar not found. Check the ID.");
     return;
