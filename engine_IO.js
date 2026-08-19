@@ -36,17 +36,28 @@ function batchWrite(role, dataObjects, ctx) {
   // FIX: Extract the .index property from the map objects to find the max index
   const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field));
   const lastCol = Math.max(...indices) + 1;
+  const generateIdentity = (dataObj) => {
+    const identityInput = {
+      title: dataObj.Title || dataObj.EventName,
+      date: dataObj.Date,
+      time: dataObj.Start || dataObj.CallTime,
+      venue: dataObj.Location || dataObj.Venue
+    };
+
+    if (typeof SL !== "undefined" && SL.Identity && typeof SL.Identity.generate === "function") {
+      return SL.Identity.generate(identityInput);
+    }
+    if (typeof scriptLib !== "undefined" && scriptLib.Identity && typeof scriptLib.Identity.generate === "function") {
+      return scriptLib.Identity.generate(identityInput);
+    }
+    return null;
+  };
   
   const output = dataObjects.map(obj => {
-    // 1. Generate Identity Hash (using scriptLib / SL)
+    // 1. Generate Identity Hash when the shared library is available.
     if (map.SyncHash !== undefined) {
-      const identity = SL.Identity.generate({
-        title: obj.Title || obj.EventName, // Handle naming discrepancies
-        date: obj.Date,
-        time: obj.Start || obj.CallTime,
-        venue: obj.Location || obj.Venue
-      });
-      obj.SyncHash = identity.hash;
+      const identity = generateIdentity(obj);
+      if (identity && identity.hash) obj.SyncHash = identity.hash;
     }
 
     // 2. Map object properties to the correct column 0-based indices
@@ -77,9 +88,17 @@ function patchRows(role, updatedObjects, ctx) {
   updatedObjects.forEach(obj => {
     if (!obj._rowNum) return; // We need to know which row to hit
     
-    const identity = SL && SL.Identity && SL.Identity.generate ? SL.Identity.generate({
-      title: obj.Title, date: obj.Date, time: obj.Start, venue: obj.Location
-    }) : null;
+    const identityInput = {
+      title: obj.Title,
+      date: obj.Date,
+      time: obj.Start,
+      venue: obj.Location
+    };
+    const identity = typeof SL !== "undefined" && SL.Identity && typeof SL.Identity.generate === "function"
+      ? SL.Identity.generate(identityInput)
+      : typeof scriptLib !== "undefined" && scriptLib.Identity && typeof scriptLib.Identity.generate === "function"
+        ? scriptLib.Identity.generate(identityInput)
+        : null;
     if (identity) obj.SyncHash = identity.hash;
 
     const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field)).filter(index => index >= 0);

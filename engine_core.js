@@ -344,7 +344,7 @@ var Engine = {
         if (colIdx < 0) return;
         lookups.lists[fieldName] = cleanColumn
           ? cleanColumn(listData, colIdx)
-          : listData.slice(1).map(row => row[colIdx]).filter(value => value !== "" && value !== null && value !== undefined);
+          : listData.map(row => row[colIdx]).filter(value => value !== "" && value !== null && value !== undefined);
       });
     }
     

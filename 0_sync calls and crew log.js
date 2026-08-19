@@ -2,8 +2,6 @@
  * Deprecated legacy sync script.
  * Prefer Engine.Sync.runMasterSync() and the Engine.* modules.
  */
-console.warn("Legacy call-sync script is deprecated; use Engine.Sync.runMasterSync() instead.");
-
 function syncCallsToCrewLog() {
   console.warn("syncCallsToCrewLog() is deprecated; use Engine.Sync.runMasterSync() instead.");
   if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {

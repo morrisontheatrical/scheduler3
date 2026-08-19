@@ -27,6 +27,9 @@ Engine.Maintenance = {
       const map = (ctx.sheetDefs[sheetName] || ctx.schema[sheetName]).map;
       const mappedFields = new Set();
 
+      // Lookup is a headerless validation-data sheet by design.
+      if (sheetName === "Lookup") return;
+
       Object.keys(map).forEach(fieldName => {
         const columnIndex = Engine.getColumnIndex(map, fieldName);
         mappedFields.add(fieldName);
@@ -175,10 +178,17 @@ Engine.Maintenance = {
  */
 Engine.Maintenance.resetHeaders = function(ctx) {
   const ss = ctx.ss;
-  const maps = ctx.maps;
+  const sheetDefs = ctx.sheetDefs || {};
+  const headerlessSheets = new Set(["Lookup", "import"]);
 
-  for (const [sheetName, columnMap] of Object.entries(maps)) {
-    const sheet = ss.getSheetByName(sheetName);
+  for (const [sheetName, sheetDef] of Object.entries(sheetDefs)) {
+    if (headerlessSheets.has(sheetName)) {
+      console.warn(`Maintenance: Skipping header reset for headerless/raw sheet "${sheetName}".`);
+      continue;
+    }
+
+    const sheet = sheetDef.sheet || ss.getSheetByName(sheetName);
+    const columnMap = sheetDef.map || {};
     if (!sheet) {
       console.warn(`Maintenance: Sheet "${sheetName}" defined in Map_Registry not found.`);
       continue;
@@ -212,7 +222,7 @@ Engine.Maintenance.resetHeaders = function(ctx) {
       details: "Headers synchronized with Map_Registry." 
     });
   }
-  notify("All sheet headers have been calibrated to the Map_Registry.");
+  console.log("All eligible sheet headers have been calibrated to the Map_Registry.");
 };
 /**
  * Scans all sheets defined in the Map_Registry and updates the 'Column Index'

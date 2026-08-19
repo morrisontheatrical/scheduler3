@@ -87,7 +87,16 @@ function goHealthCheck() {
 
   const reports = Engine.Maintenance.runHealthCheck();
   const msg = reports.join('\n');
-  SpreadsheetApp.getUi().alert('System Health Check', msg, SpreadsheetApp.getUi().ButtonSet.OK);
+  console.log(msg);
+
+  try {
+    const ui = SpreadsheetApp.getUi();
+    ui.alert('System Health Check', msg, ui.ButtonSet.OK);
+  } catch (error) {
+    console.warn(`System Health Check completed without spreadsheet UI: ${error.message}`);
+  }
+
+  return reports;
 }
 
 function resetHeadersMenu() {
