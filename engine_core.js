@@ -1,13 +1,9 @@
-/*UPDATE_NOTES 8/17/26
-ctx.maps is referenced constantly but never created
-Engine.getContext() (in engine_core.js) builds ctx.sheets and gives you ctx.getMap(identifier) as a method — but it never sets a ctx.maps property.
-Fix direction: either add ctx.maps = ctx.sheets mapping logic (each .map extracted) during getContext(), or replace every ctx.maps.X reference with ctx.getMap("X"). Pick one and standardize — don't keep two names for the same thing.
+/**
+ * FILE: Engine_Core.gs
+ * PURPOSE: Central Context, Logging, and Status Management.
+ */
 
-ctx.settings and ctx.mode are referenced but never created either
-
-
-
-*/
+//Standardize ctx.getMap() Usage: To resolve the ctx.maps note, maintain ctx.maps during getContext() for backward compatibility, but update all internal engine calls to consistently use ctx.getMap(identifier).
 
 /* GLOBAL CONSTANTS
  * Use these for initializing 'System' sheets that the Engine requires to boot. getContext will update this with current values
@@ -21,10 +17,7 @@ const S_SYS = {
   LOOKUP: "Lookup",
   ID_LOG: "idLog"
 };
-/**
- * FILE: Engine_Core.gs
- * PURPOSE: Central Context, Logging, and Status Management.
- */
+
 
 var Engine = {
   /**
@@ -144,7 +137,7 @@ var Engine = {
   },
 
   loadModeConfig: function(ss, requestedModeName) {
-    const sheet = ss.getSheetByName("Mode_Config");
+    const sheet = ss.getSheetByName("Mode_Config"); //hardcoded here because maps haven't been loaded to context yet?
     if (!sheet) return this.getDefaultMode();
 
     const data = sheet.getDataRange().getValues();
@@ -258,7 +251,7 @@ var Engine = {
     return config;
   },
 
-  loadControlPanelSettings: function(ss) {
+  loadControlPanelSettings: function(ss) { //what is the difference between this and loadConfig? This is a more generic version that returns all key-value pairs, not just the ones we care about for config.
     const sheet = ss.getSheetByName("ControlPanel");
     if (!sheet) return {};
 
@@ -266,8 +259,8 @@ var Engine = {
     const settings = {};
 
     data.forEach(row => {
-      const label = row[0];
-      const key = row[1] || row[0];
+      const label = row[0];  //why is it label as opposed to name? In loadConfig, we use row[0] as 'nam' and row[1] as 'key'. Here, we treat row[0] as label and row[1] as key. This is an inconsistency to clean up.
+      const key = row[1] || row[0]; // Use key if available, otherwise fallback to label
       const value = row[2];
       if (!key && value === undefined) return;
 
@@ -331,6 +324,7 @@ var Engine = {
     }
 
     // 2. Process Lookup Lists using ctx.sheets["Lookup"].map
+    //Shouldn't this also load the "ref" sheet??
     const listSheet = ss.getSheetByName("Lookup");
     const lookupSheetDef = ctx.sheetDefs["Lookup"] || ctx.schema["Lookup"] || ctx.getMap("Lookup");
     
@@ -411,7 +405,7 @@ var Engine = {
     });
   },
 
-  buildLegacyMapAliases: function(ctx) {
+  buildLegacyMapAliases: function(ctx) { //what is this for?
     ctx.maps = ctx.maps || {};
     ctx.schema = ctx.schema || {};
 

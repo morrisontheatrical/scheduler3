@@ -1,3 +1,7 @@
+//TO DO: add CreateEvent function
+//Check: In Engine.Calendar.pullCalendarEvents, Engine.Log.write() references undefined variables (logContext, sheetName, rowIdx, statusName).
+//Fix: Remove or rewrite the debug log entry to use defined properties (calObj.venueName, calObj.id).
+
 // Ensure Engine exists
 var Engine = Engine || {};
 

@@ -1,3 +1,6 @@
+//TO Do: finish updating scriptLib library references to SL. instead of Lib. I thought we had fixed all of these already!
+
+
 // At the top of engine_calendar.gs, engine_sync.gs, etc.
 var Engine = Engine || {};
 
@@ -63,7 +66,7 @@ function goParent() {
     }
   });
 
-  Engine.Log.write("Parent Lineup Updated", "Success");
+  Engine.Log.write("Parent Lineup Updated", "Success"); //Is this correct syntax? We need to take a look at the logging capabilities again. 
 }
 
 /**

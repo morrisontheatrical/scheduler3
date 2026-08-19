@@ -3,6 +3,9 @@
 // PURPOSE: Orchestrates the Pull, Reconcile, and Push operations for the system.
 // ==============================================================================
 
+//Check: Engine.Sync.reconcileLogs references ctx.lookup.statusBehavior[crewRow.SyncStatus], but status rules are stored in ctx.status.
+//Fix: Replace with ctx.status[crewRow.SyncStatus]?.behavior.
+
 var Engine = Engine || {};
 
 Engine.Sync = {
