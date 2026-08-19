@@ -107,18 +107,19 @@ var Engine = {
      * Usage: const emailIdx = ctx.getCol('CREWCAL', 'Email');
      */
     ctx.getCol = function(identifier, fieldName) {
-      const map = this.getMap(identifier);
-      if (map && map[fieldName] !== undefined) {
-        const fieldDef = map[fieldName];
-        if (typeof fieldDef === "object" && fieldDef !== null && fieldDef.index !== undefined) {
-          return Number(fieldDef.index);
-        }
-        return Number(fieldDef);
-      }
-      return -1;
+      return Engine.getColumnIndex(this.getMap(identifier), fieldName);
     };
 
     return ctx;
+  },
+
+  getColumnIndex: function(map, fieldName) {
+    if (!map || map[fieldName] === undefined || map[fieldName] === null) return -1;
+
+    const fieldDef = map[fieldName];
+    const rawIndex = typeof fieldDef === "object" ? fieldDef.index : fieldDef;
+    const columnIndex = Number(rawIndex);
+    return Number.isInteger(columnIndex) && columnIndex >= 0 ? columnIndex : -1;
   },
 
   parseModeList: function(value) {
@@ -340,7 +341,8 @@ var Engine = {
       }
 
       Object.keys(map).forEach(fieldName => {
-        const colIdx = map[fieldName].index !== undefined ? map[fieldName].index : Number(map[fieldName]);
+        const colIdx = this.getColumnIndex(map, fieldName);
+        if (colIdx < 0) return;
         lookups.lists[fieldName] = cleanColumn
           ? cleanColumn(listData, colIdx)
           : listData.slice(1).map(row => row[colIdx]).filter(value => value !== "" && value !== null && value !== undefined);
@@ -450,11 +452,14 @@ var Engine = {
       const now = new Date();
 
       // Update columns based on Map_Registry
-      if (map.SyncStatus) sheet.getRange(rowIdx, Number((map.SyncStatus.index !== undefined ? map.SyncStatus.index : map.SyncStatus)) + 1).setValue(statusName);
-      if (map.LastSynced) sheet.getRange(rowIdx, Number((map.LastSynced.index !== undefined ? map.LastSynced.index : map.LastSynced)) + 1).setValue(now);
+      const syncStatusCol = Engine.getColumnIndex(map, "SyncStatus");
+      const lastSyncedCol = Engine.getColumnIndex(map, "LastSynced");
+      const updateDetailsCol = Engine.getColumnIndex(map, "UpdateDetails");
+      if (syncStatusCol >= 0) sheet.getRange(rowIdx, syncStatusCol + 1).setValue(statusName);
+      if (lastSyncedCol >= 0) sheet.getRange(rowIdx, lastSyncedCol + 1).setValue(now);
       
-      if (logContext.details && map.UpdateDetails) {
-         sheet.getRange(rowIdx, Number((map.UpdateDetails.index !== undefined ? map.UpdateDetails.index : map.UpdateDetails)) + 1).setValue(logContext.details);
+      if (logContext.details && updateDetailsCol >= 0) {
+        sheet.getRange(rowIdx, updateDetailsCol + 1).setValue(logContext.details);
       }
 
       sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);

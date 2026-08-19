@@ -16,7 +16,7 @@ Engine.Maintenance = {
     const ctx = Engine.getContext();
     const reports = [];
 
-    Object.keys(ctx.schema).forEach(sheetName => {
+    Object.keys(ctx.sheetDefs || ctx.schema).forEach(sheetName => {
       const sheet = ctx.ss.getSheetByName(sheetName);
       if (!sheet) {
         reports.push(`❌ Missing Sheet: ${sheetName}`);
@@ -24,12 +24,22 @@ Engine.Maintenance = {
       }
       
       const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-      const map = ctx.schema[sheetName].map;
+      const map = (ctx.sheetDefs[sheetName] || ctx.schema[sheetName]).map;
+      const mappedFields = new Set();
       
       // Compare map keys to actual headers
       Object.entries(map).forEach(([fieldName, index]) => {
-        if (headers[index] !== fieldName) {
-          reports.push(`⚠️ Header Mismatch in ${sheetName}: Expected "${fieldName}" at index ${index}, found "${headers[index]}"`);
+        const columnIndex = Engine.getColumnIndex({ field: index }, "field");
+        mappedFields.add(fieldName);
+        if (!Number.isInteger(columnIndex) || headers[columnIndex] !== fieldName) {
+          reports.push(`⚠️ Header Mismatch in ${sheetName}: Expected "${fieldName}" at index ${columnIndex}, found "${headers[columnIndex] || ""}"`);
+        }
+      });
+
+      headers.forEach(header => {
+        const fieldName = String(header || "").trim();
+        if (fieldName && !mappedFields.has(fieldName)) {
+          reports.push(`⚠️ Unmapped physical header in ${sheetName}: "${fieldName}"`);
         }
       });
     });
@@ -174,14 +184,19 @@ Engine.Maintenance.resetHeaders = function(ctx) {
     }
 
     // Determine the max column index defined in the map
-    const indices = Object.values(columnMap);
+    const indices = Object.keys(columnMap)
+      .map(fieldName => Engine.getColumnIndex(columnMap, fieldName))
+      .filter(index => index >= 0);
+    if (!indices.length) continue;
     const maxCol = Math.max(...indices);
     
     // Create a header array of the necessary length
     const newHeaders = new Array(maxCol + 1).fill("");
 
     // Fill the header array based on the Map_Registry keys
-    for (const [headerName, colIdx] of Object.entries(columnMap)) {
+    for (const headerName of Object.keys(columnMap)) {
+      const colIdx = Engine.getColumnIndex(columnMap, headerName);
+      if (colIdx < 0) continue;
       newHeaders[colIdx] = headerName;
     }
 
@@ -207,100 +222,124 @@ Engine.Maintenance.resetHeaders = function(ctx) {
  * Scans physical sheet headers and updates Map_Registry to match reality.
  * Run this if columns have been moved or added.
  */
-function ensureRegistryRowsForSheet(ss, sheetName, fieldNames) {
-  const registrySheet = ss.getSheetByName("Map_Registry");
-  if (!registrySheet) return 0;
+function repairMapRegistry() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let registrySheet = ss.getSheetByName("Map_Registry");
+  if (!registrySheet) {
+    registrySheet = ss.insertSheet("Map_Registry");
+    registrySheet.appendRow(["Sheet Name", "Field Name", "Column Index", "Header Name", "Label", "Role", "Behavior", "Sync Mode"]);
+  }
 
   const data = registrySheet.getDataRange().getValues();
-  if (!data.length) return 0;
+  if (!data.length) return ["Map_Registry has no header row."];
 
   const headers = data[0];
   const colSheetName = headers.indexOf("Sheet Name");
   const colFieldName = headers.indexOf("Field Name");
   const colIndex = headers.indexOf("Column Index");
   const colRole = headers.indexOf("Role");
+  const reports = [];
 
-  const existing = new Set();
-  for (let i = 1; i < data.length; i++) {
-    const sName = data[i][colSheetName];
-    const fName = data[i][colFieldName];
-    if (sName && fName) existing.add(`${sName}::${fName}`);
+  if (colSheetName === -1 || colFieldName === -1 || colIndex === -1) {
+    return ["Map_Registry is missing Sheet Name, Field Name, or Column Index headers."];
   }
+
+  const settingsSheet = ss.getSheetByName("Sheet_Settings");
+  const managedSheetNames = new Set();
+  if (settingsSheet && settingsSheet.getLastRow() > 1) {
+    const settings = settingsSheet.getRange(2, 1, settingsSheet.getLastRow() - 1, 1).getValues();
+    settings.forEach(row => {
+      const sheetName = String(row[0] || "").trim();
+      if (sheetName) managedSheetNames.add(sheetName);
+    });
+  }
+
+  const registrySheetNames = new Set();
+  const registryRows = new Map();
+  for (let i = 1; i < data.length; i++) {
+    const sheetName = String(data[i][colSheetName] || "").trim();
+    const fieldName = String(data[i][colFieldName] || "").trim();
+    if (!sheetName || !fieldName) continue;
+
+    registrySheetNames.add(sheetName);
+    const key = `${sheetName}::${fieldName}`;
+    if (!registryRows.has(key)) registryRows.set(key, []);
+    registryRows.get(key).push({ rowNumber: i + 1, row: data[i] });
+  }
+
+  const sheetNames = managedSheetNames.size ? managedSheetNames : registrySheetNames;
+  registrySheetNames.forEach(sheetName => {
+    if (!sheetNames.has(sheetName)) reports.push(`Registry entry has no managed sheet: ${sheetName}`);
+  });
 
   let added = 0;
-  fieldNames.forEach((fieldName, index) => {
-    const key = `${sheetName}::${fieldName}`;
-    if (existing.has(key)) return;
+  let updated = 0;
 
-    const nextRow = data.length + added + 1;
-    registrySheet.getRange(nextRow, colSheetName + 1).setValue(sheetName);
-    registrySheet.getRange(nextRow, colFieldName + 1).setValue(fieldName);
-    if (colIndex !== -1) registrySheet.getRange(nextRow, colIndex + 1).setValue(index);
-    if (colRole !== -1) registrySheet.getRange(nextRow, colRole + 1).setValue("System");
-    added += 1;
-  });
-
-  return added;
-}
-
-function repairMapRegistry() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const registrySheet = ss.getSheetByName("Map_Registry");
-  if (!registrySheet) {
-    const newSheet = ss.insertSheet("Map_Registry");
-    newSheet.appendRow(["Sheet Name", "Field Name", "Column Index", "Header Name", "Label", "Role", "Behavior", "Sync Mode"]);
-  }
-
-  const requiredSheetRows = {
-    "Mode_Config": ["Mode Name", "Description", "IsActive", "SyncMode", "ConflictPolicy", "PreferredTruth", "WriteToCalendar", "WriteToSheet", "UseLiveVenueMirroring", "AllowedBehaviors", "AllowedLogTypes"],
-    "Lookup": ["Venue", "CalendarID", "CallType", "Series", "Crew", "Options"]
-  };
-
-  let addedTotal = 0;
-  Object.keys(requiredSheetRows).forEach(function(sheetName) {
-    addedTotal += ensureRegistryRowsForSheet(ss, sheetName, requiredSheetRows[sheetName]);
-  });
-
-  const data = registrySheet.getDataRange().getValues();
-  if (!data.length) return;
-
-  const headers = data[0];
-  const col_sheetName = headers.indexOf("Sheet Name");
-  const col_fieldName = headers.indexOf("Field Name");
-  const col_index = headers.indexOf("Column Index");
-
-  let repairs = 0;
-
-  for (let i = 1; i < data.length; i++) {
-    const sName = data[i][col_sheetName];
-    const fName = data[i][col_fieldName];
-    if (!sName || !fName) continue;
-
-    const targetSheet = ss.getSheetByName(sName);
-    if (!targetSheet) continue;
+  sheetNames.forEach(sheetName => {
+    const targetSheet = ss.getSheetByName(sheetName);
+    if (!targetSheet) {
+      reports.push(`Managed sheet not found: ${sheetName}`);
+      return;
+    }
 
     const actualHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
-    const actualIdx = actualHeaders.indexOf(fName);
+    const physicalFields = new Map();
+    actualHeaders.forEach((header, index) => {
+      const fieldName = String(header || "").trim();
+      if (!fieldName) return;
+      if (physicalFields.has(fieldName)) {
+        reports.push(`Duplicate header in ${sheetName}: ${fieldName}`);
+      } else {
+        physicalFields.set(fieldName, index);
+      }
+    });
 
-    if (actualIdx !== -1 && actualIdx !== data[i][col_index]) {
-      registrySheet.getRange(i + 1, col_index + 1).setValue(actualIdx);
-      repairs++;
-    }
-  }
+    physicalFields.forEach((physicalIndex, fieldName) => {
+      const key = `${sheetName}::${fieldName}`;
+      const matches = registryRows.get(key) || [];
+      if (matches.length > 1) reports.push(`Duplicate registry entry: ${key}`);
 
-  const details = `Repair Complete: Added ${addedTotal} rows and updated ${repairs} column mappings.`;
+      if (!matches.length) {
+        const newRow = new Array(headers.length).fill("");
+        newRow[colSheetName] = sheetName;
+        newRow[colFieldName] = fieldName;
+        newRow[colIndex] = physicalIndex;
+        if (colRole !== -1) newRow[colRole] = "System";
+        registrySheet.appendRow(newRow);
+        added++;
+        return;
+      }
+
+      const registryRow = matches[0];
+      if (Number(registryRow.row[colIndex]) !== physicalIndex) {
+        registrySheet.getRange(registryRow.rowNumber, colIndex + 1).setValue(physicalIndex);
+        updated++;
+      }
+    });
+
+    registryRows.forEach((matches, key) => {
+      if (!key.startsWith(`${sheetName}::`)) return;
+      const fieldName = key.slice(sheetName.length + 2);
+      if (!physicalFields.has(fieldName)) reports.push(`Registry field not found in ${sheetName}: ${fieldName}`);
+    });
+  });
+
+  const details = `Repair Complete: Added ${added} rows and updated ${updated} column mappings.`;
   console.log(details);
+  reports.forEach(report => console.warn(report));
 
   try {
     const ctx = Engine.getContext();
     Engine.Log.write(ctx, {
       stage: "MAINTENANCE",
       type: "MAP_REPAIR",
-      details: details
+      details: `${details}${reports.length ? ` Warnings: ${reports.join(" | ")}` : ""}`
     });
   } catch (error) {
     console.warn(`Map registry repair completed, but Audit_Log could not be updated: ${error.message}`);
   }
+
+  return [details].concat(reports);
 }
 
 /**

@@ -12,7 +12,8 @@ function scanSheet(role, ctx) {
   return data.map((row, index) => {
     const obj = { _rowNum: index + 2 }; // Keep track of the actual row for individual updates
     for (const field in map) {
-      const colIndex = map[field] && map[field].index !== undefined ? map[field].index : map[field];
+      const colIndex = Engine.getColumnIndex(map, field);
+      if (colIndex < 0) continue;
       obj[field] = row[colIndex];
     }
     return obj;
@@ -33,7 +34,7 @@ function batchWrite(role, dataObjects, ctx) {
   }
 
   // FIX: Extract the .index property from the map objects to find the max index
-  const indices = Object.values(map).map(m => m.index);
+  const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field));
   const lastCol = Math.max(...indices) + 1;
   
   const output = dataObjects.map(obj => {
@@ -51,7 +52,8 @@ function batchWrite(role, dataObjects, ctx) {
     // 2. Map object properties to the correct column 0-based indices
     const row = new Array(lastCol).fill("");
     for (const field in map) {
-      const colIdx = map[field].index;
+      const colIdx = Engine.getColumnIndex(map, field);
+      if (colIdx < 0) continue;
       // Only write if the object actually has a value for this field
       if (obj.hasOwnProperty(field)) {
         row[colIdx] = obj[field];
@@ -80,10 +82,12 @@ function patchRows(role, updatedObjects, ctx) {
     }) : null;
     if (identity) obj.SyncHash = identity.hash;
 
-    const indices = Object.keys(map).map(field => Number(map[field] && map[field].index !== undefined ? map[field].index : map[field]));
+    const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field)).filter(index => index >= 0);
+    if (!indices.length) return;
     const rowArray = new Array(Math.max(...indices, 0) + 1).fill("");
     for (const field in map) {
-      const colIndex = map[field] && map[field].index !== undefined ? map[field].index : map[field];
+      const colIndex = Engine.getColumnIndex(map, field);
+      if (colIndex < 0) continue;
       rowArray[colIndex] = obj[field];
     }
     

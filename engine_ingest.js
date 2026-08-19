@@ -24,37 +24,41 @@ function goParent() {
   
   iData.shift(); // Remove headers
 
+  const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pCol(fieldName)).filter(index => index >= 0)) + 1;
+
   // Map existing Parent events by Name for quick lookup
   const pLookup = {};
   pData.forEach((row, idx) => {
-    const name = row[pMap.EventName];
-    if (name) pLookup[name] = { rowIdx: idx + 1, id: row[pMap.parentID] };
+    const name = row[pCol("EventName")];
+    if (name) pLookup[name] = { rowIdx: idx + 1, id: row[pCol("parentID")] };
   });
 
   iData.forEach((iRow) => {
-    const eventName = iRow[iMap.EventName]; // Match Registry: "EventName"
+    const eventName = iRow[iCol("EventName")];
     if (!eventName) return;
 
     const existing = pLookup[eventName];
-    let rowArray = new Array(Object.keys(pMap).length).fill("");
+    const rowArray = new Array(pWidth).fill("");
 
-    rowArray[pMap.EventName]    = eventName;
-    rowArray[pMap.Series]       = iRow[iMap.Series];
-    rowArray[pMap.Opening]      = iRow[iMap.Opening];
-    rowArray[pMap.Range]        = iRow[iMap.Range];
-    rowArray[pMap.DatesAndTimes]= iRow[iMap.DatesAndTimes]; // Registry says "DatesAndTimes"
-    rowArray[pMap.Venue]        = iRow[iMap.Venue];
-    rowArray[pMap.Pricing]      = iRow[iMap.Pricing];
-    rowArray[pMap.ShowNotes]    = iRow[iMap.ShowNotes];
+    rowArray[pCol("EventName")] = eventName;
+    rowArray[pCol("Series")] = iRow[iCol("Series")];
+    rowArray[pCol("Opening")] = iRow[iCol("Opening")];
+    rowArray[pCol("Range")] = iRow[iCol("Range")];
+    rowArray[pCol("DatesAndTimes")] = iRow[iCol("DatesAndTimes")];
+    rowArray[pCol("Venue")] = iRow[iCol("Venue")];
+    rowArray[pCol("Pricing")] = iRow[iCol("Pricing")];
+    rowArray[pCol("ShowNotes")] = iRow[iCol("ShowNotes")];
 
     if (existing) {
       // UPDATE: Record already exists
-      rowArray[pMap.parentID] = existing.id;
+      rowArray[pCol("parentID")] = existing.id;
       pSheet.getRange(existing.rowIdx, 1, 1, rowArray.length).setValues([rowArray]);
     } else {
       // INSERT: New event
-      rowArray[pMap.parentID] = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
-      rowArray[pMap.SyncStatus] = "Active";
+      rowArray[pCol("parentID")] = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
+      rowArray[pCol("SyncStatus")] = "Active";
       pSheet.appendRow(rowArray);
     }
   });
@@ -78,16 +82,20 @@ function goLineup() {
   
   pData.shift();
 
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
+  const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lCol(fieldName)).filter(index => index >= 0)) + 1;
+
   // Create lookup for existing children to avoid duplicates
   const existingRecords = {};
   lData.forEach((row, idx) => {
-    const key = `${row[lMap.parentID]}|${row[lMap.RawDateStr]}`;
-    existingRecords[key] = { rowIdx: idx + 1, uuid: row[lMap.UUID] };
+    const key = `${row[lCol("parentID")]}|${row[lCol("RawDateStr")]}`;
+    existingRecords[key] = { rowIdx: idx + 1, uuid: row[lCol("UUID")] };
   });
 
   pData.forEach((pRow) => {
-    const parentID = pRow[pMap.parentID];
-    const rawDates = pRow[pMap.DatesAndTimes];
+    const parentID = pRow[pCol("parentID")];
+    const rawDates = pRow[pCol("DatesAndTimes")];
     if (!parentID || !rawDates) return;
 
     // parseDatesFromRange is assumed to be in your scriptLib 
@@ -98,20 +106,20 @@ function goLineup() {
       const lookupKey = `${parentID}|${dateStr}`;
       const record = existingRecords[lookupKey];
 
-      let rowArray = new Array(Object.keys(lMap).length).fill("");
-      rowArray[lMap.EventName]    = pRow[pMap.EventName];
-      rowArray[lMap.parentID]     = parentID;
-      rowArray[lMap.Date]         = dObj;
-      rowArray[lMap.RawDateStr]   = dateStr;
-      rowArray[lMap.EventOfTotal] = `${index + 1} of ${performanceDates.length}`;
-      rowArray[lMap.Venue]        = pRow[pMap.Venue];
+      const rowArray = new Array(lWidth).fill("");
+      rowArray[lCol("EventName")] = pRow[pCol("EventName")];
+      rowArray[lCol("parentID")] = parentID;
+      rowArray[lCol("Date")] = dObj;
+      rowArray[lCol("RawDateStr")] = dateStr;
+      rowArray[lCol("EventOfTotal")] = `${index + 1} of ${performanceDates.length}`;
+      rowArray[lCol("Venue")] = pRow[pCol("Venue")];
 
       if (record) {
-        rowArray[lMap.UUID] = record.uuid; // Preserve UUID
+        rowArray[lCol("UUID")] = record.uuid;
         lSheet.getRange(record.rowIdx, 1, 1, rowArray.length).setValues([rowArray]);
       } else {
-        rowArray[lMap.UUID] = Lib.uuid(); // Generate new child ID [cite: 13]
-        rowArray[lMap.SyncStatus] = "Draft";
+        rowArray[lCol("UUID")] = Lib.uuid();
+        rowArray[lCol("SyncStatus")] = "Draft";
         lSheet.appendRow(rowArray);
       }
     });

@@ -164,7 +164,6 @@ function findExistingVenueEvent(plannedRow, vData) {
  */
 function syncPerformanceSpaces() {
   //UPDATE_NOTES 8/17/26
-  //Called by masterAggregatorSync() in 0_onOpen.gs
 
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();

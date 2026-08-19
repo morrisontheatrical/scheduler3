@@ -58,22 +58,3 @@ function openAuditLog() {
   }
 }
 
-
-function masterAggregatorSync() {
-  //UPDATE_NOTES 8/17/26
-  //This used to be how I would run a master sync. It seems depreciated and likely needs to be removed. I am leaving it for now as context. 
-
-  // 1. Sync Lineup data to Log (Phase 1)
-  syncLineupToCrewLog(); 
-  
-  // 2. Sync Performance Space data to Log (Phase 4)
-  syncPerformanceSpacesToLog(); 
-  
-  // 3. Sync Calls data to Log (Phase 3)
-  syncCallsToCrewLog(); 
-  
-  // 4. Update the Snapshot for Phase 5 comparison
-  //updateLogSnapshot();
-  
-  //postToExecutionLog("Master Aggregation Complete. All sources synced to Log.","SYSTEM");
-}

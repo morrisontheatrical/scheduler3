@@ -11,7 +11,6 @@ function syncCallsToCrewLog() {
   }
   //UPDATE_NOTES 8/17/26
   //Bind to ctx.sheets.CALLS.map and route UUID assignments through Engine.IDService
-  //Called by masterAggregatorSync()
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const callsSheet = ss.getSheetByName("Calls");

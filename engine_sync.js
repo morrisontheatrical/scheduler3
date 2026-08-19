@@ -24,12 +24,15 @@ Engine.Sync = {
     ctx.registry = {};
     const regData = ctx.sheets.ID_LOG.getDataRange().getValues();
     const regMap = ctx.maps.ID_LOG;
+    const uniqueIdCol = ctx.getCol("ID_LOG", "UniqueID");
+    const syncHashCol = ctx.getCol("ID_LOG", "SyncHash");
+    const sheetLocationCol = ctx.getCol("ID_LOG", "SheetLocation");
     for (let i = 1; i < regData.length; i++) {
-      const sId = regData[i][regMap.UniqueID];
+      const sId = regData[i][uniqueIdCol];
       if (sId) {
         ctx.registry[sId] = {
-          SyncHash: regData[i][regMap.SyncHash],
-          Location: regData[i][regMap.SheetLocation]
+          SyncHash: regData[i][syncHashCol],
+          Location: regData[i][sheetLocationCol]
         };
       }
     }
@@ -113,7 +116,7 @@ Engine.Sync = {
     const crewEvents = scanSheet('CREWCAL', ctx);
     const venueEvents = scanSheet('VENUECAL', ctx);
     const venueMap = buildRealityMap(venueEvents); 
-    const selectedLogs = ctx.mode.logTypes || ""; // e.g. "CONFLICT, ADOPT"
+    const allowedLogTypes = (ctx.mode && ctx.mode.allowedLogTypes) || [];
 
     crewEvents.forEach(crewRow => {
       const behavior = ctx.lookup.statusBehavior[crewRow.SyncStatus]; 
@@ -131,7 +134,7 @@ Engine.Sync = {
         });
         
         // Conditional Logging based on Mode
-        if (selectedLogs.includes("CONFLICT")) {
+        if (allowedLogTypes.includes("CONFLICT_VENUE")) {
           Engine.Log.write(ctx, { 
             type: "CONFLICT_VENUE", 
             details: `${crewRow.Title} conflicts with ${trueConflicts[0].Title}` 
@@ -149,7 +152,7 @@ Engine.Sync = {
             targetObj: crewRow
           });
           
-          if (selectedLogs.includes("ADOPT")) {
+          if (allowedLogTypes.includes("RECONCILE_ADOPT")) {
             Engine.Log.write(ctx, { type: "RECONCILE_ADOPT", details: `Match found for ${crewRow.Title}` });
           }
         }
