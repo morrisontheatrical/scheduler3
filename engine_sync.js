@@ -9,24 +9,32 @@ Engine.Sync = {
 
   runMasterSync: function() {
     // 1. Get Context
-  const ctx = Engine.getContext();
+    const ctx = Engine.getContext();
   
-  // 2. LOAD REGISTRY into Context (Crucial for Drift Detection)
-  // This builds a map of { sourceID: { SyncHash, Location } }
-  ctx.registry = {};
-  const regData = ctx.sheets.ID_LOG.getDataRange().getValues();
-  const regMap = ctx.maps.ID_LOG;
-  for (let i = 1; i < regData.length; i++) {
-    const sId = regData[i][regMap.UniqueID];
-    if (sId) {
-      ctx.registry[sId] = {
-        SyncHash: regData[i][regMap.SyncHash],
-        Location: regData[i][regMap.SheetLocation]
-      };
+    // 2. Log active mode at start
+    const activeMode = ctx.mode && ctx.mode.mode ? ctx.mode.mode : "Unknown";
+    const syncMode = ctx.mode && ctx.mode.syncMode ? ctx.mode.syncMode : "N/A";
+    Engine.Log.write(ctx, { 
+      stage: "SYS_INIT", 
+      details: `Starting sync in mode: ${activeMode} (SyncMode: ${syncMode})`
+    });
+  
+    // 3. LOAD REGISTRY into Context (Crucial for Drift Detection)
+    // This builds a map of { sourceID: { SyncHash, Location } }
+    ctx.registry = {};
+    const regData = ctx.sheets.ID_LOG.getDataRange().getValues();
+    const regMap = ctx.maps.ID_LOG;
+    for (let i = 1; i < regData.length; i++) {
+      const sId = regData[i][regMap.UniqueID];
+      if (sId) {
+        ctx.registry[sId] = {
+          SyncHash: regData[i][regMap.SyncHash],
+          Location: regData[i][regMap.SheetLocation]
+        };
+      }
     }
-  }
 
-  Engine.Log.write(ctx, { stage: "SYNC_START", details: "Initiating Master Sync" });
+    Engine.Log.write(ctx, { stage: "SYNC_START", details: "Initiating Master Sync" });
 
   try {
     // Phase 1: Mirror Building Reality
@@ -47,8 +55,16 @@ Engine.Sync = {
    * PHASE 1: MIRROR VENUES
    * Loops through Calendars.csv settings, uses Engine.Calendar to fetch data, 
    * and batch writes to Venue_Cal_Log.
+   * Skipped if ctx.mode.useLiveVenueMirroring is false.
    */
   mirrorVenues: function(ctx) {
+    const shouldMirror = ctx.mode && ctx.mode.useLiveVenueMirroring;
+    
+    if (!shouldMirror) {
+      Engine.Log.info(ctx, "PULL", "Skipped venue mirror: mode has useLiveVenueMirroring = false");
+      return;
+    }
+
     const role = "VENUECAL";
     
     // 1. Get the Sheet Name from our registered roles
@@ -146,8 +162,8 @@ Engine.Sync = {
   syncCrewCalendar: function(ctx) {
   const role = "CREWCAL";
   const crewEvents = scanSheet(role, ctx);
-  const selectedLogs = ctx.mode.logTypes || "";
-  const canWrite = ctx.mode.writeToCalendar;
+  const allowedLogTypes = (ctx.mode && ctx.mode.allowedLogTypes) || [];
+  const canWrite = (ctx.mode && ctx.mode.writeToCalendar) || false;
 
   // We need the Target Calendar ID (usually defined in Sheet_Settings or ControlPanel)
   const targetCalId = ctx.settings.ControlPanel["Crew Draft Calendar ID"];
@@ -169,7 +185,7 @@ Engine.Sync = {
           Engine.Status.apply(ctx, role, null, "Deleted by Calendar", { targetObj: crewRow });
           Engine.IDService.upsert(ctx, { id: crewRow.sourceID, status: "Deleted", details: "Removed from Cal" });
         }
-        if (selectedLogs.includes("CAL_CLEANUP")) {
+        if (allowedLogTypes.includes("CAL_CLEANUP")) {
           Engine.Log.write(ctx, { type: "CAL_CLEANUP", details: `Deleted event: ${crewRow.Title}` });
         }
       }
@@ -202,7 +218,7 @@ Engine.Sync = {
         Engine.Status.apply(ctx, role, null, "Calendar Log Updated", { targetObj: crewRow });
       }
       
-      if (selectedLogs.includes("PUSH_CAL")) {
+      if (allowedLogTypes.includes("PUSH_CAL")) {
         Engine.Log.write(ctx, { type: "PUSH_CAL", details: `Updated ${crewRow.Title} due to data drift.` });
       }
     }

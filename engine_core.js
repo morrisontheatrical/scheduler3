@@ -143,10 +143,10 @@ var Engine = {
 
   loadModeConfig: function(ss) {
     const sheet = ss.getSheetByName("Mode_Config");
-    if (!sheet) return {};
+    if (!sheet) return this.getDefaultMode();
 
     const data = sheet.getDataRange().getValues();
-    if (!data.length) return {};
+    if (!data.length) return this.getDefaultMode();
 
     const headers = data[0].map(h => String(h || "").trim().toLowerCase());
     const getIdx = (candidates) => {
@@ -157,59 +157,64 @@ var Engine = {
       return -1;
     };
 
-    const modeRowIdx = getIdx(["mode", "selectedmode", "active_mode", "active mode"]);
-    const syncModeIdx = getIdx(["syncmode", "sync_mode", "mode type", "current mode"]);
-    const logTypesIdx = getIdx(["logtypes", "allowedlogtypes", "log_types", "selectedlogs"]);
+    // 11-column schema: Mode Name, Description, IsActive, SyncMode, ConflictPolicy, PreferredTruth,
+    // WriteToCalendar, WriteToSheet, UseLiveVenueMirroring, AllowedBehaviors, AllowedLogTypes
+    const modeNameIdx = getIdx(["mode name", "mode", "mode_name"]);
+    const isActiveIdx = getIdx(["isactive", "active", "is active"]);
+    const syncModeIdx = getIdx(["syncmode", "sync_mode"]);
+    const writeCalIdx = getIdx(["writetocalendar", "write_to_calendar"]);
+    const writeSheetIdx = getIdx(["writetosheet", "write_to_sheet"]);
+    const venueMirrorIdx = getIdx(["uselivevenuemirroring", "use_live_venue_mirroring"]);
     const behaviorsIdx = getIdx(["allowedbehaviors", "behaviors", "allowed_behaviors"]);
-    const boolIdx = getIdx(["writetocalendar", "write_to_calendar", "calendarwrite", "publish"]);
-    const activeIdx = getIdx(["isactive", "active", "selected", "enabled"]);
+    const logTypesIdx = getIdx(["allowedlogtypes", "logtypes", "log_types"]);
 
-    let selectedMode = "";
-    let modeConfig = {};
+    let activeMode = null;
 
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
       if (!row || row.every(v => v === "" || v === null || v === undefined)) continue;
 
-      const rowMode = modeRowIdx !== -1 ? row[modeRowIdx] : "";
-      const rowSyncMode = syncModeIdx !== -1 ? row[syncModeIdx] : "";
-      const activeFlag = activeIdx !== -1 ? row[activeIdx] : "";
-      const isSelected = this.coerceBoolean(activeFlag) || (rowMode && String(rowMode).toLowerCase() === String(selectedMode || "").toLowerCase());
+      const modeName = modeNameIdx !== -1 ? String(row[modeNameIdx] || "").trim() : "";
+      if (!modeName) continue;
 
-      if (!selectedMode && (isSelected || (!modeRowIdx && !selectedMode))) {
-        selectedMode = rowMode || rowSyncMode || selectedMode || "Default";
-      }
+      const isActive = isActiveIdx !== -1 ? this.coerceBoolean(row[isActiveIdx]) : false;
+      const syncMode = syncModeIdx !== -1 ? String(row[syncModeIdx] || "").trim() : "";
+      const writeToCalendar = writeCalIdx !== -1 ? this.coerceBoolean(row[writeCalIdx]) : false;
+      const writeToSheet = writeSheetIdx !== -1 ? this.coerceBoolean(row[writeSheetIdx]) : false;
+      const useLiveVenueMirroring = venueMirrorIdx !== -1 ? this.coerceBoolean(row[venueMirrorIdx]) : false;
+      const allowedBehaviors = behaviorsIdx !== -1 ? this.parseModeList(row[behaviorsIdx]) : [];
+      const allowedLogTypes = logTypesIdx !== -1 ? this.parseModeList(row[logTypesIdx]) : [];
 
-      const key = String(rowMode || rowSyncMode || row[0] || "").trim();
-      if (!key) continue;
+      const mode = {
+        mode: modeName,
+        syncMode: syncMode,
+        writeToCalendar: writeToCalendar,
+        writeToSheet: writeToSheet,
+        useLiveVenueMirroring: useLiveVenueMirroring,
+        allowedBehaviors: allowedBehaviors,
+        allowedLogTypes: allowedLogTypes,
+        logTypes: allowedLogTypes.join(", ")
+      };
 
-      modeConfig[key] = modeConfig[key] || {};
-      modeConfig[key].mode = rowMode || rowSyncMode || modeConfig[key].mode;
-      modeConfig[key].syncMode = rowSyncMode || modeConfig[key].syncMode;
-      modeConfig[key].logTypes = logTypesIdx !== -1 ? this.parseModeList(row[logTypesIdx]) : modeConfig[key].logTypes || [];
-      modeConfig[key].allowedBehaviors = behaviorsIdx !== -1 ? this.parseModeList(row[behaviorsIdx]) : modeConfig[key].allowedBehaviors || [];
-      modeConfig[key].writeToCalendar = boolIdx !== -1 ? this.coerceBoolean(row[boolIdx]) : modeConfig[key].writeToCalendar || false;
-
-      if (isSelected) {
-        modeConfig.selected = modeConfig[key];
+      if (isActive) {
+        activeMode = mode;
       }
     }
 
-    const chosen = modeConfig.selected || modeConfig[Object.keys(modeConfig)[0]] || {};
-    const normalized = {
-      mode: chosen.mode || selectedMode || "Draft 26-27",
-      syncMode: chosen.syncMode || "",
-      logTypes: chosen.logTypes && chosen.logTypes.length ? chosen.logTypes.join(", ") : "",
-      allowedBehaviors: chosen.allowedBehaviors || [],
-      allowedLogTypes: chosen.logTypes || [],
-      writeToCalendar: this.coerceBoolean(chosen.writeToCalendar)
+    return activeMode || this.getDefaultMode();
+  },
+
+  getDefaultMode: function() {
+    return {
+      mode: "Draft 26-27",
+      syncMode: "",
+      writeToCalendar: false,
+      writeToSheet: false,
+      useLiveVenueMirroring: false,
+      allowedBehaviors: ["BYPASS", "SYNC_ALLOWED"],
+      allowedLogTypes: [],
+      logTypes: ""
     };
-
-    if (behaviorsIdx !== -1 || logTypesIdx !== -1) {
-      normalized.behaviors = normalized.allowedBehaviors;
-    }
-
-    return normalized;
   },
 
   /**
