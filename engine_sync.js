@@ -7,9 +7,10 @@ var Engine = Engine || {};
 
 Engine.Sync = {
 
-  runMasterSync: function() {
+  runMasterSync: function(options) {
     // 1. Get Context
-    const ctx = Engine.getContext();
+    const ctx = Engine.getContext(options);
+    const runtime = ctx.runtime || {};
   
     // 2. Log active mode at start
     const activeMode = ctx.mode && ctx.mode.mode ? ctx.mode.mode : "Unknown";
@@ -41,13 +42,13 @@ Engine.Sync = {
 
   try {
     // Phase 1: Mirror Building Reality
-    this.mirrorVenues(ctx);
+    if (!runtime.skipMirror) this.mirrorVenues(ctx);
 
     // Phase 2: Compare Intent to Reality
-    this.reconcileLogs(ctx);
+    if (!runtime.skipReconcile) this.reconcileLogs(ctx);
 
     // Phase 3: Push Intent to Calendar
-    this.syncCrewCalendar(ctx);
+    if (!runtime.skipPush) this.syncCrewCalendar(ctx);
 
     Engine.Log.write(ctx, { stage: "SYNC_COMPLETE", details: "All phases finished." });
   } catch (e) {
@@ -166,7 +167,9 @@ Engine.Sync = {
   const role = "CREWCAL";
   const crewEvents = scanSheet(role, ctx);
   const allowedLogTypes = (ctx.mode && ctx.mode.allowedLogTypes) || [];
-  const canWrite = (ctx.mode && ctx.mode.writeToCalendar) || false;
+  const canWrite = ctx.runtime && ctx.runtime.allowCalendarWrites !== undefined
+    ? Boolean(ctx.runtime.allowCalendarWrites)
+    : Boolean(ctx.mode && ctx.mode.writeToCalendar);
 
   // We need the Target Calendar ID (usually defined in Sheet_Settings or ControlPanel)
   const targetCalId = ctx.settings.ControlPanel["Crew Draft Calendar ID"];

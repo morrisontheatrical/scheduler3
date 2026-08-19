@@ -4,6 +4,13 @@ function onOpen() {
   ui.createMenu('🧪 Dev / Test')
     .addItem('Diagnostic Dump', 'test_DiagnosticDump')
     .addItem('Mirror Venues Test', 'test_MirrorVenues')
+    .addItem('Draft Mode Sheet-Only Test', 'test_DraftModeSheetOnly')
+    .addItem('Live Mode Sheet-Only Test', 'test_LiveModeSheetOnly')
+    .addItem('Custom Runtime Sheet-Only Test', 'test_CustomRuntimeSheetOnly')
+    .addItem('Reconcile Logs Test', 'test_ReconcileLogs')
+    .addItem('Crew Calendar Sync Test', 'test_SyncCrewCalendar')
+    .addItem('Sync ID Registry Test', 'test_SyncIDRegistry')
+    .addItem('Refresh Dropdowns Test', 'test_RefreshDropdowns')
     .addItem('Run Health Check', 'goHealthCheck')
     .addItem('Open Audit Log', 'openAuditLog')
     .addSeparator()
@@ -27,6 +34,49 @@ function goSync() {
   }
 
   SpreadsheetApp.getUi().alert('Sync engine is not available.');
+}
+
+function test_ReconcileLogs() {
+  const ctx = Engine.getContext();
+  return Engine.Sync.reconcileLogs(ctx);
+}
+
+function test_SyncCrewCalendar() {
+  const ctx = Engine.getContext({ runtime: { allowCalendarWrites: false } });
+  return Engine.Sync.syncCrewCalendar(ctx);
+}
+
+function test_DraftModeSheetOnly() {
+  return Engine.Sync.runMasterSync({
+    modeName: "Draft 26-27",
+    runtime: { allowCalendarWrites: false }
+  });
+}
+
+function test_LiveModeSheetOnly() {
+  return Engine.Sync.runMasterSync({
+    modeName: "Live 26-27",
+    runtime: { allowCalendarWrites: false }
+  });
+}
+
+function test_CustomRuntimeSheetOnly() {
+  return Engine.Sync.runMasterSync({
+    runtime: {
+      allowCalendarWrites: false,
+      skipPush: true
+    }
+  });
+}
+
+function test_SyncIDRegistry() {
+  const ctx = Engine.getContext();
+  return Engine.IDService.syncAll(ctx);
+}
+
+function test_RefreshDropdowns() {
+  const ctx = Engine.getContext();
+  return Engine.Maintenance.applyDropdowns(ctx);
 }
 
 function goHealthCheck() {

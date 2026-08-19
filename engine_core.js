@@ -31,7 +31,8 @@ var Engine = {
    * Initializes the context (ctx). 
    * This is called at the top of every main function.
    */
-  getContext: function() {
+  getContext: function(options) {
+    options = options || {};
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     
     let ctx = {
@@ -43,7 +44,7 @@ var Engine = {
       roles: {},
       settings: { ControlPanel: {} },
       mode: { logTypes: "", writeToCalendar: false },
-      runtime: { bypassList: [], isCustom: false, reportOnly: false }
+      runtime: Object.assign({ bypassList: [], isCustom: false, reportOnly: false, allowCalendarWrites: undefined }, options.runtime || {})
     };
 
     // 1. Build the Map Schema (This is the foundation)
@@ -52,7 +53,7 @@ var Engine = {
 
     // 2. Load basic config and status rules
     ctx.config = this.loadConfig(ss);
-    const modeConfig = this.loadModeConfig(ss);
+    const modeConfig = this.loadModeConfig(ss, options.modeName);
     ctx.mode = Object.assign({}, ctx.config, modeConfig, {
       logTypes: Array.isArray(modeConfig.logTypes) ? modeConfig.logTypes.join(", ") : (modeConfig.logTypes || ctx.config.logTypes || ""),
       writeToCalendar: modeConfig.writeToCalendar !== undefined ? Boolean(modeConfig.writeToCalendar) : Boolean(ctx.config.writeToCalendar)
@@ -142,7 +143,7 @@ var Engine = {
     return Boolean(value);
   },
 
-  loadModeConfig: function(ss) {
+  loadModeConfig: function(ss, requestedModeName) {
     const sheet = ss.getSheetByName("Mode_Config");
     if (!sheet) return this.getDefaultMode();
 
@@ -170,6 +171,7 @@ var Engine = {
     const logTypesIdx = getIdx(["allowedlogtypes", "logtypes", "log_types"]);
 
     let activeMode = null;
+    let requestedMode = null;
 
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
@@ -200,9 +202,12 @@ var Engine = {
       if (isActive) {
         activeMode = mode;
       }
+      if (requestedModeName && modeName.toLowerCase() === String(requestedModeName).trim().toLowerCase()) {
+        requestedMode = mode;
+      }
     }
 
-    return activeMode || this.getDefaultMode();
+    return requestedMode || activeMode || this.getDefaultMode();
   },
 
   getDefaultMode: function() {
