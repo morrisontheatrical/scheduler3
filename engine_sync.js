@@ -3,9 +3,6 @@
 // PURPOSE: Orchestrates the Pull, Reconcile, and Push operations for the system.
 // ==============================================================================
 
-//Check: Engine.Sync.reconcileLogs references ctx.lookup.statusBehavior[crewRow.SyncStatus], but status rules are stored in ctx.status.
-//Fix: Replace with ctx.status[crewRow.SyncStatus]?.behavior.
-
 var Engine = Engine || {};
 
 Engine.Sync = {
@@ -57,6 +54,16 @@ Engine.Sync = {
   } catch (e) {
     Engine.Log.write(ctx, { stage: "SYNC_ERROR", type: "ERROR", details: e.message });
   }
+  },
+  _buildRealityMap: function(venueEvents) {
+    const map = {};
+    venueEvents.forEach(function(event) {
+      if (!event.Date || !event.Location) return;
+      const key = `${new Date(event.Date).toISOString()}|${event.Location}`;
+      if (!map[key]) map[key] = [];
+      map[key].push(event);
+    });
+    return map;
   },
 /**
    * PHASE 1: MIRROR VENUES
@@ -119,18 +126,20 @@ Engine.Sync = {
  reconcileLogs: function(ctx) {
     const crewEvents = scanSheet('CREWCAL', ctx);
     const venueEvents = scanSheet('VENUECAL', ctx);
-    const venueMap = buildRealityMap(venueEvents); 
+    const venueMap = this._buildRealityMap(venueEvents); 
     const allowedLogTypes = (ctx.mode && ctx.mode.allowedLogTypes) || [];
 
     crewEvents.forEach(crewRow => {
-      const behavior = ctx.lookup.statusBehavior[crewRow.SyncStatus]; 
-      if (behavior === "LOCKED" || behavior === "BYPASS") return;
+      const statusDef = ctx.status[crewRow.SyncStatus];
+      const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
+      if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS")) return;
 
       const key = `${new Date(crewRow.Date).toISOString()}|${crewRow.Location}`;
       const physicalMatches = venueMap[key] || [];
 
       // 1. CONFLICT CHECK
-      const trueConflicts = physicalMatches.filter(v => v.EventID !== crewRow.EventID);
+      // TODO: remove eventID fallback once Venue_Cal_Log's Map_Registry field is capitalized.
+      const trueConflicts = physicalMatches.filter(v => (v.EventID || v.eventID) !== crewRow.EventID);
       if (trueConflicts.length > 0) {
         Engine.Status.apply(ctx, "CREWCAL", null, "Location Conflict", {
           details: `Room booked by: ${trueConflicts[0].Title}`,
@@ -183,8 +192,9 @@ Engine.Sync = {
 
   crewEvents.forEach(crewRow => {
     // 1. BEHAVIOR CHECK
-    const behavior = ctx.lookup.statusBehavior[crewRow.SyncStatus];
-    if (behavior === "LOCKED" || behavior === "BYPASS") return;
+    const statusDef = ctx.status[crewRow.SyncStatus];
+    const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
+    if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS")) return;
 
     // 2. ACTION: DELETE
     if (crewRow.SyncStatus === "To Delete on calendar") {
@@ -192,7 +202,7 @@ Engine.Sync = {
         if (canWrite) {
           Engine.Calendar.deleteEvent(targetCalId, crewRow.EventID);
           Engine.Status.apply(ctx, role, null, "Deleted by Calendar", { targetObj: crewRow });
-          Engine.IDService.upsert(ctx, { id: crewRow.sourceID, status: "Deleted", details: "Removed from Cal" });
+          Engine.IDService.upsert(ctx, { id: crewRow.UUID, status: "Deleted", details: "Removed from Cal" });
         }
         if (allowedLogTypes.includes("CAL_CLEANUP")) {
           Engine.Log.write(ctx, { type: "CAL_CLEANUP", details: `Deleted event: ${crewRow.Title}` });
@@ -204,13 +214,13 @@ Engine.Sync = {
     // 3. ACTION: CREATE (No EventID exists)
     if (!crewRow.EventID || crewRow.EventID === "") {
       if (canWrite) {
-        const newEventId = Engine.Calendar.createEvent(targetCalId, crewRow);
+        const newEventId = Engine.Calendar.createEvent(targetCalId, crewRow, ctx);
         crewRow.EventID = newEventId;
         Engine.Status.apply(ctx, role, null, "Pushed to Calendar", { targetObj: crewRow });
         
         // Register the new link in the ID Registry
         Engine.IDService.upsert(ctx, { 
-          id: crewRow.sourceID, 
+          id: crewRow.UUID,
           details: `Created Cal Event: ${newEventId}`,
           location: `${ctx.sheets[role].getName()}!R${crewRow._rowNum}`
         });
@@ -220,7 +230,7 @@ Engine.Sync = {
 
     // 4. ACTION: UPDATE (EventID exists, check for Drift)
     // We compare the current row's hash against the stored hash in the ID Registry
-    const registryEntry = ctx.registry[crewRow.sourceID]; // Assuming ctx loaded registry
+    const registryEntry = ctx.registry[crewRow.UUID]; // Assuming ctx loaded registry
     if (registryEntry && registryEntry.SyncHash !== crewRow.SyncHash) {
       if (canWrite) {
         Engine.Calendar.updateEvent(targetCalId, crewRow.EventID, crewRow);

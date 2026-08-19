@@ -22,16 +22,15 @@ Engine.Maintenance = {
         reports.push(`❌ Missing Sheet: ${sheetName}`);
         return;
       }
-      
+
       const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       const map = (ctx.sheetDefs[sheetName] || ctx.schema[sheetName]).map;
       const mappedFields = new Set();
-      
-      // Compare map keys to actual headers
-      Object.entries(map).forEach(([fieldName, index]) => {
-        const columnIndex = Engine.getColumnIndex({ field: index }, "field");
+
+      Object.keys(map).forEach(fieldName => {
+        const columnIndex = Engine.getColumnIndex(map, fieldName);
         mappedFields.add(fieldName);
-        if (!Number.isInteger(columnIndex) || headers[columnIndex] !== fieldName) {
+        if (columnIndex < 0 || headers[columnIndex] !== fieldName) {
           reports.push(`⚠️ Header Mismatch in ${sheetName}: Expected "${fieldName}" at index ${columnIndex}, found "${headers[columnIndex] || ""}"`);
         }
       });
@@ -54,27 +53,28 @@ Engine.Maintenance = {
   reset: function(options) {
     const ui = SpreadsheetApp.getUi();
     const response = ui.alert('CAUTION', `Are you sure you want to reset ${options.target} (${options.type})?`, ui.ButtonSet.YES_NO);
-    
+
     if (response !== ui.Button.YES) return;
 
     const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(options.target);
     const ctx = Engine.getContext();
     const map = ctx.schema[options.target].map;
 
-    switch(options.type) {
-      case "HEADERS":
-        // Re-write headers based on Map_Registry without touching data
+    switch (options.type) {
+      case "HEADERS": {
         const headerRow = [];
-        Object.entries(map).forEach(([name, idx]) => headerRow[idx] = name);
+        Object.keys(map).forEach(fieldName => {
+          const columnIndex = Engine.getColumnIndex(map, fieldName);
+          if (columnIndex >= 0) headerRow[columnIndex] = fieldName;
+        });
         sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
         break;
-      
+      }
+
       case "SYNC_ONLY":
-        // Clear only the Status and LastSynced columns
-        // This lets you "re-run" a sync without deleting events
-        const syncCols = [map.SyncStatus, map.LastSynced, map.UpdateDetails];
-        syncCols.forEach(colIdx => {
-          if (colIdx !== undefined) sheet.getRange(2, colIdx + 1, sheet.getLastRow(), 1).clearContent();
+        ["SyncStatus", "LastSynced", "UpdateDetails"].forEach(fieldName => {
+          const columnIndex = Engine.getColumnIndex(map, fieldName);
+          if (columnIndex >= 0) sheet.getRange(2, columnIndex + 1, sheet.getLastRow(), 1).clearContent();
         });
         break;
 
@@ -83,7 +83,7 @@ Engine.Maintenance = {
         this.reset({ target: options.target, type: "HEADERS" });
         break;
     }
-    
+
     Engine.Log.write(ctx, { stage: "MAINTENANCE", type: "RESET", details: `${options.target} reset type: ${options.type}` });
   },
   repairHeaders: function() {
@@ -98,8 +98,9 @@ Engine.Maintenance = {
       const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
       
       let updated = false;
-      Object.entries(map).forEach(([fieldName, colIdx]) => {
-        if (headers[colIdx] !== fieldName) {
+      Object.keys(map).forEach(fieldName => {
+        const colIdx = Engine.getColumnIndex(map, fieldName);
+        if (colIdx >= 0 && headers[colIdx] !== fieldName) {
           sheet.getRange(1, colIdx + 1).setValue(fieldName);
           updated = true;
         }
@@ -122,15 +123,16 @@ Engine.Maintenance = {
     // 1. Extract Lists from Lookup
     const lData = lookupSheet.getDataRange().getValues();
     const getList = (colIdx) => {
-      return lData.slice(1) // Skip header
-                  .map(row => row[colIdx])
-                  .filter(val => val !== "" && val !== null);
+      if (colIdx < 0) return [];
+      return lData
+        .map(row => row[colIdx])
+        .filter(val => val !== "" && val !== null && val !== undefined);
     };
 
-    const venueList = getList(lMap.Venue);
-    const crewList = getList(lMap.Crew);
-    const callTypeList = getList(lMap.CallType);
-    const optionsList = getList(lMap.Options);
+    const venueList = getList(Engine.getColumnIndex(lMap, "Venue"));
+    const crewList = getList(Engine.getColumnIndex(lMap, "CrewStaff"));
+    const callTypeList = getList(Engine.getColumnIndex(lMap, "CallType"));
+    const optionsList = getList(Engine.getColumnIndex(lMap, "Options"));
 
     // 2. Define Targets (Which sheets get which dropdowns)
     // Format: { sheetName: { columnName: list } }
@@ -139,8 +141,7 @@ Engine.Maintenance = {
         "Venue": venueList
       },
       "Crew_Calendar_Log": {
-        "Staff": crewList,
-        "Venue": venueList,
+        "Location": venueList,
         "Options": optionsList
       }
     };
@@ -152,8 +153,8 @@ Engine.Maintenance = {
       if (!targetSheet || !targetMap) continue;
 
       for (const [colName, list] of Object.entries(config)) {
-        const colIdx = targetMap[colName];
-        if (colIdx === undefined) continue;
+        const colIdx = Engine.getColumnIndex(targetMap, colName);
+        if (colIdx < 0) continue;
 
         const range = targetSheet.getRange(2, colIdx + 1, targetSheet.getMaxRows() - 1);
         const rule = SpreadsheetApp.newDataValidation()
@@ -349,60 +350,4 @@ function repairMapRegistry() {
 function finalizeMaintenance(summary) {
   console.warn("finalizeMaintenance() is deprecated; use Engine.Maintenance.runHealthCheck() or Engine.Maintenance.resetHeaders(ctx) instead.");
   return summary || "Deprecated maintenance call";
-}
-/**
- * Deprecated bootstrap helper. Prefer using Engine.getContext() and the maintenance
- * primitives in Engine.Maintenance directly.
- */
-function repairEngineEnvironmentDefaults() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
-  
-  const response = ui.alert("Warning", "This will rebuild default ControlPanel and Sheet_Settings. Only run this if those sheets are missing or corrupted. Continue?", ui.ButtonSet.YES_NO);
-  
-  if (response === ui.Button.YES) {
-    // ... [Insert your existing setupEngineEnvironment code here, but use .appendRow or check existing data first] ...
-    // 1. Setup ControlPanel Defaults
-
-    const cpSheet = ss.getSheetByName("ControlPanel") || ss.insertSheet("ControlPanel");
-
-    const cpDefaults = [//these definitely don't match the sheet right now
-    ["Setting Field", "Value", "Description"],
-    ["Mode", "Draft 26-27", "Current active operation mode"],
-    ["Start Sync Date (Days before today)", 14, "Past window for sync"],
-    ["End Sync Date (Days after today)", 400, "Future window for sync"],
-    ["Default Event Duration Hours", 2, "Fallback duration if end time is missing"]
-  ];
-
-  cpSheet.getRange(1, 1, cpDefaults.length, 3).setValues(cpDefaults);
-
-  // 2. Setup Sheet_Settings Defaults
-
-  const ssSheet = ss.getSheetByName("Sheet_Settings") || ss.insertSheet("Sheet_Settings");
-
-  const ssDefaults = [
-    ["Sheet Name", "ID Key", "Behavior", "Sync Mode"],
-    ["Lineup", "UUID", "SOURCE", "OVERWRITE_ALLOWED"],
-    ["Calls", "CallID", "SOURCE", "OVERWRITE_ALLOWED"],
-    ["Crew_Calendar_Log", "UUID", "MIRROR", "SYNC"],
-    ["Venue_Cal_Log", "EventID", "PULL", "READ_ONLY"]
-  ];
-
-  ssSheet.getRange(1, 1, ssDefaults.length, 4).setValues(ssDefaults);
-
-
-
-  // 3. Run Maintenance to align headers
-
-  const ctx = Engine.getContext();
-
-  Engine.Maintenance.validateHeaders(ctx); // Ensures Map_Registry matches Sheet Headers
-
-  
-
-  Lib.notify("Engine Defaults Pushed Successfully", "Setup");
-
-
-    if (typeof Lib !== 'undefined' && Lib.notify) Lib.notify("Environment Repaired", "Maintenance");
-  }
 }

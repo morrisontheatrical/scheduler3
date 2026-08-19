@@ -442,32 +442,43 @@ var Engine = {
   },
 
   Status: {
-    apply: function(ctx, sheetName, rowIdx, statusName, logContext = {}) {
-      const sheet = ctx.ss.getSheetByName(sheetName);
-      const map = ctx.getMap(sheetName) || (ctx.sheetDefs[sheetName] && ctx.sheetDefs[sheetName].map);
-      if (!sheet || !map) return;
+    apply: function(ctx, roleOrSheetName, rowIdx, statusName, logContext = {}) {
+      const sheet = ctx.sheets[roleOrSheetName] || ctx.ss.getSheetByName(ctx.getRole(roleOrSheetName) || roleOrSheetName);
+      const map = ctx.getMap(roleOrSheetName) || ctx.maps[roleOrSheetName];
+      if (!sheet || !map) {
+        Engine.Log.error(ctx, "STATUS", `Could not resolve sheet/map for "${roleOrSheetName}" while applying status "${statusName}".`);
+        return;
+      }
 
       const theme = ctx.status[statusName] || { hex: "#ffffff", behavior: "DEFAULT" };
       const now = new Date();
+      const targetObj = logContext.targetObj;
 
-      // Update columns based on Map_Registry
       const syncStatusCol = Engine.getColumnIndex(map, "SyncStatus");
       const lastSyncedCol = Engine.getColumnIndex(map, "LastSynced");
       const updateDetailsCol = Engine.getColumnIndex(map, "UpdateDetails");
-      if (syncStatusCol >= 0) sheet.getRange(rowIdx, syncStatusCol + 1).setValue(statusName);
-      if (lastSyncedCol >= 0) sheet.getRange(rowIdx, lastSyncedCol + 1).setValue(now);
-      
-      if (logContext.details && updateDetailsCol >= 0) {
-        sheet.getRange(rowIdx, updateDetailsCol + 1).setValue(logContext.details);
-      }
 
-      sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
+      if (targetObj) {
+        if (syncStatusCol >= 0) targetObj.SyncStatus = statusName;
+        if (lastSyncedCol >= 0) targetObj.LastSynced = now;
+        if (logContext.details && updateDetailsCol >= 0) targetObj.UpdateDetails = logContext.details;
+      } else if (rowIdx) {
+        if (syncStatusCol >= 0) sheet.getRange(rowIdx, syncStatusCol + 1).setValue(statusName);
+        if (lastSyncedCol >= 0) sheet.getRange(rowIdx, lastSyncedCol + 1).setValue(now);
+        if (logContext.details && updateDetailsCol >= 0) {
+          sheet.getRange(rowIdx, updateDetailsCol + 1).setValue(logContext.details);
+        }
+        sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
+      } else {
+        Engine.Log.error(ctx, "STATUS", `Status.apply called for "${statusName}" with neither rowIdx nor targetObj.`);
+        return;
+      }
 
       Engine.Log.write(ctx, {
         stage: logContext.stage || "STATUS_UPDATE",
-        sheetName: sheetName,
-        rowIdx: rowIdx,
-        id: logContext.id || "N/A",
+        sheetName: roleOrSheetName,
+        rowIdx: rowIdx || (targetObj && targetObj._rowNum) || "N/A",
+        id: logContext.id || (targetObj && (targetObj.UUID || targetObj.EventID)) || "N/A",
         type: statusName,
         details: logContext.details || `Status changed to ${statusName}`
       });

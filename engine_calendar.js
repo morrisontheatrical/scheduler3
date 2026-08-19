@@ -1,5 +1,4 @@
 //TO DO: add CreateEvent function
-//Check: In Engine.Calendar.pullCalendarEvents, Engine.Log.write() references undefined variables (logContext, sheetName, rowIdx, statusName).
 //Fix: Remove or rewrite the debug log entry to use defined properties (calObj.venueName, calObj.id).
 
 // Ensure Engine exists
@@ -20,14 +19,11 @@ Engine.Calendar = (function() {
 
       try {
         Engine.Log.write(ctx, {
-        stage: logContext.stage || "Calendar ID",
-        sheetName: sheetName,
-        rowIdx: rowIdx,
-        id: logContext.id || "N/A",
-        type: statusName,
-        details: calObj.id
-      });
-      const cal = CalendarApp.getCalendarById(calObj.id);
+          stage: "PULL",
+          type: "CALENDAR_READ",
+          details: `Reading calendar: ${calObj.id}`
+        });
+        const cal = CalendarApp.getCalendarById(calObj.id);
         
         if (!cal) return results;
 
@@ -65,6 +61,26 @@ Engine.Calendar = (function() {
     },
 
   
+
+  /**
+   * PUSH: Create Event
+   */
+  createEvent: function(calId, dataObj, ctx) {
+    const cal = CalendarApp.getCalendarById(calId);
+    if (!cal) throw new Error(`Calendar not found: ${calId}`);
+
+    const start = new Date(dataObj.Start);
+    const fallbackHours = (ctx && ctx.mode && ctx.mode.defaultDuration) || 2;
+    const end = dataObj.End
+      ? new Date(dataObj.End)
+      : new Date(start.getTime() + fallbackHours * 60 * 60 * 1000);
+
+    const event = cal.createEvent(dataObj.Title, start, end, {
+      location: dataObj.Location || "",
+      description: dataObj.Description || ""
+    });
+    return event.getId();
+  },
 
   /**
    * PUSH: Update Event

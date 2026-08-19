@@ -1,6 +1,3 @@
-//TO Do: finish updating scriptLib library references to SL. instead of Lib. I thought we had fixed all of these already!
-
-
 // At the top of engine_calendar.gs, engine_sync.gs, etc.
 var Engine = Engine || {};
 
@@ -66,7 +63,7 @@ function goParent() {
     }
   });
 
-  Engine.Log.write("Parent Lineup Updated", "Success"); //Is this correct syntax? We need to take a look at the logging capabilities again. 
+  Engine.Log.write(ctx, { stage: "INGEST", type: "SUCCESS", details: "Parent Lineup Updated" });
 }
 
 /**
@@ -121,12 +118,12 @@ function goLineup() {
         rowArray[lCol("UUID")] = record.uuid;
         lSheet.getRange(record.rowIdx, 1, 1, rowArray.length).setValues([rowArray]);
       } else {
-        rowArray[lCol("UUID")] = Lib.uuid();
+        rowArray[lCol("UUID")] = Utilities.getUuid();
         rowArray[lCol("SyncStatus")] = "Draft";
         lSheet.appendRow(rowArray);
       }
     });
   });
 
-  Lib.notify("Lineup Explosion Complete", "Success");
+  SL.notify("Lineup Explosion Complete", "Success");
 }
