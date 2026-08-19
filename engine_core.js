@@ -331,10 +331,19 @@ var Engine = {
     if (listSheet && lookupSheetDef && lookupSheetDef.map) {
       const listData = listSheet.getDataRange().getValues();
       const map = lookupSheetDef.map;
+      let cleanColumn = null;
+
+      if (typeof SL !== "undefined" && SL.Utils && typeof SL.Utils.getCleanColumn === "function") {
+        cleanColumn = SL.Utils.getCleanColumn;
+      } else if (typeof scriptLib !== "undefined" && typeof scriptLib.getCleanColumn === "function") {
+        cleanColumn = scriptLib.getCleanColumn;
+      }
 
       Object.keys(map).forEach(fieldName => {
         const colIdx = map[fieldName].index !== undefined ? map[fieldName].index : Number(map[fieldName]);
-        lookups.lists[fieldName] = SL.Utils.getCleanColumn(listData, colIdx);
+        lookups.lists[fieldName] = cleanColumn
+          ? cleanColumn(listData, colIdx)
+          : listData.slice(1).map(row => row[colIdx]).filter(value => value !== "" && value !== null && value !== undefined);
       });
     }
     

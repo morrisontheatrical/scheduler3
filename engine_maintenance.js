@@ -249,11 +249,10 @@ function repairMapRegistry() {
   if (!registrySheet) {
     const newSheet = ss.insertSheet("Map_Registry");
     newSheet.appendRow(["Sheet Name", "Field Name", "Column Index", "Header Name", "Label", "Role", "Behavior", "Sync Mode"]);
-    return;
   }
 
   const requiredSheetRows = {
-    "Mode_Config": ["Mode", "SyncMode", "AllowedBehaviors", "LogTypes", "WriteToCalendar", "Description"],
+    "Mode_Config": ["Mode Name", "Description", "IsActive", "SyncMode", "ConflictPolicy", "PreferredTruth", "WriteToCalendar", "WriteToSheet", "UseLiveVenueMirroring", "AllowedBehaviors", "AllowedLogTypes"],
     "Lookup": ["Venue", "CalendarID", "CallType", "Series", "Crew", "Options"]
   };
 
@@ -289,7 +288,19 @@ function repairMapRegistry() {
     }
   }
 
-  console.log(`Repair Complete: Added ${addedTotal} rows and updated ${repairs} column mappings.`);
+  const details = `Repair Complete: Added ${addedTotal} rows and updated ${repairs} column mappings.`;
+  console.log(details);
+
+  try {
+    const ctx = Engine.getContext();
+    Engine.Log.write(ctx, {
+      stage: "MAINTENANCE",
+      type: "MAP_REPAIR",
+      details: details
+    });
+  } catch (error) {
+    console.warn(`Map registry repair completed, but Audit_Log could not be updated: ${error.message}`);
+  }
 }
 
 /**
