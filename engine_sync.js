@@ -91,11 +91,19 @@ Engine.Sync = {
       return;
     }
 
+    if (!ctx.calendars || ctx.calendars.length === 0) {
+      Engine.Log.error(ctx, "PULL", "No calendars loaded from the 'Calendars' sheet. Check that it has rows with a CalendarID (col B) and Venue Name (col C).");
+      return;
+    }
+
     let allVenueEvents = [];
+    let skippedAsDraft = 0;
+    let attempted = 0;
 
     // 2. The Loop (Calling our Global Bridge)
     ctx.calendars.forEach(function(cal) {
-      if (cal.venueName.includes("Draft")) return;
+      if (cal.venueName.includes("Draft")) { skippedAsDraft++; return; }
+      attempted++;
       try {
         const events = global_pullCalendarEvents(ctx, cal);
         if (events && events.length > 0) {
@@ -117,6 +125,9 @@ Engine.Sync = {
       // batchWrite handles the rest
       batchWrite(role, allVenueEvents, ctx);
       Engine.Log.info(ctx, "PULL", `Successfully mirrored ${allVenueEvents.length} events.`);
+    } else {
+      // Surface the zero-result case instead of failing silently.
+      Engine.Log.info(ctx, "PULL", `Mirror finished with 0 events. Polled ${attempted} venue calendar(s), skipped ${skippedAsDraft} as Draft. Verify Calendar IDs on the 'Calendars' sheet and that events exist within the sync window.`);
     }
   },
   /**
@@ -126,6 +137,11 @@ Engine.Sync = {
  reconcileLogs: function(ctx) {
     const crewEvents = scanSheet('CREWCAL', ctx);
     const venueEvents = scanSheet('VENUECAL', ctx);
+    Engine.Log.write(ctx, {
+      stage: "RECONCILE",
+      type: "RECONCILE_START",
+      details: `Reconciling ${crewEvents.length} crew rows against ${venueEvents.length} venue rows.`
+    });
     const venueMap = this._buildRealityMap(venueEvents); 
     const allowedLogTypes = (ctx.mode && ctx.mode.allowedLogTypes) || [];
 
@@ -174,6 +190,11 @@ Engine.Sync = {
 
     // Use patchRows to update only the modified records
     patchRows('CREWCAL', crewEvents, ctx);
+    Engine.Log.write(ctx, {
+      stage: "RECONCILE",
+      type: "RECONCILE_COMPLETE",
+      details: `Reconciliation complete. Checked ${crewEvents.length} crew rows.`
+    });
   },
   syncCrewCalendar: function(ctx) {
   const role = "CREWCAL";
@@ -245,5 +266,109 @@ Engine.Sync = {
 
   // Save changes (Status, EventIDs, Hashes) back to the sheet
   patchRows(role, crewEvents, ctx);
-}
+},
+
+  /**
+   * COMPARE: Reads the live "Draft" calendar and checks each Crew_Calendar_Log row
+   * against it. Updates SyncStatus/LastSynced per row and logs any events found on
+   * the calendar that have no matching row in the log (orphans).
+   * Read-only against the calendar; only the log sheet is updated.
+   */
+  compareDraftCalendar: function(ctx) {
+    const role = "CREWCAL";
+    const targetCalId = ctx.settings.ControlPanel["Crew Draft Calendar ID"];
+    if (!targetCalId) {
+      Engine.Log.error(ctx, "PULL_DRAFT", "No Target Calendar ID found in ControlPanel.");
+      return;
+    }
+
+    const cal = CalendarApp.getCalendarById(targetCalId);
+    if (!cal) {
+      Engine.Log.error(ctx, "PULL_DRAFT", `Draft calendar not found for ID: ${targetCalId}`);
+      return;
+    }
+
+    const startDays = ctx.config.syncWindow.startDays || 14;
+    const endDays = ctx.config.syncWindow.endDays || 400;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - startDays);
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + endDays);
+
+    const calEvents = cal.getEvents(startDate, endDate);
+    const calMap = {};
+    calEvents.forEach(e => { calMap[e.getId()] = e; });
+
+    const crewEvents = scanSheet(role, ctx);
+    const matchedIds = {};
+
+    crewEvents.forEach(crewRow => {
+      if (!crewRow.EventID) return; // Not yet linked to a calendar event; nothing to compare.
+
+      const calEvent = calMap[crewRow.EventID];
+      if (!calEvent) {
+        Engine.Status.apply(ctx, role, null, "Missing from Calendar", {
+          details: "Log has an EventID but no matching event exists on the Draft calendar.",
+          targetObj: crewRow
+        });
+        return;
+      }
+
+      matchedIds[crewRow.EventID] = true;
+
+      const calTitle = calEvent.getTitle() || "";
+      const calStart = calEvent.getStartTime();
+      const logStart = crewRow.Start ? new Date(crewRow.Start) : null;
+      const titleDrift = calTitle.trim() !== String(crewRow.Title || "").trim();
+      const timeDrift = !logStart || logStart.getTime() !== calStart.getTime();
+
+      if (titleDrift || timeDrift) {
+        Engine.Status.apply(ctx, role, null, "Data Drift Detected", {
+          details: `Calendar differs from log (Title: "${calTitle}", Start: ${calStart}).`,
+          targetObj: crewRow
+        });
+      } else {
+        Engine.Status.apply(ctx, role, null, "Synced", { targetObj: crewRow });
+      }
+    });
+
+    // Any calendar event with no matching log row is an orphan worth flagging.
+    // Group by Title+Start so stale duplicates (e.g. from a lineup rebuild) report once, not per-event.
+    const orphanGroups = {};
+    Object.keys(calMap).forEach(eventID => {
+      if (matchedIds[eventID]) return;
+      const ev = calMap[eventID];
+      const key = `${(ev.getTitle() || "").trim()}|${ev.getStartTime().toISOString()}`;
+      if (!orphanGroups[key]) orphanGroups[key] = { title: ev.getTitle() || "No Title", start: ev.getStartTime(), ids: [] };
+      orphanGroups[key].ids.push(eventID);
+    });
+
+    let orphanCount = 0;
+    let duplicateGroupCount = 0;
+    Object.keys(orphanGroups).forEach(key => {
+      const group = orphanGroups[key];
+      orphanCount += group.ids.length;
+      if (group.ids.length > 1) {
+        duplicateGroupCount++;
+        Engine.Log.write(ctx, {
+          stage: "PULL_DRAFT",
+          type: "DUPLICATE_EVENT",
+          details: `${group.ids.length} calendar events for "${group.title}" at ${group.start} have no matching row in Crew_Calendar_Log (IDs: ${group.ids.join(", ")}). Likely stale duplicates from a prior lineup version.`
+        });
+      } else {
+        Engine.Log.write(ctx, {
+          stage: "PULL_DRAFT",
+          type: "ORPHAN_EVENT",
+          details: `Calendar event "${group.title}" (${group.ids[0]}) has no matching row in Crew_Calendar_Log.`
+        });
+      }
+    });
+
+    patchRows(role, crewEvents, ctx);
+    Engine.Log.write(ctx, {
+      stage: "PULL_DRAFT",
+      type: "PULL_DRAFT_COMPLETE",
+      details: `Compared ${crewEvents.length} log rows against ${calEvents.length} calendar events. ${orphanCount} orphaned calendar event(s) found (${duplicateGroupCount} duplicate group(s)).`
+    });
+  }
 };

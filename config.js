@@ -87,7 +87,9 @@ function runSystemHealthCheck() {
   const defaultStatuses = [
     ["Synced", "Match confirmed.", "#d9ead3", "Light Green", "SYNC_ALLOWED"],
     ["Manual Review", "Sync error.", "#f9cb9c", "Orange", "Manual Review"],
-    ["Bypassed", "Don't Overwrite", "#fff2cc", "Yellow/Tan", "BYPASS"]
+    ["Bypassed", "Don't Overwrite", "#fff2cc", "Yellow/Tan", "BYPASS"],
+    ["Data Drift Detected", "Calendar and log disagree.", "#f4cccc", "Light Red", "Manual Review"],
+    ["Missing from Calendar", "EventID in log has no matching calendar event.", "#f4cccc", "Light Red", "Manual Review"]
   ];
 
   if (statusSheet.getLastRow() < 1) {

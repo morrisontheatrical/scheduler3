@@ -9,6 +9,8 @@ function onOpen() {
     .addItem('Custom Runtime Sheet-Only Test', 'test_CustomRuntimeSheetOnly')
     .addItem('Reconcile Logs Test', 'test_ReconcileLogs')
     .addItem('Crew Calendar Sync Test', 'test_SyncCrewCalendar')
+    .addItem('Compare Draft Calendar vs Crew Log', 'test_CompareDraftCalendar')
+    .addItem('Sync Lineup to Log Test', 'test_SyncLineupToLog')
     .addItem('Sync ID Registry Test', 'test_SyncIDRegistry')
     .addItem('Refresh Dropdowns Test', 'test_RefreshDropdowns')
     .addItem('Run Health Check', 'goHealthCheck')
@@ -21,7 +23,8 @@ function onOpen() {
   ui.createMenu('📅 Scheduler')
     .addItem('1. Ingest Season', 'goParent')
     .addItem('2. Explode Dates', 'goLineup')
-    .addItem('3. Sync Calendars', 'goSync')
+    .addItem('3. Sync Lineup to Crew Log', 'goCrewLog')
+    .addItem('4. Sync Calendars', 'goSync')
     .addSeparator()
     .addItem('View Audit Log', 'openAuditLog')
     .addToUi();
@@ -44,6 +47,16 @@ function test_ReconcileLogs() {
 function test_SyncCrewCalendar() {
   const ctx = Engine.getContext({ runtime: { allowCalendarWrites: false } });
   return Engine.Sync.syncCrewCalendar(ctx);
+}
+
+function test_CompareDraftCalendar() {
+  const ctx = Engine.getContext();
+  return Engine.Sync.compareDraftCalendar(ctx);
+}
+
+function test_SyncLineupToLog() {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.syncLineupToLog(ctx);
 }
 
 function test_DraftModeSheetOnly() {

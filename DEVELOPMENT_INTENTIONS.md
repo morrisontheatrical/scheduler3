@@ -2,6 +2,8 @@
 
 This document records the canonical architectural intentions, metadata specifications, module boundaries, and active issue log for the Scheduler project. It serves as the primary technical memory and reference for engine implementation.
 
+## This is a clasp-linked Apps Script project. I will execute all tests, I know this is outside of the agents scope. 
+
 ## 1. Core Architecture & Logic Governance
 
 * **Platform**: Google Apps Script (GAS) and Google Sheets form the runtime environment.

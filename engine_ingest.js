@@ -127,3 +127,132 @@ function goLineup() {
 
   SL.notify("Lineup Explosion Complete", "Success");
 }
+
+/**
+ * STAGE 4: Pushes exploded Lineup rows into the crew log.
+ * Targets the "CREWCAL" role by default. Once a dedicated Draft Season sheet/role
+ * exists, pass { targetRole: "DRAFTSEASON" } (or change the default below) — the map
+ * lookups and status handling here don't need to change, only the role name.
+ */
+function goCrewLog(options) {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.syncLineupToLog(ctx, options);
+}
+
+Engine.Ingest = Engine.Ingest || {};
+
+Engine.Ingest.syncLineupToLog = function(ctx, options) {
+  options = options || {};
+  const targetRole = options.targetRole || "CREWCAL"; // <-- swap default here once Draft Season sheet/role exists
+
+  const lSheet = ctx.ss.getSheetByName("Lineup");
+  const lMap = ctx.maps["Lineup"];
+  const logSheet = ctx.sheets[targetRole] || ctx.ss.getSheetByName(ctx.getRole(targetRole));
+  const logMap = ctx.getMap(targetRole);
+
+  if (!lSheet || !lMap) {
+    Engine.Log.error(ctx, "INGEST", "Lineup sheet or map not found.");
+    return;
+  }
+  if (!logSheet || !logMap) {
+    Engine.Log.error(ctx, "INGEST", `Target sheet/map for role "${targetRole}" not found.`);
+    return;
+  }
+
+  const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
+  const lData = lSheet.getDataRange().getValues();
+  lData.shift();
+
+  // Anchor identity: a log row is linked to its Lineup row via Source="Lineup" + matching UUID.
+  const logRows = scanSheet(targetRole, ctx);
+  const existingByUUID = {};
+  logRows.forEach(row => {
+    if (row.Source === "Lineup" && row.UUID) existingByUUID[row.UUID] = row;
+  });
+
+  const defaultDuration = (ctx.mode && ctx.mode.defaultDuration) || 2;
+  const newRows = [];
+  const changedRows = [];
+  let skippedLocked = 0;
+
+  lData.forEach(lRow => {
+    const uuid = lRow[lCol("UUID")];
+    const title = lRow[lCol("EventName")];
+    const date = lRow[lCol("Date")];
+    if (!uuid || !title || !date) return;
+
+    const location = lRow[lCol("Venue")];
+    const eventOfTotal = lRow[lCol("EventOfTotal")];
+    const start = new Date(date);
+    const end = new Date(start.getTime() + defaultDuration * 60 * 60 * 1000);
+
+    const existing = existingByUUID[uuid];
+
+    // NEW: no log row yet for this Lineup event.
+    if (!existing) {
+      newRows.push({
+        Title: title,
+        Date: start,
+        Start: start,
+        End: end,
+        Location: location,
+        Description: eventOfTotal ? `Auto-synced from Lineup (${eventOfTotal})` : "Auto-synced from Lineup",
+        Source: "Lineup",
+        UUID: uuid,
+        SyncStatus: "Manual Review",
+        LastSynced: new Date()
+      });
+      return;
+    }
+
+    // Respect rows a human has locked/bypassed; just note that changes were skipped.
+    const statusDef = ctx.status[existing.SyncStatus];
+    const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
+    if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS")) {
+      skippedLocked++;
+      return;
+    }
+
+    const titleDrift = String(existing.Title || "").trim() !== String(title || "").trim();
+    const startDrift = !existing.Start || new Date(existing.Start).getTime() !== start.getTime();
+    const locationDrift = String(existing.Location || "").trim() !== String(location || "").trim();
+
+    if (titleDrift || startDrift || locationDrift) {
+      existing.Title = title;
+      existing.Date = start;
+      existing.Start = start;
+      existing.Location = location;
+      Engine.Status.apply(ctx, targetRole, null, "Data Drift Detected", {
+        details: "Lineup changed since the last sync.",
+        targetObj: existing
+      });
+      changedRows.push(existing);
+    }
+  });
+
+  if (newRows.length > 0) {
+    const indices = Object.keys(logMap).map(field => Engine.getColumnIndex(logMap, field)).filter(index => index >= 0);
+    const width = Math.max(...indices) + 1;
+    newRows.forEach(obj => {
+      const rowArray = new Array(width).fill("");
+      for (const field in logMap) {
+        const idx = Engine.getColumnIndex(logMap, field);
+        if (idx < 0 || !obj.hasOwnProperty(field)) continue;
+        rowArray[idx] = obj[field];
+      }
+      logSheet.appendRow(rowArray);
+    });
+  }
+
+  if (changedRows.length > 0) {
+    patchRows(targetRole, changedRows, ctx);
+  }
+
+  Engine.Log.write(ctx, {
+    stage: "INGEST",
+    type: "LINEUP_TO_LOG",
+    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s).`
+  });
+
+  return { added: newRows.length, updated: changedRows.length, skippedLocked: skippedLocked };
+};
