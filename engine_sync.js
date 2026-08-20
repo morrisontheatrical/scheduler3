@@ -65,6 +65,15 @@ Engine.Sync = {
     });
     return map;
   },
+  // ControlPanel's row is labeled "Crew Draft Calendar" (key "CrewDraftCal"); falls back to the
+  // "Draft" entry in the Calendars sheet so the ID doesn't need to be maintained in two places.
+  _getCrewDraftCalendarId: function(ctx) {
+    const cp = ctx.settings.ControlPanel || {};
+    const override = cp["Crew Draft Calendar ID"] || cp["CrewDraftCal"] || cp["Crew Draft Calendar"];
+    if (override) return override;
+    const draftCal = (ctx.calendars || []).find(c => c.venueName && c.venueName.includes("Draft"));
+    return draftCal ? draftCal.id : "";
+  },
 /**
    * PHASE 1: MIRROR VENUES
    * Loops through Calendars.csv settings, uses Engine.Calendar to fetch data, 
@@ -149,42 +158,44 @@ Engine.Sync = {
     crewEvents.forEach(crewRow => {
       const statusDef = ctx.status[crewRow.SyncStatus];
       const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
-      if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS")) return;
+      if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS") || crewRow.Options === "Bypass") return;
 
       const key = `${new Date(crewRow.Date).toISOString()}|${crewRow.Location}`;
       const physicalMatches = venueMap[key] || [];
+      if (physicalMatches.length === 0) return;
 
-      // 1. CONFLICT CHECK
+      // Exact title match, or a human manually flagged "Prefer Venue Event": treat as the same
+      // show rather than a conflict, even if the titles don't match verbatim.
       // TODO: remove eventID fallback once Venue_Cal_Log's Map_Registry field is capitalized.
+      const titleMatch = physicalMatches.find(v => v.Title && crewRow.Title && v.Title.trim() === crewRow.Title.trim());
+      if (titleMatch || crewRow.Options === "Prefer Venue Event") {
+        const match = titleMatch || physicalMatches[0];
+        if (!crewRow.EventID) {
+          Engine.Status.apply(ctx, "CREWCAL", null, "Manual Review", {
+            details: `Possible Adoption: ${match.EventID || match.eventID}`,
+            targetObj: crewRow
+          });
+
+          if (allowedLogTypes.includes("RECONCILE_ADOPT")) {
+            Engine.Log.write(ctx, { type: "RECONCILE_ADOPT", details: `Match found for ${crewRow.Title}` });
+          }
+        }
+        return;
+      }
+
+      // No title match at this date/location: something else genuinely has the room.
       const trueConflicts = physicalMatches.filter(v => (v.EventID || v.eventID) !== crewRow.EventID);
       if (trueConflicts.length > 0) {
         Engine.Status.apply(ctx, "CREWCAL", null, "Location Conflict", {
           details: `Room booked by: ${trueConflicts[0].Title}`,
           targetObj: crewRow
         });
-        
-        // Conditional Logging based on Mode
+
         if (allowedLogTypes.includes("CONFLICT_VENUE")) {
           Engine.Log.write(ctx, { 
             type: "CONFLICT_VENUE", 
             details: `${crewRow.Title} conflicts with ${trueConflicts[0].Title}` 
           });
-        }
-        return;
-      }
-
-      // 2. ADOPTION CHECK
-      if (!crewRow.EventID && physicalMatches.length > 0) {
-        const match = physicalMatches.find(v => v.Title.trim() === crewRow.Title.trim());
-        if (match) {
-          Engine.Status.apply(ctx, "CREWCAL", null, "Manual Review", {
-            details: `Possible Adoption: ${match.EventID}`,
-            targetObj: crewRow
-          });
-          
-          if (allowedLogTypes.includes("RECONCILE_ADOPT")) {
-            Engine.Log.write(ctx, { type: "RECONCILE_ADOPT", details: `Match found for ${crewRow.Title}` });
-          }
         }
       }
     });
@@ -205,10 +216,10 @@ Engine.Sync = {
     ? Boolean(ctx.runtime.allowCalendarWrites)
     : Boolean(ctx.mode && ctx.mode.writeToCalendar);
 
-  // We need the Target Calendar ID (usually defined in Sheet_Settings or ControlPanel)
-  const targetCalId = ctx.settings.ControlPanel["Crew Draft Calendar ID"];
+  // We need the Target Calendar ID (defaults to the "Draft" entry in Calendars; ControlPanel can override)
+  const targetCalId = this._getCrewDraftCalendarId(ctx);
   if (!targetCalId) {
-    Engine.Log.error(ctx, "PUSH", "No Target Calendar ID found in ControlPanel.");
+    Engine.Log.error(ctx, "PUSH", "No Target Calendar ID found in ControlPanel or the Calendars sheet.");
     return;
   }
 
@@ -216,13 +227,14 @@ Engine.Sync = {
     // 1. BEHAVIOR CHECK
     const statusDef = ctx.status[crewRow.SyncStatus];
     const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
-    if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS")) return;
+    if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS") || crewRow.Options === "Bypass") return;
 
-    // 2. ACTION: DELETE
-    if (crewRow.SyncStatus === "To Delete on calendar") {
+    // 2. ACTION: DELETE (status-driven, or a manual "Delete from Calendar" trigger)
+    if (crewRow.SyncStatus === "To Delete on calendar" || crewRow.Options === "Delete from Calendar") {
       if (crewRow.EventID) {
         if (canWrite) {
           Engine.Calendar.deleteEvent(targetCalId, crewRow.EventID);
+          crewRow.Options = "AutoSync"; // one-shot trigger resets itself
           Engine.Status.apply(ctx, role, null, "Deleted by Calendar", { targetObj: crewRow });
           Engine.IDService.upsert(ctx, { id: crewRow.UUID, status: "Deleted", details: "Removed from Cal" });
         }
@@ -233,11 +245,14 @@ Engine.Sync = {
       return;
     }
 
+    const forcedPush = crewRow.Options === "Push to Calendar";
+
     // 3. ACTION: CREATE (No EventID exists)
     if (!crewRow.EventID || crewRow.EventID === "") {
       if (canWrite) {
         const newEventId = Engine.Calendar.createEvent(targetCalId, crewRow, ctx);
         crewRow.EventID = newEventId;
+        if (forcedPush) crewRow.Options = "AutoSync";
         Engine.Status.apply(ctx, role, null, "Pushed to Calendar", { targetObj: crewRow });
         
         // Register the new link in the ID Registry
@@ -250,17 +265,17 @@ Engine.Sync = {
       return;
     }
 
-    // 4. ACTION: UPDATE (EventID exists, check for Drift)
-    // We compare the current row's hash against the stored hash in the ID Registry
+    // 4. ACTION: UPDATE (hash drift, or a manual "Push to Calendar" override)
     const registryEntry = ctx.registry[crewRow.UUID]; // Assuming ctx loaded registry
-    if (registryEntry && registryEntry.SyncHash !== crewRow.SyncHash) {
+    if (forcedPush || (registryEntry && registryEntry.SyncHash !== crewRow.SyncHash)) {
       if (canWrite) {
         Engine.Calendar.updateEvent(targetCalId, crewRow.EventID, crewRow);
+        if (forcedPush) crewRow.Options = "AutoSync";
         Engine.Status.apply(ctx, role, null, "Calendar Log Updated", { targetObj: crewRow });
       }
       
       if (allowedLogTypes.includes("PUSH_CAL")) {
-        Engine.Log.write(ctx, { type: "PUSH_CAL", details: `Updated ${crewRow.Title} due to data drift.` });
+        Engine.Log.write(ctx, { type: "PUSH_CAL", details: `Updated ${crewRow.Title} due to ${forcedPush ? "manual Push to Calendar" : "data drift"}.` });
       }
     }
   });
@@ -277,9 +292,9 @@ Engine.Sync = {
    */
   compareDraftCalendar: function(ctx) {
     const role = "CREWCAL";
-    const targetCalId = ctx.settings.ControlPanel["Crew Draft Calendar ID"];
+    const targetCalId = this._getCrewDraftCalendarId(ctx);
     if (!targetCalId) {
-      Engine.Log.error(ctx, "PULL_DRAFT", "No Target Calendar ID found in ControlPanel.");
+      Engine.Log.error(ctx, "PULL_DRAFT", "No Target Calendar ID found in ControlPanel or the Calendars sheet.");
       return;
     }
 

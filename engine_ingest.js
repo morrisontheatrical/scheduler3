@@ -174,19 +174,39 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   const newRows = [];
   const changedRows = [];
   let skippedLocked = 0;
+  let flaggedBadDate = 0;
 
   lData.forEach(lRow => {
     const uuid = lRow[lCol("UUID")];
     const title = lRow[lCol("EventName")];
-    const date = lRow[lCol("Date")];
-    if (!uuid || !title || !date) return;
+    if (!uuid || !title) return;
 
     const location = lRow[lCol("Venue")];
     const eventOfTotal = lRow[lCol("EventOfTotal")];
-    const start = new Date(date);
-    const end = new Date(start.getTime() + defaultDuration * 60 * 60 * 1000);
-
     const existing = existingByUUID[uuid];
+
+    let start = new Date(lRow[lCol("Date")]);
+    let dateInvalid = isNaN(start.getTime());
+    if (dateInvalid) {
+      const parentID = lRow[lCol("parentID")];
+      const reparsed = Engine.Ingest._reparseDateFromParent(ctx, parentID, eventOfTotal);
+      if (reparsed) { start = reparsed; dateInvalid = false; }
+    }
+
+    // Prefer an empty/unsynced date over a wrong one; flag for a human to fix upstream.
+    if (dateInvalid) {
+      flaggedBadDate++;
+      if (existing) {
+        Engine.Status.apply(ctx, targetRole, null, "Manual Review", {
+          details: "Could not parse a valid date from Lineup (or its Parent Lineup row).",
+          targetObj: existing
+        });
+        changedRows.push(existing);
+      }
+      return; // Don't create a new row until the date is fixable.
+    }
+
+    const end = new Date(start.getTime() + defaultDuration * 60 * 60 * 1000);
 
     // NEW: no log row yet for this Lineup event.
     if (!existing) {
@@ -251,8 +271,38 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   Engine.Log.write(ctx, {
     stage: "INGEST",
     type: "LINEUP_TO_LOG",
-    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s).`
+    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s), flagged ${flaggedBadDate} row(s) with an unparseable date.`
   });
 
-  return { added: newRows.length, updated: changedRows.length, skippedLocked: skippedLocked };
+  return { added: newRows.length, updated: changedRows.length, skippedLocked: skippedLocked, flaggedBadDate: flaggedBadDate };
+};
+
+/**
+ * Re-derives a single performance date from the Parent Lineup's DatesAndTimes range,
+ * used when a Lineup row's own Date cell failed to parse.
+ */
+Engine.Ingest._reparseDateFromParent = function(ctx, parentID, eventOfTotal) {
+  if (!parentID || !eventOfTotal) return null;
+  const pSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const pMap = ctx.maps["Parent Lineup"];
+  if (!pSheet || !pMap) return null;
+
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const pData = pSheet.getDataRange().getValues();
+  const row = pData.find(r => r[pCol("parentID")] === parentID);
+  if (!row) return null;
+
+  const rawDates = row[pCol("DatesAndTimes")];
+  if (!rawDates) return null;
+
+  const index = parseInt(String(eventOfTotal).split(" of ")[0], 10) - 1;
+  if (isNaN(index) || index < 0) return null;
+
+  try {
+    const dates = parseDatesFromRange(String(rawDates));
+    const candidate = dates[index];
+    return candidate && !isNaN(new Date(candidate).getTime()) ? new Date(candidate) : null;
+  } catch (e) {
+    return null;
+  }
 };
