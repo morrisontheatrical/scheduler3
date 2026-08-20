@@ -463,13 +463,17 @@ var Engine = {
         if (syncStatusCol >= 0) targetObj.SyncStatus = statusName;
         if (lastSyncedCol >= 0) targetObj.LastSynced = now;
         if (logContext.details && updateDetailsCol >= 0) targetObj.UpdateDetails = logContext.details;
+        // patchRows() only writes cell values, not formatting — paint the row directly here.
+        if (targetObj._rowNum && theme.hex) {
+          sheet.getRange(targetObj._rowNum, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
+        }
       } else if (rowIdx) {
         if (syncStatusCol >= 0) sheet.getRange(rowIdx, syncStatusCol + 1).setValue(statusName);
         if (lastSyncedCol >= 0) sheet.getRange(rowIdx, lastSyncedCol + 1).setValue(now);
         if (logContext.details && updateDetailsCol >= 0) {
           sheet.getRange(rowIdx, updateDetailsCol + 1).setValue(logContext.details);
         }
-        sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
+        if (theme.hex) sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
       } else {
         Engine.Log.error(ctx, "STATUS", `Status.apply called for "${statusName}" with neither rowIdx nor targetObj.`);
         return;
@@ -493,8 +497,21 @@ var Engine = {
 
       const { stage, sheetName, rowIdx, id, type, details } = params;
       const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "MM/dd HH:mm:ss");
-      
-      const logRow = [timestamp, stage || "SYSTEM", sheetName || "N/A", rowIdx || "N/A", id || "N/A", type || "INFO", details || ""];
+
+      // Turn RangeRef into a clickable link back to the exact row, when we can resolve one.
+      let rangeRefCell = rowIdx || "N/A";
+      const rowNum = Number(rowIdx);
+      if (ctx && ctx.ss && sheetName && !isNaN(rowNum) && rowNum > 0) {
+        // sheetName may already be an actual sheet name, or a role code (e.g. "CREWCAL") — try both.
+        const targetSheet = ctx.ss.getSheetByName(sheetName)
+          || (ctx.roles && ctx.roles[sheetName] && ctx.ss.getSheetByName(ctx.roles[sheetName]));
+        if (targetSheet) {
+          const gid = targetSheet.getSheetId();
+          rangeRefCell = `=HYPERLINK("#gid=${gid}&range=A${rowNum}","Row ${rowNum}")`;
+        }
+      }
+
+      const logRow = [timestamp, stage || "SYSTEM", sheetName || "N/A", rangeRefCell, id || "N/A", type || "INFO", details || ""];
 
       auditSheet.insertRowAfter(1);
       auditSheet.getRange(2, 1, 1, logRow.length).setValues([logRow]);

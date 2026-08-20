@@ -306,3 +306,164 @@ Engine.Ingest._reparseDateFromParent = function(ctx, parentID, eventOfTotal) {
     return null;
   }
 };
+
+/**
+ * VERIFY (read-only): Flags Parent Lineup rows whose key fields no longer match
+ * their source row in "import". Does not overwrite anything — just flags for review.
+ */
+function goVerifyImportToParent() {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.verifyImportToParent(ctx);
+}
+
+Engine.Ingest.verifyImportToParent = function(ctx) {
+  const iSheet = ctx.ss.getSheetByName("import");
+  const pSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const iMap = ctx.maps["import"];
+  const pMap = ctx.maps["Parent Lineup"];
+  if (!iSheet || !pSheet || !iMap || !pMap) {
+    Engine.Log.error(ctx, "VERIFY_IMPORT", "import or Parent Lineup sheet/map not found.");
+    return;
+  }
+
+  const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const iData = iSheet.getDataRange().getValues();
+  iData.shift();
+  const pData = pSheet.getDataRange().getValues();
+  pData.shift();
+
+  const pByName = {};
+  pData.forEach((row, idx) => {
+    const name = row[pCol("EventName")];
+    if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
+  });
+
+  const fieldsToCompare = ["Series", "Opening", "Range", "Venue", "Pricing"];
+  let flagged = 0;
+  let missing = 0;
+
+  iData.forEach(iRow => {
+    const name = iRow[iCol("EventName")];
+    if (!name) return;
+    const match = pByName[name];
+    if (!match) { missing++; return; }
+
+    const drifted = fieldsToCompare.some(field => {
+      const iIdx = iCol(field);
+      const pIdx = pCol(field);
+      if (iIdx < 0 || pIdx < 0) return false;
+      return String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
+    });
+
+    if (drifted) {
+      flagged++;
+      const statusCol = pCol("SyncStatus");
+      if (statusCol >= 0) pSheet.getRange(match.rowIdx, statusCol + 1).setValue("Manual Review");
+      Engine.Log.write(ctx, {
+        stage: "VERIFY_IMPORT",
+        sheetName: "Parent Lineup",
+        rowIdx: match.rowIdx,
+        id: name,
+        type: "DRIFT_DETECTED",
+        details: "Parent Lineup no longer matches import for this event."
+      });
+    }
+  });
+
+  Engine.Log.write(ctx, {
+    stage: "VERIFY_IMPORT",
+    type: "VERIFY_IMPORT_COMPLETE",
+    details: `Checked ${iData.length} import rows. ${flagged} drifted, ${missing} missing from Parent Lineup.`
+  });
+
+  return { checked: iData.length, flagged: flagged, missing: missing };
+};
+
+/**
+ * VERIFY (read-only): Flags Lineup rows whose Date/Venue no longer match a
+ * re-parse of their Parent Lineup row's DatesAndTimes range. Does not overwrite.
+ */
+function goVerifyParentToLineup() {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.verifyParentToLineup(ctx);
+}
+
+Engine.Ingest.verifyParentToLineup = function(ctx) {
+  const pSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const lSheet = ctx.ss.getSheetByName("Lineup");
+  const pMap = ctx.maps["Parent Lineup"];
+  const lMap = ctx.maps["Lineup"];
+  if (!pSheet || !lSheet || !pMap || !lMap) {
+    Engine.Log.error(ctx, "VERIFY_PARENT", "Parent Lineup or Lineup sheet/map not found.");
+    return;
+  }
+
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
+  const pData = pSheet.getDataRange().getValues();
+  pData.shift();
+  const lData = lSheet.getDataRange().getValues();
+  lData.shift();
+
+  // Group Lineup rows by parentID, in sheet order, to line up against the parsed date range.
+  const lByParent = {};
+  lData.forEach((row, idx) => {
+    const pid = row[lCol("parentID")];
+    if (!pid) return;
+    if (!lByParent[pid]) lByParent[pid] = [];
+    lByParent[pid].push({ row: row, rowIdx: idx + 2 });
+  });
+
+  let checked = 0;
+  let flagged = 0;
+  let unparseable = 0;
+
+  pData.forEach(pRow => {
+    const parentID = pRow[pCol("parentID")];
+    const rawDates = pRow[pCol("DatesAndTimes")];
+    const venue = pRow[pCol("Venue")];
+    if (!parentID || !rawDates) return;
+
+    let expectedDates;
+    try {
+      expectedDates = parseDatesFromRange(String(rawDates));
+    } catch (e) {
+      unparseable++;
+      return;
+    }
+
+    const children = lByParent[parentID] || [];
+    children.forEach((child, index) => {
+      checked++;
+      const expected = expectedDates[index];
+      const childDate = child.row[lCol("Date")];
+      const childVenue = child.row[lCol("Venue")];
+      const expectedValid = expected && !isNaN(new Date(expected).getTime());
+      const dateDrift = expectedValid && new Date(childDate).getTime() !== new Date(expected).getTime();
+      const venueDrift = String(childVenue || "").trim() !== String(venue || "").trim();
+
+      if (dateDrift || venueDrift) {
+        flagged++;
+        const statusCol = lCol("SyncStatus");
+        if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Manual Review");
+        Engine.Log.write(ctx, {
+          stage: "VERIFY_PARENT",
+          sheetName: "Lineup",
+          rowIdx: child.rowIdx,
+          id: child.row[lCol("UUID")],
+          type: "DRIFT_DETECTED",
+          details: "Lineup row no longer matches its Parent Lineup's dates/venue."
+        });
+      }
+    });
+  });
+
+  Engine.Log.write(ctx, {
+    stage: "VERIFY_PARENT",
+    type: "VERIFY_PARENT_COMPLETE",
+    details: `Checked ${checked} Lineup rows against Parent Lineup. ${flagged} drifted, ${unparseable} Parent Lineup row(s) had unparseable date ranges.`
+  });
+
+  return { checked: checked, flagged: flagged, unparseable: unparseable };
+};

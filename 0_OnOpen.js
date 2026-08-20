@@ -11,6 +11,8 @@ function onOpen() {
     .addItem('Crew Calendar Sync Test', 'test_SyncCrewCalendar')
     .addItem('Compare Draft Calendar vs Crew Log', 'test_CompareDraftCalendar')
     .addItem('Sync Lineup to Log Test', 'test_SyncLineupToLog')
+    .addItem('Verify import vs Parent Lineup', 'goVerifyImportToParent')
+    .addItem('Verify Parent Lineup vs Lineup', 'goVerifyParentToLineup')
     .addItem('Sync ID Registry Test', 'test_SyncIDRegistry')
     .addItem('Refresh Dropdowns Test', 'test_RefreshDropdowns')
     .addItem('Run Health Check', 'goHealthCheck')
@@ -25,6 +27,9 @@ function onOpen() {
     .addItem('2. Explode Dates', 'goLineup')
     .addItem('3. Sync Lineup to Crew Log', 'goCrewLog')
     .addItem('4. Sync Calendars', 'goSync')
+    .addSeparator()
+    .addItem('Verify import vs Parent Lineup', 'goVerifyImportToParent')
+    .addItem('Verify Parent Lineup vs Lineup', 'goVerifyParentToLineup')
     .addSeparator()
     .addItem('View Audit Log', 'openAuditLog')
     .addToUi();

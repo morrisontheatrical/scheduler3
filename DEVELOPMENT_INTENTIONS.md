@@ -252,18 +252,16 @@ Still requires live spreadsheet verification:
 ## 12. Open Questions & Architectural Decisions Needed
 
 * **Standardizing Venue Event ID**: Confirm renaming `Venue_Cal_Log`'s `eventID` field to `EventID` in `Map_Registry`.
-* **Status Rule Definitions**: Determine hex colors and behavior strings for missing `"Location Conflict"` and `"Calendar Log Updated"` status rows.
 * **Crew Column Binding**: Determine if `Crew_Calendar_Log` requires an explicit `Staff`/`Crew` column for assignment drop-downs.
 * **Header Metadata Flag**: Evaluate adding `HasHeaderRow` to `Sheet_Settings` to replace hardcoded sheet exclusions.
 
 ## 13. Legacy Cleanup Boundaries
 
-* **Completed**: Removed `masterAggregatorSync()`, `1_sync venue cal.js`, and dead fallback paths in `0_draft season.js`.
+* **Completed**: Removed `masterAggregatorSync()`, `1_sync venue cal.js`, dead fallback paths in `0_draft season.js`, and `1_verify.js` (called an undefined `logDiscrepancy()`, was unreferenced anywhere). Its role is now covered by `Engine.Ingest.verifyImportToParent()` and `Engine.Ingest.verifyParentToLineup()`.
 * **Next Targets**:
 * Remove `repairEngineEnvironmentDefaults()` (obsolete hardcoded setup).
 * Strip `config.js` down to essential UI/compatibility wrappers.
 * Refactor `runSystemHealthCheck()` to eliminate hardcoded header creation.
-* Archive `1_verify.js` or migrate to object-map access.
 
 
 
