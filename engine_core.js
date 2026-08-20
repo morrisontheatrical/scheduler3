@@ -143,10 +143,11 @@ var Engine = {
     const data = sheet.getDataRange().getValues();
     if (!data.length) return this.getDefaultMode();
 
-    const headers = data[0].map(h => String(h || "").trim().toLowerCase());
+    const normalizeHeader = h => String(h || "").trim().toLowerCase().replace(/[\s_]/g, "");
+    const headers = data[0].map(normalizeHeader);
     const getIdx = (candidates) => {
       for (const key of candidates) {
-        const idx = headers.indexOf(String(key).trim().toLowerCase());
+        const idx = headers.indexOf(normalizeHeader(key));
         if (idx !== -1) return idx;
       }
       return -1;

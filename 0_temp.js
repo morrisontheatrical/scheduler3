@@ -1,8 +1,8 @@
 function test_MirrorVenues() {
   console.info("--- START MIRROR VENUES TEST ---");
   
-  // 1. Boot up the engine
-  const ctx = Engine.getContext();
+  // 1. Boot up the engine (forceMirror bypasses the Mode_Config gate for this manual run)
+  const ctx = Engine.getContext({ runtime: { forceMirror: true } });
   console.info(`Context loaded. Found ${ctx.calendars.length} calendars to poll.`);
   
   // 2. Run Phase 1

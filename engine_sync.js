@@ -69,10 +69,11 @@ Engine.Sync = {
    * PHASE 1: MIRROR VENUES
    * Loops through Calendars.csv settings, uses Engine.Calendar to fetch data, 
    * and batch writes to Venue_Cal_Log.
-   * Skipped if ctx.mode.useLiveVenueMirroring is false.
+   * Skipped if ctx.mode.useLiveVenueMirroring is false, unless ctx.runtime.forceMirror is true
+   * (used for an explicit, on-demand "repopulate now" run regardless of the active mode).
    */
   mirrorVenues: function(ctx) {
-    const shouldMirror = ctx.mode && ctx.mode.useLiveVenueMirroring;
+    const shouldMirror = (ctx.runtime && ctx.runtime.forceMirror) || (ctx.mode && ctx.mode.useLiveVenueMirroring);
     
     if (!shouldMirror) {
       Engine.Log.info(ctx, "PULL", "Skipped venue mirror: mode has useLiveVenueMirroring = false");
