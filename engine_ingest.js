@@ -98,8 +98,19 @@ function goLineup() {
     const rawDates = pRow[pCol("DatesAndTimes")];
     if (!parentID || !rawDates) return;
 
-    // parseDatesFromRange is assumed to be in your scriptLib 
-    const performanceDates = parseDatesFromRange(String(rawDates));
+    const parsedDates = Engine.Ingest.parseParentDatesAndTimes(rawDates);
+    const performanceDates = parsedDates.dates;
+    if (performanceDates.length === 0) {
+      Engine.Log.write(ctx, {
+        stage: "INGEST",
+        sheetName: "Parent Lineup",
+        rowIdx: pData.indexOf(pRow) + 2,
+        id: parentID,
+        type: "UNPARSEABLE_DATES",
+        details: `No usable dates found: ${parsedDates.errors.join(" | ") || "unknown format"}`
+      });
+      return;
+    }
 
     performanceDates.forEach((dObj, index) => {
       const dateStr = Utilities.formatDate(dObj, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy HH:mm");
@@ -140,6 +151,51 @@ function goCrewLog(options) {
 }
 
 Engine.Ingest = Engine.Ingest || {};
+
+/**
+ * Parses the multiline DatesAndTimes cells used by Parent Lineup.
+ */
+Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
+  const result = { dates: [], errors: [] };
+  const parser = typeof SL !== "undefined" && SL.TheatricalParser && SL.TheatricalParser.parse;
+  if (!parser || !rawDates) {
+    if (rawDates) result.errors.push("Theatrical parser unavailable");
+    return result;
+  }
+
+  const lines = String(rawDates)
+    .replace(/\r/g, "")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  lines.forEach(line => {
+    const content = line.replace(/^(Performance|Session\s*\d+|Sensory-Friendly Performance|School Performance)\s*:\s*/i, "").trim();
+    if (!content || /^(Performance|Session\s*\d+|Sensory-Friendly Performance|School Performance)\s*:?$/i.test(content)) return;
+
+    const spanMatch = content.match(/^(?:[A-Za-z]+,\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})\s+through\s+(?:[A-Za-z]+,\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})$/i);
+    if (spanMatch) {
+      const start = new Date(spanMatch[1]);
+      const end = new Date(spanMatch[2]);
+      if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end >= start) {
+        for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+          result.dates.push(new Date(date));
+        }
+        return;
+      }
+    }
+
+    const parsed = parser(content);
+    if (parsed && parsed.startDate && !isNaN(parsed.startDate.getTime())) {
+      result.dates.push(parsed.startDate);
+    } else if (!(parsed && parsed.isTBD)) {
+      result.errors.push(content);
+    }
+  });
+
+  result.dates.sort((a, b) => a.getTime() - b.getTime());
+  return result;
+};
 
 Engine.Ingest.syncLineupToLog = function(ctx, options) {
   options = options || {};
@@ -298,13 +354,8 @@ Engine.Ingest._reparseDateFromParent = function(ctx, parentID, eventOfTotal) {
   const index = parseInt(String(eventOfTotal).split(" of ")[0], 10) - 1;
   if (isNaN(index) || index < 0) return null;
 
-  try {
-    const dates = parseDatesFromRange(String(rawDates));
-    const candidate = dates[index];
-    return candidate && !isNaN(new Date(candidate).getTime()) ? new Date(candidate) : null;
-  } catch (e) {
-    return null;
-  }
+  const candidate = Engine.Ingest.parseParentDatesAndTimes(rawDates).dates[index];
+  return candidate && !isNaN(candidate.getTime()) ? new Date(candidate) : null;
 };
 
 /**
@@ -333,21 +384,53 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   const pData = pSheet.getDataRange().getValues();
   pData.shift();
 
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
   const pByName = {};
   pData.forEach((row, idx) => {
-    const name = row[pCol("EventName")];
+    const name = normalize(row[pCol("EventName")]);
     if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
   });
 
   const fieldsToCompare = ["Series", "Opening", "Range", "Venue", "Pricing"];
   let flagged = 0;
-  let missing = 0;
+  let importOnly = 0;
+  let parentOnly = 0;
+  let renamedCandidate = 0;
+  const matchedParentRows = {};
 
-  iData.forEach(iRow => {
+  iData.forEach((iRow, index) => {
     const name = iRow[iCol("EventName")];
     if (!name) return;
-    const match = pByName[name];
-    if (!match) { missing++; return; }
+    let match = pByName[normalize(name)];
+    let isRenameCandidate = false;
+
+    if (!match) {
+      const candidates = pData
+        .map((row, rowIndex) => ({ row: row, rowIdx: rowIndex + 2 }))
+        .filter(candidate => ["Opening", "Range", "Venue"].every(field => {
+          const iIdx = iCol(field);
+          const pIdx = pCol(field);
+          return iIdx >= 0 && pIdx >= 0 && normalize(iRow[iIdx]) === normalize(candidate.row[pIdx]);
+        }));
+      if (candidates.length === 1) {
+        match = candidates[0];
+        isRenameCandidate = true;
+        renamedCandidate++;
+      } else {
+        importOnly++;
+        Engine.Log.write(ctx, {
+          stage: "VERIFY_IMPORT",
+          sheetName: "import",
+          rowIdx: index + 2,
+          id: name,
+          type: "IMPORT_ONLY",
+          details: "No matching Parent Lineup row found."
+        });
+        return;
+      }
+    }
+
+    matchedParentRows[match.rowIdx] = true;
 
     const drifted = fieldsToCompare.some(field => {
       const iIdx = iCol(field);
@@ -356,7 +439,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       return String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
     });
 
-    if (drifted) {
+    if (drifted || isRenameCandidate) {
       flagged++;
       const statusCol = pCol("SyncStatus");
       if (statusCol >= 0) pSheet.getRange(match.rowIdx, statusCol + 1).setValue("Manual Review");
@@ -365,19 +448,35 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         sheetName: "Parent Lineup",
         rowIdx: match.rowIdx,
         id: name,
-        type: "DRIFT_DETECTED",
-        details: "Parent Lineup no longer matches import for this event."
+        type: isRenameCandidate ? "RENAME_CANDIDATE" : "DRIFT_DETECTED",
+        details: isRenameCandidate
+          ? `Possible renamed event: import "${name}" vs Parent Lineup "${match.row[pCol("EventName")]}".`
+          : "Parent Lineup no longer matches import for this event."
       });
     }
+  });
+
+  pData.forEach((pRow, index) => {
+    const rowIdx = index + 2;
+    if (matchedParentRows[rowIdx]) return;
+    parentOnly++;
+    Engine.Log.write(ctx, {
+      stage: "VERIFY_IMPORT",
+      sheetName: "Parent Lineup",
+      rowIdx: rowIdx,
+      id: pRow[pCol("parentID")] || pRow[pCol("EventName")],
+      type: "PARENT_ONLY",
+      details: "No matching import row found."
+    });
   });
 
   Engine.Log.write(ctx, {
     stage: "VERIFY_IMPORT",
     type: "VERIFY_IMPORT_COMPLETE",
-    details: `Checked ${iData.length} import rows. ${flagged} drifted, ${missing} missing from Parent Lineup.`
+    details: `Checked ${iData.length} import rows. ${flagged} flagged (${renamedCandidate} possible rename), ${importOnly} import-only, ${parentOnly} Parent Lineup-only.`
   });
 
-  return { checked: iData.length, flagged: flagged, missing: missing };
+  return { checked: iData.length, flagged: flagged, renamedCandidate: renamedCandidate, importOnly: importOnly, parentOnly: parentOnly };
 };
 
 /**
@@ -425,11 +524,18 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
     const venue = pRow[pCol("Venue")];
     if (!parentID || !rawDates) return;
 
-    let expectedDates;
-    try {
-      expectedDates = parseDatesFromRange(String(rawDates));
-    } catch (e) {
+    const parsedDates = Engine.Ingest.parseParentDatesAndTimes(rawDates);
+    const expectedDates = parsedDates.dates;
+    if (expectedDates.length === 0) {
       unparseable++;
+      Engine.Log.write(ctx, {
+        stage: "VERIFY_PARENT",
+        sheetName: "Parent Lineup",
+        rowIdx: pData.indexOf(pRow) + 2,
+        id: parentID,
+        type: "UNPARSEABLE_DATES",
+        details: `No usable dates found: ${parsedDates.errors.join(" | ") || "unknown format"}`
+      });
       return;
     }
 

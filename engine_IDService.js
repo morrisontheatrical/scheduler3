@@ -75,7 +75,7 @@ Engine.IDService = {
         const idKey = sheetDef.settings && sheetDef.settings.idKey;
         
         // Skip sheets that don't hold unique record identities
-        if (!idKey || role === "REFERENCE" || role === "AUDIT" || role === "SETTINGS") return;
+        if (!idKey || role === "REFERENCE" || role === "AUDIT" || role === "SETTINGS" || role === "ID_LOG") return;
 
         const sheet = sheetDef.sheet;
         if (!sheet) return;
@@ -94,8 +94,13 @@ Engine.IDService = {
           const location = `${sheetName}!R${i + 1}`;
           const hashCol = Engine.getColumnIndex(sheetMap, "SyncHash");
           const titleCol = Engine.getColumnIndex(sheetMap, "Title");
+          const eventNameCol = Engine.getColumnIndex(sheetMap, "EventName");
+          const parentIdCol = Engine.getColumnIndex(sheetMap, "ParentID") >= 0
+            ? Engine.getColumnIndex(sheetMap, "ParentID")
+            : Engine.getColumnIndex(sheetMap, "parentID");
           const hash = hashCol >= 0 ? row[hashCol] : "N/A";
-          const title = titleCol >= 0 ? row[titleCol] : (row[0] || "No Title");
+          const title = titleCol >= 0 ? row[titleCol] : eventNameCol >= 0 ? row[eventNameCol] : (row[0] || "No Title");
+          const parentId = parentIdCol >= 0 ? row[parentIdCol] : "";
 
           if (registry.has(id)) {
             // UPDATE: Check if location or hash drifted
@@ -103,9 +108,10 @@ Engine.IDService = {
             const oldLoc = existing.data[sheetLocationCol];
             const oldHash = existing.data[syncHashCol];
 
-            if (oldLoc !== location || oldHash !== hash) {
-              // Selective update to avoid heavy sheet writes
-              idLogSheet.getRange(existing.rowIdx, sheetLocationCol + 1).setValue(location);
+            // Keep a real source location; idLog!R... is registry self-location, never source metadata.
+            const replaceLocation = !oldLoc || String(oldLoc).indexOf("idLog!R") === 0;
+            if (replaceLocation || oldHash !== hash) {
+              if (replaceLocation) idLogSheet.getRange(existing.rowIdx, sheetLocationCol + 1).setValue(location);
               idLogSheet.getRange(existing.rowIdx, syncHashCol + 1).setValue(hash);
               idLogSheet.getRange(existing.rowIdx, lastUpdatedCol + 1).setValue(now);
             }
@@ -118,12 +124,14 @@ Engine.IDService = {
             entry[uniqueIdCol] = id;
             entry[Engine.getColumnIndex(idLogMap, "RecordType")] = role;
             entry[Engine.getColumnIndex(idLogMap, "Title")] = title;
+            entry[Engine.getColumnIndex(idLogMap, "ParentID")] = parentId;
             entry[syncHashCol] = hash;
             entry[sheetLocationCol] = location;
             entry[Engine.getColumnIndex(idLogMap, "SyncStatus")] = "Active";
             entry[Engine.getColumnIndex(idLogMap, "Timestamp")] = now;
             entry[lastUpdatedCol] = now;
             newEntries.push(entry);
+            registry.set(id, { rowIdx: null, data: entry });
           }
         }
       });

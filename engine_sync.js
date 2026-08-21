@@ -317,6 +317,15 @@ Engine.Sync = {
 
     const crewEvents = scanSheet(role, ctx);
     const matchedIds = {};
+    const normalizeTitle = title => String(title || "").trim().toLowerCase().replace(/\s+/g, " ");
+    const crewByTitleStart = {};
+    crewEvents.forEach(row => {
+      const start = row.Start ? new Date(row.Start) : null;
+      if (!start || isNaN(start.getTime())) return;
+      const key = `${normalizeTitle(row.Title)}|${start.toISOString()}`;
+      if (!crewByTitleStart[key]) crewByTitleStart[key] = [];
+      crewByTitleStart[key].push(row);
+    });
 
     crewEvents.forEach(crewRow => {
       if (!crewRow.EventID) return; // Not yet linked to a calendar event; nothing to compare.
@@ -354,7 +363,7 @@ Engine.Sync = {
     Object.keys(calMap).forEach(eventID => {
       if (matchedIds[eventID]) return;
       const ev = calMap[eventID];
-      const key = `${(ev.getTitle() || "").trim()}|${ev.getStartTime().toISOString()}`;
+      const key = `${normalizeTitle(ev.getTitle())}|${ev.getStartTime().toISOString()}`;
       if (!orphanGroups[key]) orphanGroups[key] = { title: ev.getTitle() || "No Title", start: ev.getStartTime(), ids: [] };
       orphanGroups[key].ids.push(eventID);
     });
@@ -363,19 +372,28 @@ Engine.Sync = {
     let duplicateGroupCount = 0;
     Object.keys(orphanGroups).forEach(key => {
       const group = orphanGroups[key];
+      const matchingCrewRows = crewByTitleStart[key] || [];
+      const crewRow = matchingCrewRows.length === 1 ? matchingCrewRows[0] : null;
+      const linkContext = crewRow ? {
+        sheetName: role,
+        rowIdx: crewRow._rowNum,
+        id: crewRow.UUID || crewRow.EventID
+      } : {};
       orphanCount += group.ids.length;
       if (group.ids.length > 1) {
         duplicateGroupCount++;
         Engine.Log.write(ctx, {
           stage: "PULL_DRAFT",
           type: "DUPLICATE_EVENT",
-          details: `${group.ids.length} calendar events for "${group.title}" at ${group.start} have no matching row in Crew_Calendar_Log (IDs: ${group.ids.join(", ")}). Likely stale duplicates from a prior lineup version.`
+          ...linkContext,
+          details: `${group.ids.length} events on Draft 26-27 for "${group.title}" at ${group.start}. ${crewRow ? "A Crew_Calendar_Log row exists at this title/start." : "No unique Crew_Calendar_Log match exists."} IDs: ${group.ids.join(", ")}.`
         });
       } else {
         Engine.Log.write(ctx, {
           stage: "PULL_DRAFT",
           type: "ORPHAN_EVENT",
-          details: `Calendar event "${group.title}" (${group.ids[0]}) has no matching row in Crew_Calendar_Log.`
+          ...linkContext,
+          details: `Event on Draft 26-27: "${group.title}" at ${group.start}. ${crewRow ? "A Crew_Calendar_Log row exists at this title/start." : "No unique Crew_Calendar_Log match exists."} Event ID: ${group.ids[0]}.`
         });
       }
     });
