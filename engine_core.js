@@ -574,11 +574,12 @@ var Engine = {
 
 
 };
-
-Engine.Roles.resolve = function(ctx, base) {
+Engine.Roles = {
+  resolve: function(ctx, base) { 
   // base: "PARENT" | "LINEUP" | "IMPORT"
   const isDraft = /draft/i.test(ctx.mode.mode || "");
   return Engine.Roles[base] + (isDraft ? "DRAFT" : "CURRENT");
+  }
 };
 
 Engine.Core = {
