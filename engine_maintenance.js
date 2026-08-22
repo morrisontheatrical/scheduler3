@@ -102,9 +102,11 @@ Engine.Maintenance = {
       
       let updated = false;
       Object.keys(map).forEach(fieldName => {
-        const colIdx = Engine.getColumnIndex(map, fieldName);
-        if (colIdx >= 0 && headers[colIdx] !== fieldName) {
-          sheet.getRange(1, colIdx + 1).setValue(fieldName);
+        const colIdx = Engine.getColumnIndex(map, fieldName); //update to Header DisplayName?
+
+        const displayName = Engine.getDisplayName(map, fieldName);
+        if (colIdx >= 0 && headers[colIdx] !== displayName) {
+          sheet.getRange(1, colIdx + 1).setValue(displayName);
           updated = true;
         }
       });
@@ -205,11 +207,11 @@ Engine.Maintenance.resetHeaders = function(ctx) {
     const newHeaders = new Array(maxCol + 1).fill("");
 
     // Fill the header array based on the Map_Registry keys
-    for (const headerName of Object.keys(columnMap)) {
-      const colIdx = Engine.getColumnIndex(columnMap, headerName);
-      if (colIdx < 0) continue;
-      newHeaders[colIdx] = headerName;
-    }
+    for (const fieldName of Object.keys(columnMap)) {
+  const colIdx = Engine.getColumnIndex(columnMap, fieldName);
+  if (colIdx < 0) continue;
+  newHeaders[colIdx] = Engine.getDisplayName(columnMap, fieldName);
+}
 
     // Apply to the sheet
     sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
@@ -223,6 +225,33 @@ Engine.Maintenance.resetHeaders = function(ctx) {
     });
   }
   console.log("All eligible sheet headers have been calibrated to the Map_Registry.");
+};
+
+// Private helper — stays local to this file while it's still being proven out.
+// Candidate for promotion to scriptLib once it's stable and genuinely reused elsewhere; not before.
+Engine.Maintenance._diffHeaders = function(physicalHeaders, registryEntries) {
+  const remaining = registryEntries.slice();
+  const matched = [];
+  const newPhysical = [];
+
+  physicalHeaders.forEach((text, physicalIndex) => {
+    const headerText = String(text || "").trim();
+    if (!headerText) return;
+
+    const matchIdx = remaining.findIndex(entry => {
+      const display = String(entry.displayName || entry.fieldName || "").trim();
+      return display === headerText;
+    });
+
+    if (matchIdx === -1) {
+      newPhysical.push({ physicalIndex, physicalText: headerText });
+    } else {
+      matched.push({ entry: remaining[matchIdx], physicalIndex, physicalText: headerText });
+      remaining.splice(matchIdx, 1);
+    }
+  });
+
+  return { matched: matched, newPhysical: newPhysical, staleRegistry: remaining };
 };
 /**
  * Scans all sheets defined in the Map_Registry and updates the 'Column Index'
@@ -238,7 +267,7 @@ function repairMapRegistry() {
   let registrySheet = ss.getSheetByName("Map_Registry");
   if (!registrySheet) {
     registrySheet = ss.insertSheet("Map_Registry");
-    registrySheet.appendRow(["Sheet Name", "Field Name", "Column Index", "Header Name", "Label", "Role", "Behavior", "Sync Mode"]);
+    registrySheet.appendRow(["Sheet Name", "Field Name", "Column Index", "Notes", "Header DisplayName", "Data Type", "Sync Behavior"]);
   }
 
   const data = registrySheet.getDataRange().getValues();
@@ -248,109 +277,107 @@ function repairMapRegistry() {
   const colSheetName = headers.indexOf("Sheet Name");
   const colFieldName = headers.indexOf("Field Name");
   const colIndex = headers.indexOf("Column Index");
-  const colRole = headers.indexOf("Role");
-  const reports = [];
+  const colNotes = headers.indexOf("Notes");
+  const colDisplayName = headers.indexOf("Header DisplayName");
 
-  if (colSheetName === -1 || colFieldName === -1 || colIndex === -1) {
-    return ["Map_Registry is missing Sheet Name, Field Name, or Column Index headers."];
+  if ([colSheetName, colFieldName, colIndex, colDisplayName].includes(-1)) {
+    return ["Map_Registry is missing one of: Sheet Name, Field Name, Column Index, Header DisplayName."];
   }
 
   const settingsSheet = ss.getSheetByName("Sheet_Settings");
   const managedSheetNames = new Set();
   if (settingsSheet && settingsSheet.getLastRow() > 1) {
-    const settings = settingsSheet.getRange(2, 1, settingsSheet.getLastRow() - 1, 1).getValues();
-    settings.forEach(row => {
+    settingsSheet.getRange(2, 1, settingsSheet.getLastRow() - 1, 1).getValues().forEach(row => {
       const sheetName = String(row[0] || "").trim();
       if (sheetName) managedSheetNames.add(sheetName);
     });
   }
 
-  const registrySheetNames = new Set();
-  const registryRows = new Map();
+  // Group existing registry rows by sheet.
+  const bySheet = new Map();
   for (let i = 1; i < data.length; i++) {
     const sheetName = String(data[i][colSheetName] || "").trim();
     const fieldName = String(data[i][colFieldName] || "").trim();
     if (!sheetName || !fieldName) continue;
-
-    registrySheetNames.add(sheetName);
-    const key = `${sheetName}::${fieldName}`;
-    if (!registryRows.has(key)) registryRows.set(key, []);
-    registryRows.get(key).push({ rowNumber: i + 1, row: data[i] });
+    if (!bySheet.has(sheetName)) bySheet.set(sheetName, []);
+    bySheet.get(sheetName).push({
+      rowNumber: i + 1,
+      fieldName: fieldName,
+      displayName: String(data[i][colDisplayName] || "").trim(),
+      notes: String(data[i][colNotes] || "")
+    });
   }
 
-  const sheetNames = managedSheetNames.size ? managedSheetNames : registrySheetNames;
-  registrySheetNames.forEach(sheetName => {
-    if (!sheetNames.has(sheetName)) reports.push(`Registry entry has no managed sheet: ${sheetName}`);
-  });
+  const reports = [];
+  let added = 0, updated = 0, staleFlagged = 0;
+  const staleTag = "[STALE: no matching header]";
 
-  let added = 0;
-  let updated = 0;
-
-  sheetNames.forEach(sheetName => {
+  managedSheetNames.forEach(sheetName => {
     const targetSheet = ss.getSheetByName(sheetName);
     if (!targetSheet) {
       reports.push(`Managed sheet not found: ${sheetName}`);
       return;
     }
+    // Headerless sheets (Lookup) get no automated repair — the header
+    // convention differs, and treating row 1 as headers here would corrupt
+    // dropdown data. Repair those by hand, or once Lookup has a real header
+    // row (per your latest export), remove this sheet from this skip-list.
+    if (sheetName === "Lookup") return;
 
-    const actualHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
-    const physicalFields = new Map();
-    actualHeaders.forEach((header, index) => {
-      const fieldName = String(header || "").trim();
-      if (!fieldName) return;
-      if (physicalFields.has(fieldName)) {
-        reports.push(`Duplicate header in ${sheetName}: ${fieldName}`);
-      } else {
-        physicalFields.set(fieldName, index);
-      }
-    });
+    const physicalHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
+    const registryEntries = bySheet.get(sheetName) || [];
 
-    physicalFields.forEach((physicalIndex, fieldName) => {
-      const key = `${sheetName}::${fieldName}`;
-      const matches = registryRows.get(key) || [];
-      if (matches.length > 1) reports.push(`Duplicate registry entry: ${key}`);
+    const diff = Engine.Maintenance._diffHeaders(physicalHeaders, registryEntries);
 
-      if (!matches.length) {
-        const newRow = new Array(headers.length).fill("");
-        newRow[colSheetName] = sheetName;
-        newRow[colFieldName] = fieldName;
-        newRow[colIndex] = physicalIndex;
-        if (colRole !== -1) newRow[colRole] = "System";
-        registrySheet.appendRow(newRow);
-        added++;
-        return;
-      }
-
-      const registryRow = matches[0];
-      if (Number(registryRow.row[colIndex]) !== physicalIndex) {
-        registrySheet.getRange(registryRow.rowNumber, colIndex + 1).setValue(physicalIndex);
+    diff.matched.forEach(({ entry, physicalIndex }) => {
+      const currentIndex = Number(data[entry.rowNumber - 1][colIndex]);
+      if (currentIndex !== physicalIndex) {
+        registrySheet.getRange(entry.rowNumber, colIndex + 1).setValue(physicalIndex);
         updated++;
       }
+      // Clear a stale tag if this field reappeared (e.g. an undo, or a
+      // reordered-then-restored column).
+      if (entry.notes.indexOf(staleTag) === 0) {
+        registrySheet.getRange(entry.rowNumber, colNotes + 1).setValue(entry.notes.replace(staleTag, "").trim());
+      }
     });
 
-    registryRows.forEach((matches, key) => {
-      if (!key.startsWith(`${sheetName}::`)) return;
-      const fieldName = key.slice(sheetName.length + 2);
-      if (!physicalFields.has(fieldName)) reports.push(`Registry field not found in ${sheetName}: ${fieldName}`);
+    diff.newPhysical.forEach(({ physicalIndex, physicalText }) => {
+      const newRow = new Array(headers.length).fill("");
+      newRow[colSheetName] = sheetName;
+      newRow[colFieldName] = physicalText; // best guess — needs human review, flagged below
+      newRow[colIndex] = physicalIndex;
+      newRow[colDisplayName] = physicalText;
+      newRow[colNotes] = "[NEW: verify Field Name — auto-filled from physical header]";
+      registrySheet.appendRow(newRow);
+      added++;
+      reports.push(`New physical header in ${sheetName} at index ${physicalIndex}: "${physicalText}" — added, please confirm Field Name.`);
+    });
+
+    diff.staleRegistry.forEach(entry => {
+      if (entry.notes.indexOf(staleTag) === 0) return; // already flagged, don't re-stamp every run
+      const combinedNotes = entry.notes ? `${staleTag} ${entry.notes}` : staleTag;
+      registrySheet.getRange(entry.rowNumber, colNotes + 1).setValue(combinedNotes);
+      staleFlagged++;
+      reports.push(`Stale registry entry in ${sheetName}: "${entry.fieldName}" (display: "${entry.displayName || entry.fieldName}") — no matching physical header. Flagged, not deleted.`);
     });
   });
 
-  const details = `Repair Complete: Added ${added} rows and updated ${updated} column mappings.`;
-  console.log(details);
-  reports.forEach(report => console.warn(report));
+  const summary = `Repair Complete: Added ${added}, updated ${updated} column indices, flagged ${staleFlagged} stale.`;
+  console.log(summary);
+  reports.forEach(r => console.warn(r));
 
   try {
     const ctx = Engine.getContext();
     Engine.Log.write(ctx, {
-      stage: "MAINTENANCE",
-      type: "MAP_REPAIR",
-      details: `${details}${reports.length ? ` Warnings: ${reports.join(" | ")}` : ""}`
+      stage: "MAINTENANCE", type: "MAP_REPAIR",
+      details: `${summary}${reports.length ? ` | ${reports.join(" | ")}` : ""}`
     });
-  } catch (error) {
-    console.warn(`Map registry repair completed, but Audit_Log could not be updated: ${error.message}`);
+  } catch (e) {
+    console.warn(`Repair completed, but Audit_Log could not be updated: ${e.message}`);
   }
 
-  return [details].concat(reports);
+  return [summary].concat(reports);
 }
 
 /**

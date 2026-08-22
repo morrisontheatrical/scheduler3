@@ -163,6 +163,8 @@ var Engine = {
     const venueMirrorIdx = getIdx(["uselivevenuemirroring", "use_live_venue_mirroring"]);
     const behaviorsIdx = getIdx(["allowedbehaviors", "behaviors", "allowed_behaviors"]);
     const logTypesIdx = getIdx(["allowedlogtypes", "logtypes", "log_types"]);
+    const spanPolicyIdx = getIdx(["spandatepolicy", "span_date_policy"]);
+
 
     let activeMode = null;
     let requestedMode = null;
@@ -181,6 +183,9 @@ var Engine = {
       const useLiveVenueMirroring = venueMirrorIdx !== -1 ? this.coerceBoolean(row[venueMirrorIdx]) : false;
       const allowedBehaviors = behaviorsIdx !== -1 ? this.parseModeList(row[behaviorsIdx]) : [];
       const allowedLogTypes = logTypesIdx !== -1 ? this.parseModeList(row[logTypesIdx]) : [];
+      const spanDatePolicy = spanPolicyIdx !== -1
+        ? String(row[spanPolicyIdx] || "BYPASS").trim().toUpperCase()
+        : "BYPASS";
 
       const mode = {
         mode: modeName,
@@ -190,7 +195,8 @@ var Engine = {
         useLiveVenueMirroring: useLiveVenueMirroring,
         allowedBehaviors: allowedBehaviors,
         allowedLogTypes: allowedLogTypes,
-        logTypes: allowedLogTypes.join(", ")
+        logTypes: allowedLogTypes.join(", "),
+        spanDatePolicy: spanDatePolicy
       };
 
       if (isActive) {
@@ -213,7 +219,8 @@ var Engine = {
       useLiveVenueMirroring: false,
       allowedBehaviors: ["BYPASS", "SYNC_ALLOWED"],
       allowedLogTypes: [],
-      logTypes: ""
+      logTypes: "",
+      spanDatePolicy: "BYPASS"
     };
   },
 
@@ -566,6 +573,12 @@ var Engine = {
   }
 
 
+};
+
+Engine.Roles.resolve = function(ctx, base) {
+  // base: "PARENT" | "LINEUP" | "IMPORT"
+  const isDraft = /draft/i.test(ctx.mode.mode || "");
+  return Engine.Roles[base] + (isDraft ? "DRAFT" : "CURRENT");
 };
 
 Engine.Core = {

@@ -2,7 +2,9 @@
 
 This document records the canonical architectural intentions, metadata specifications, module boundaries, and active issue log for the Scheduler project. It serves as the primary technical memory and reference for engine implementation.
 
-## This is a clasp-linked Apps Script project. I will execute all tests, I know this is outside of the agents scope. 
+## This is a clasp-linked Apps Script project. I will execute all tests, I know this is outside of the agents scope.
+
+> **Merge note (2026-08-22):** this revision was drafted from the 2026-08-19 baseline. If you've edited this file locally since then, diff before overwriting — this is not guaranteed to be authoritative over your working copy.
 
 ## 1. Core Architecture & Logic Governance
 
@@ -13,27 +15,27 @@ This document records the canonical architectural intentions, metadata specifica
 * `ref`: Immutable system-level enumerations (`SheetRole`, `SheetBehavior`, `AllowedBehaviors`, `Log Types`). System-governed.
 
 
-* `ControlPanel`: Key runtime execution parameters (`Mode`, `StartSync`, `EndSync`, `defaultDuration`). User-managed.
+* `ControlPanel`: Key runtime execution parameters (`Mode`, `StartSync`, `EndSync`, `defaultDuration`). User-managed. **Revision drafted 2026-08-22** — see Section 15.
 
 
-* `Mode_Config`: Operating policy table per mode (`Draft 26-27`, `Live 26-27`, etc.) dictating read/write permissions, conflict handling, and allowed log types.
+* `Mode_Config`: Operating policy table per mode (`Draft 26-27`, `Live 26-27`, etc.) dictating read/write permissions, conflict handling, and allowed log types. Now also carries `SpanDatePolicy` (added 2026-08-21).
 
 
-* `Sheet_Settings`: Tab definitions, sync behaviors (`SOURCE`, `MIRROR`, `PULL`, `REFERENCE`), sync modes, and ID key bindings.
+* `Sheet_Settings`: Tab definitions, sync behaviors (`SOURCE`, `MIRROR`, `PULL`, `REFERENCE`), sync modes, and ID key bindings. Now also carries `SheetRole` bindings for the reserved `IMPORTDRAFT`/`PARENTDRAFT`/`LINEUPDRAFT` roles (added 2026-08-22, see Section 11 for a known typo).
 
 
-* `Map_Registry`: Dynamic field-to-column index mappings for operational sheets.
+* `Map_Registry`: Dynamic field-to-column index mappings for operational sheets. Now also expected to carry a populated `Header DisplayName` per field — see Section 2 and Section 11.
 
 
-* `Lookup`: Domain validation lists (Venues, Call Types, Series, Crew Staff) enforcing spreadsheet Data Validation.
+* `Lookup`: Domain validation lists (Venues, Call Types, Series, Crew Staff) enforcing spreadsheet Data Validation. As of 2026-08-22 this sheet has a real header row (see Section 10 — this reverses the sheet's prior no-header convention).
 
 
-* `Status`: Visual feedback formatting (hex colors) and exception routing rules (`behavior`).
+* `Status`: Visual feedback formatting (hex colors) and exception routing rules (`behavior`). Now also carries `Date Span - Manual Review` (added 2026-08-21).
 
 
 
 
-* **Legacy Code Policy**: Legacy modules are retained strictly as thin compatibility wrappers until full migration; duplicate implementations of engine logic are prohibited.
+* **Legacy Code Policy**: Legacy modules are retained strictly as thin compatibility wrappers until full migration; duplicate implementations of engine logic are prohibited. **This includes `scriptLib`-side duplication**, not just `0_*.js` — see Section 6 for `SL.MapRegistry` as a live example.
 
 ## 2. Sheet Metadata & Mapping Protocol
 
@@ -46,10 +48,13 @@ This document records the canonical architectural intentions, metadata specifica
 
 
 
-* **Map Structure**: Map entries are structured objects (e.g., `{ index: 7 }`). Legacy numeric indices may be accepted for backwards compatibility, but all new code must preserve object maps.
+* **Map Structure**: Map entries are structured objects (e.g., `{ index: 7 }`). As of 2026-08-22, map entries also carry `displayName` (falls back to Field Name when `Header DisplayName` is blank in the registry) — see Section 11. Legacy numeric indices may be accepted for backwards compatibility, but all new code must preserve object maps.
 
 
-* **Boundary Index Conversion**: Map entries must be converted to numeric column indices strictly at Sheets row/range access boundaries using `Engine.getColumnIndex(map, fieldName)` or `ctx.getCol(identifier, fieldName)`.
+* **Field Name vs. Header DisplayName**: These are deliberately distinct. `Field Name` is the stable semantic key code should reference and should not change once set. `Header DisplayName` is the human-facing text expected on the physical sheet and is allowed to drift independently. Any maintenance routine that reads or writes physical headers (`repairMapRegistry`, `repairHeaders`, `resetHeaders`, `runHealthCheck`) must key off `Header DisplayName`, not `Field Name` — conflating the two was the root cause of the `Map_Registry` duplication bug found 2026-08-22 (Section 11).
+
+
+* **Boundary Index Conversion**: Map entries must be converted to numeric column indices strictly at Sheets row/range access boundaries using `Engine.getColumnIndex(map, fieldName)` or `ctx.getCol(identifier, fieldName)`. Use `Engine.getDisplayName(map, fieldName)` for the equivalent display-text lookup.
 
 
 * **Error Handling**: Invalid or unmapped fields must return `-1` rather than `undefined`.
@@ -63,16 +68,17 @@ This document records the canonical architectural intentions, metadata specifica
 
 * **Automated Header Repair (`Engine.Maintenance.repairMapRegistry`)**:
 * Dynamically discovers managed sheets from workbook metadata.
-* Reads physical row-1 headers and reconciles them against `Map_Registry` when columns shift or fields are added.
+* Reads physical row-1 headers and reconciles them against `Map_Registry` **by matching `Header DisplayName` (falling back to `Field Name` for legacy rows without one set)** — matching directly against `Field Name` was the pre-2026-08-22 behavior and is deprecated; it could not recognize a renamed header as the same field, so every rename produced a duplicate row instead of an update.
 * Permitted actions: Add missing physical headers to registry, update column indices on movement, report missing sheets, duplicate headers, duplicate registry entries, and stale fields.
-* Restricted actions: Must **never** silently delete registry rows or overwrite physical workbook headers.
+* Restricted actions: Must **never** silently delete registry rows or overwrite physical workbook headers. Deleted/orphaned columns must be flagged persistently (e.g. a `[STALE: ...]` marker in `Notes`) rather than only surfaced in an ephemeral run report — this was a gap identified 2026-08-22 and is now part of the intended design (not yet live-tested).
+* **Explicitly exempt from automated repair**: `Lookup`. It does not follow the standard header convention (see Section 10), and running header-matching logic against it risks corrupting real dropdown data or, historically, registering stray row-1 text as phantom fields.
 
 
-* **Health Checks**: `Engine.Maintenance.runHealthCheck()` performs read-only diagnostic comparisons without mutating workbook data.
+* **Health Checks**: `Engine.Maintenance.runHealthCheck()` performs read-only diagnostic comparisons without mutating workbook data. Must compare against `Header DisplayName`, matching the repair function's convention.
 
 ## 4. Mode Configuration
 
-* **Runtime Policy Fields**: `Mode Name`, `Description`, `IsActive`, `SyncMode`, `ConflictPolicy`, `PreferredTruth`, `WriteToCalendar`, `WriteToSheet`, `UseLiveVenueMirroring`, `AllowedBehaviors`, `AllowedLogTypes`.
+* **Runtime Policy Fields**: `Mode Name`, `Description`, `IsActive`, `SyncMode`, `ConflictPolicy`, `PreferredTruth`, `WriteToCalendar`, `WriteToSheet`, `UseLiveVenueMirroring`, `AllowedBehaviors`, `AllowedLogTypes`, `SpanDatePolicy`.
 
 
 * **Operational Rules**:
@@ -83,10 +89,10 @@ This document records the canonical architectural intentions, metadata specifica
 
 
 * `Live` modes enable live venue mirroring and calendar pushes.
-* `AllowedLogTypes` are parsed into string arrays in `ctx.mode` for exact-match filtering.
-
-
+* `AllowedLogTypes` are parsed into string arrays in `ctx.mode` for exact-match filtering. **As implemented, this filtering is only enforced at specific call sites in `engine_sync.js` (`RECONCILE_ADOPT`, `CONFLICT_VENUE`) that manually check membership before calling `Engine.Log.write()`. Most other `Log.write()` calls are unconditional — `Engine.Log.write()` itself does not filter. Clarified 2026-08-22; previously assumed (incorrectly) to be unimplemented entirely.**
+* **`AllowedBehaviors` is parsed into `ctx.mode.allowedBehaviors` but is not currently consulted anywhere.** `reconcileLogs()` and `syncCrewCalendar()` only check a row's own `Status.behavior` tag (hardcoded to look for `LOCKED`/`BYPASS`), never whether the active mode permits that behavior at all. This is a real gap, not a stylistic one — it blocks the planned `SyncCheck` mode (Section 15) from behaving differently per mode. **Flagged 2026-08-22, prioritized for the next implementation pass.**
 * Mode policies must be read directly from `Mode_Config`, never inferred from calendar names or `ControlPanel` heuristics.
+* `SpanDatePolicy` (`BYPASS` | `MULTI_DAY` | `DAY_BY_DAY`) governs how a detected "through" date span in `Parent Lineup.DatesAndTimes` is exploded into `Lineup` — see Section 15 for the full design and current implementation status.
 
 
 
@@ -96,13 +102,13 @@ This document records the canonical architectural intentions, metadata specifica
 
 * **Canonical Hash (`SyncHash`)**:
 * Field name of record across `import`, `Lineup`, `Parent Lineup`, `Calls`, `Crew_Calendar_Log`, `Venue_Cal_Log`, and `idLog`.
-* `Sheet_Settings.ID Key` for `import` must be updated from `Fingerprint` to `SyncHash`.
+* `Sheet_Settings.ID Key` for `import` must be updated from `Fingerprint` to `SyncHash`. **Still open as of 2026-08-22** — deliberately: `import` rows are raw and unstable (row position isn't trustworthy against an `ImportRange`-fed source), so `Fingerprint` remains the practical row-identity mechanism until the `import`→`Parent Lineup` reconciliation feature (Section 15) is built to properly track drift by content rather than position.
 * Calculated as a SHA-256 fingerprint derived from normalized event data (`Title | StartTime | EndTime | Location`).
 * Mismatches during execution flag the row as `Data Drift Detected` and route action according to `Mode_Config.ConflictPolicy`.
 
 
 * **Anchor IDs & Identity Tracking**:
-* `UUID`: Row-level canonical anchor ID used for calendar event linking and `idLog` identity tracking.
+* `UUID`: Row-level canonical anchor ID used for calendar event linking and `idLog` identity tracking. `Crew_Calendar_Log` and `Lineup`'s `Sheet_Settings.ID Key` were updated to `UUID` as of 2026-08-22, consistent with this.
 * `Source`: Origin sheet identifier (e.g., `"Calls"` or `"Lineup"`).
 * Code referencing legacy `crewRow.sourceID` must use `crewRow.UUID` for identity lookup and `crewRow.Source` when origin context is required.
 
@@ -116,7 +122,7 @@ This document records the canonical architectural intentions, metadata specifica
 ## 6. Module Boundaries (`scriptLib` vs. Local Engine)
 
 * **Universal Shared Library (`scriptLib` / `SL.*`)**:
-* `SL.Utils`: Date/time string parsing, sync window calculations, array cleaning (`getCleanColumn`).
+* `SL.Utils`: Date/time string parsing, sync window calculations, array cleaning (`getCleanColumn`), UI helpers, identity string normalization.
 
 
 * `SL.Hash`: SHA-256 fingerprint generation.
@@ -125,6 +131,12 @@ This document records the canonical architectural intentions, metadata specifica
 * `SL.Audit`: Structured log entry formatting.
 
 
+
+* `SL.Identity`: Fingerprint/hash generation from event fields (title, date, time, venue). Supersedes the older `getAdvancedDuplicateFingerprint`/`getTimeSpaceFingerprint` helpers referenced by the pre-migration `reconcile.gs`.
+* `SL.HashMaintenance`: (rebuilt 2026, contents not reviewed this session)
+* `SL.TheatricalParser`: Parses a single `DatesAndTimes` line (`"[Weekday, ]Month Day, Year[ at H:MMam/pm]"`, or `TBD`) into a start date. **Built 2026-08-21** — this was the root cause of the near-total Parent Lineup date-parsing failure found the same day; see Section 11.
+* `SL.MapRegistry`: **Legacy / likely dead as of 2026-08-22.** Reads `Map_Registry` into a flat `{FieldName: ColumnIndex}` map — the pre-migration numeric shape, not the current `{index, displayName}` object shape. Map-registry logic is understood to live entirely in `engine_maintenance.js` now; this file is a candidate for retirement pending confirmation nothing external still calls `SL.getMap()`.
+* `SL.EventTime`, `SL.Calendar`, `SL.DB`: (rebuilt 2026, contents not reviewed this session)
 * **Local Engine (Production-Specific)**:
 * `Engine.Context`: Compiles runtime state (`ctx`) from local tabs (`ref`, `Lookup`, `ControlPanel`, `Mode_Config`, `Status`).
 
@@ -135,6 +147,14 @@ This document records the canonical architectural intentions, metadata specifica
 * `Engine.IDService`: Allocates and updates entity relationships (`parentID`, `childID`, `callID`, `eventID`, `UUID`).
 
 
+* `Engine.Ingest`: Parses `Parent Lineup` into `Lineup` (`parseParentDatesAndTimes`, `goLineup`), including span-date policy resolution.
+
+
+* `Engine.Maintenance`: Header repair, dropdown refresh, health checks, sheet resets.
+
+
+
+* **Promotion policy (added 2026-08-22)**: `scriptLib` is shared across projects outside this one, and churn there has real cost — described directly as causing "backlash" in another project. New general-purpose-*candidate* logic should be built and proven inside `Engine.*` first (private, prefixed `_` if not meant for external use), and only promoted into `SL.*` once it is genuinely stable, genuinely reused elsewhere, and not still being iterated on. `Engine.Maintenance._diffHeaders` (Section 11) is the first function built under this policy — it deliberately stayed in `engine_maintenance.js` rather than `SL_Utils.js` for this reason.
 
 ## 7. Sync Ownership & Execution Pipeline
 
@@ -158,6 +178,8 @@ This document records the canonical architectural intentions, metadata specifica
 
 
 * Rows with behaviors marked `LOCKED` or `BYPASS` (or listed in `idLog` bypass lists) are skipped during reconciliation and calendar writes.
+
+* **Title matching in `reconcileLogs()` is currently exact-match-only** (`v.Title.trim() === crewRow.Title.trim()`), or an explicit manual `Options = "Prefer Venue Event"` override. The pre-migration `reconcile.gs` had a fuzzy substring match (`vTitle.includes(cTitle) || cTitle.includes(vTitle)`) that was dropped during the Engine/ctx migration — **confirmed 2026-08-22 to be an unintentional simplification, not a deliberate hardening.** See Section 15 for the planned tiered-matching redesign.
 
 
 
@@ -184,76 +206,103 @@ This document records the canonical architectural intentions, metadata specifica
 * **Operational Record**: `Audit_Log` is the central audit sheet.
 
 
-* **Automated Coupling**: `Engine.Status.apply()` automatically invokes `Engine.Log.write()` to record status transitions. Callers should **not** write duplicate log entries immediately after calling `Engine.Status.apply()`.
+* **Automated Coupling**: `Engine.Status.apply(ctx, roleOrSheetName, rowIdx, statusName, logContext)` automatically invokes `Engine.Log.write()` to record status transitions. Callers should **not** write duplicate log entries immediately after calling `Engine.Status.apply()`. Confirmed live and working as documented (2026-08-22 review).
 
 
-* **Exact Log Filtering**: Audit checks use exact match parsing against `ctx.mode.allowedLogTypes` (e.g., `CONFLICT_VENUE`, `RECONCILE_ADOPT`, `PUSH_CAL`).
+* **Log Type Filtering — clarified 2026-08-22**: Filtering against `ctx.mode.allowedLogTypes` is **not** a global mechanism inside `Engine.Log.write()`. It is applied manually at specific call sites in `engine_sync.js` before certain optional log entries (`RECONCILE_ADOPT`, `CONFLICT_VENUE`) are written. Most `Log.write()` calls elsewhere in the codebase are unconditional. This is inconsistent but not necessarily wrong — worth a deliberate decision on whether filtering should become universal, stay call-site-specific, or be removed as a stated intention if it's not going to be made universal.
 
 
 
 ## 10. Lookup Sheet Conventions
 
-* **No Header Convention**: Dropdown ranges are read as entire columns (e.g., `Lookup!A:A`), so `Lookup` intentionally has **no header row** (headers would appear as selectable options). Column names are documented via adjacent annotations and `Map_Registry` notes (`"No Header: ... Dropdown"`).
-* **Header Handling Exemption**: Maintenance routines (e.g., `applyDropdowns()`) must exempt `Lookup` from 1-row header slicing.
-* **Future Architecture**: A proposed `HasHeaderRow` boolean in `Sheet_Settings` will formalize header existence per sheet.
+* **Convention changed 2026-08-22.** `Lookup` previously had no header row by design (whole-column dropdown ranges, e.g. `Lookup!A:A`), on the reasoning that a header would appear as a selectable dropdown option. In practice this caused real problems: stray annotation text and columns duplicated from `ref` ended up sitting in row 1, indistinguishable from real dropdown data, and were then picked up as phantom fields by `repairMapRegistry` (which — unlike `runHealthCheck` — did not exempt `Lookup` from header-based scanning).
+* **`Lookup` now has a real header row** (`Venue`, `Call Type`, `Series`, `Crew`, plus columns pending removal — see below). Any code reading `Lookup`'s columns as dropdown source lists (`Engine.Maintenance.applyDropdowns()`, `Engine.loadLookups()`) must now start at row 2, not row 1. This is a **reversal** of the previously-documented `.slice(1)` bug in `applyDropdowns()` — under the new convention, slicing off row 1 is correct behavior, not a bug.
+* **Columns pending manual removal**: `Dept`, `Tech Status`, `Ren Priority`, `Priority Description` — leftover duplication of `ref`'s system enumerations (or bleed from an unrelated template), not part of this project's actual domain lists. `ref` was created specifically to separate back-end/system enumerations from front-end/domain dropdown lists; these columns predate that separation and should be deleted from `Lookup` once confirmed safe.
+* **Future architecture**: A proposed `HasHeaderRow` boolean in `Sheet_Settings` would formalize header existence per sheet — now more clearly motivated given `Lookup`'s convention just changed.
 
 ## 11. Known Issues Found in Review (August 2026)
 
-1. **`Engine.Status.apply()` Role Resolution**: Calls pass role names (e.g., `"CREWCAL"`) instead of sheet names. `apply()` fails on `getSheetByName("CREWCAL")` and early-returns before applying background colors or writing audit logs.
+1. **`Engine.Status.apply()` Role Resolution**: ~~Calls pass role names instead of sheet names, causing early-return failures.~~ **Resolved** — confirmed working as of the 2026-08-19 status update; `apply()` correctly resolves role or sheet name, updates target objects, and logs automatically.
 
 
-2. **In-Memory Target Object Updates**: `Engine.Status.apply()` expects a numeric `rowIdx` and ignores `logContext.targetObj`, preventing status updates on in-memory row objects prior to `patchRows()`.
+2. **In-Memory Target Object Updates**: ~~`Engine.Status.apply()` ignores `logContext.targetObj`.~~ **Resolved**, same status update.
 
 
-3. **Missing Status Rows**: `"Location Conflict"` and `"Calendar Log Updated"` are missing from the `Status` sheet.
+3. **Missing Status Rows**: ~~`"Location Conflict"` and `"Calendar Log Updated"` missing from `Status`.~~ **Resolved** — both present with hex/color values as of 2026-08-21 export.
 
 
-4. **Missing Calendar Method**: `Engine.Calendar.createEvent()` is referenced in `syncCrewCalendar()` but missing from `engine_calendar.js`.
+4. **Missing Calendar Method**: ~~`Engine.Calendar.createEvent()` missing.~~ **Resolved**, 2026-08-19.
 
 
-5. **Missing Reality Map Helper**: `buildRealityMap()` is called in `reconcileLogs()` but undefined in engine scripts.
+5. **Missing Reality Map Helper**: ~~`buildRealityMap()` undefined.~~ **Resolved** as `Engine.Sync._buildRealityMap()`, 2026-08-19.
 
 
-6. **Property Reference Error**: `syncCrewCalendar()` references non-existent `crewRow.sourceID`; must be updated to `crewRow.UUID`.
+6. **Property Reference Error**: ~~`crewRow.sourceID` should be `crewRow.UUID`.~~ **Resolved**, 2026-08-19.
 
 
-7. **Status Behavior Lookup Bug**: `reconcileLogs()` and `syncCrewCalendar()` attempt to read `ctx.lookup.statusBehavior[...]` instead of `ctx.status[statusName].behavior`. Multi-behavior cells require `Engine.parseModeList()`.
+7. **Status Behavior Lookup Bug**: ~~Reads `ctx.lookup.statusBehavior[...]` instead of `ctx.status[statusName].behavior`.~~ **Resolved**, 2026-08-19.
 
 
-8. **Direct Object Map Indexing**: Several maintenance routines treat object map entries `{ index: N }` as raw numbers rather than invoking `Engine.getColumnIndex()`.
+8. **Direct Object Map Indexing**: ~~Several maintenance routines treat `{index: N}` as raw numbers.~~ **Resolved** via `Engine.getColumnIndex()` normalization, 2026-08-19.
 
 
-9. **`applyDropdowns()` Field Mismatches**: References `lMap.Crew` instead of `CrewStaff`, and targets missing `Staff`/`Venue` fields on `Crew_Calendar_Log`.
-10. **Dropdown Data Truncation**: `applyDropdowns()` uses `lData.slice(1)` on `Lookup`, dropping the first dropdown option due to the no-header convention.
-11. **Undefined `Lib` Object**: `engine_ingest.js: goLineup()` calls `Lib.uuid()`, throwing a runtime error.
-12. **Log Function Signature Mismatch**: `engine_ingest.js: goParent()` calls `Engine.Log.write("Parent Lineup Updated", "Success")` with string arguments instead of `(ctx, paramsObject)`.
+9. **`applyDropdowns()` Field Mismatches**: References `lMap.Crew` instead of `CrewStaff`, and targets missing `Staff`/`Venue` fields on `Crew_Calendar_Log`. **Still open.**
 
 
-13. **Missing Target Calendar Config**: `ControlPanel` lacks the `"Crew Draft Calendar ID"` row required for calendar pushes.
-
-### Section A implementation status (2026-08-19)
-
-Completed in local code:
-
-- `Engine.Status.apply()` now resolves roles, updates target objects, supports direct row writes, and logs once.
-- `Engine.Calendar.createEvent()` and the private `Engine.Sync._buildRealityMap()` are implemented.
-- Sync identity uses `UUID`, status behavior comes from `ctx.status`, and venue ID comparison has a temporary `eventID` fallback.
-- Ingest logging and library references are corrected; executable `Lib.*` references are gone.
-- Maintenance reset, header repair, and dropdown paths normalize object maps through `Engine.getColumnIndex()`.
-- The obsolete `repairEngineEnvironmentDefaults()` bootstrap has been removed.
-
-Still requires live spreadsheet verification:
-
-- Run the Section C Apps Script wrappers and inspect `Audit_Log`.
-- Apply the Section B `Sheet_Settings`, `Map_Registry`, `ControlPanel`, and `Status` data changes directly in the workbook.
+10. **Dropdown Data Truncation**: ~~`applyDropdowns()` `.slice(1)` drops the first dropdown option.~~ **Reclassified 2026-08-22** — this is no longer a bug under the new `Lookup` header convention (Section 10); the same code is now correct and should stay as-is. Verify the range/read-start logic still matches once the header row lands for real.
 
 
+11. **Undefined `Lib` Object**: ~~`goLineup()` calls `Lib.uuid()`.~~ **Resolved**, 2026-08-19.
+
+
+12. **Log Function Signature Mismatch**: ~~`goParent()` calls `Log.write` with string args instead of an object.~~ **Resolved**, 2026-08-19.
+
+
+13. **Missing Target Calendar Config**: ~~`ControlPanel` lacks `"Crew Draft Calendar ID"`.~~ **Resolved** — confirmed present and correctly resolved by `_getCrewDraftCalendarId()`'s multi-key fallback (`"Crew Draft Calendar ID"` / `"CrewDraftCal"` / `"Crew Draft Calendar"`), 2026-08-22 review.
+
+
+14. **Date parsing pipeline near-total failure (found 2026-08-21)**: `SL.TheatricalParser` was referenced in `engine_ingest.js` but never implemented, and the original working parser (`parseDatesFromRange.js`) had been orphaned during migration — called from nowhere. Root cause of ~97% (60/62) of `Parent Lineup` rows failing to parse, confirmed via live `Audit_Log` export. `SL.TheatricalParser.parse()` built and validated against the live sheet 2026-08-21; needs a live re-run to confirm the fix holds against real data.
+
+
+15. **"through" date spans required a policy decision, not a hardcoded explosion (designed 2026-08-21)**: Originally the parser exploded every span into one row per calendar day unconditionally. Redesigned so the parser only *detects and reports* spans (`{raw, start, end}`); `goLineup()` resolves policy via `Mode_Config.SpanDatePolicy` (`BYPASS`/`MULTI_DAY`/`DAY_BY_DAY`), with an optional per-row `Parent Lineup.SpanOverride`. `BYPASS` routes through the new `Date Span - Manual Review` status (`Row.Exception = Manual Review`) rather than a bespoke logging path. `Lineup.EndDate` added to support `MULTI_DAY`. Spreadsheet side confirmed live (2026-08-22 export); `goLineup()` code-side implementation not yet re-confirmed against a fresh `engine_ingest.js` upload.
+
+
+16. **Sheet role resolution used hardcoded sheet names instead of `SheetRole`**: `goLineup()` referenced `"Parent Lineup"`/`"Lineup"` directly instead of resolving through `ctx.sheets[role]`/`ctx.getMap(role)`, even though `assembleSheetMap()` already supports role-based lookup (used elsewhere, e.g. `Engine.Calendar.pullCalendarEvents`). Fix drafted 2026-08-22, using `Engine.Roles` constants (`PARENTCURRENT`/`LINEUPCURRENT`) rather than bare string literals.
+
+
+17. **`Sheet_Settings` role typo**: the new draft-sheet row uses `IMPORTRAFT` (missing the `D`); `ref` reserves the role as `IMPORTDRAFT`. Silent failure risk — `ctx.roles["IMPORTDRAFT"]` would resolve to nothing. **Still open as of 2026-08-22.**
+
+
+18. **`Lookup`/`ref` duplication and `repairMapRegistry` pollution (found 2026-08-22)**: see Section 10 for the full account. `repairMapRegistry()` lacked `runHealthCheck()`'s `Lookup` exemption, and treated row-1 non-header text as real field names, registering junk entries (`confirm sync`, `Log types`, `Sheet.Behavior`, `Dept`, `Tech Status`, `Ren Priority`) including a genuine column-index collision (`Log Types` and `confirm sync` both claiming index 12). `Lookup` now has a real header (Section 10); the `Lookup` exemption in `repairMapRegistry()` should be revisited once the `ref`-duplicate columns are actually removed and the new header convention is confirmed stable.
+
+
+19. **`Map_Registry` matches on `Field Name` instead of `Header DisplayName` (found 2026-08-22)**: caused a literal duplicate row (`import, Event Name, 0` appears twice) and is the general mechanism behind issue 18's junk entries. `assembleSheetMap()` also never loaded `Header DisplayName` into the runtime map object at all — the actual root cause, since `resetHeaders()` had no display-name value available to write even if it wanted to. Fix drafted 2026-08-22 (`{index, displayName}` map shape, `Engine.getDisplayName()`, rewritten `repairMapRegistry()` using a new local `Engine.Maintenance._diffHeaders()` helper — see Section 6's promotion policy for why this stayed local rather than moving to `scriptLib`). Not yet implemented/tested live.
+
+
+20. **`repairHeaders()` has the same Field-Name-vs-DisplayName bug as `resetHeaders()` did, plus a more serious gap**: it has no headerless-sheet exemption at all (unlike `resetHeaders()`'s `Lookup`/`import` skip-list), meaning running it as currently written risks overwriting `Lookup`'s real dropdown data or `import`'s externally-sourced header row. **Found 2026-08-22, not yet fixed — treat as higher priority than the display-name issue given the corruption risk.**
+
+
+21. **Three maintenance functions with overlapping responsibility**: `repairHeaders()` (targeted, all sheets, safe), `resetHeaders()` (wholesale rewrite, all sheets, safe but heavier), and `reset()` (single-sheet, UI-confirmed, genuinely destructive — can wipe row data). The first two overlap enough in practice that it's worth deciding whether both are needed going forward, once both are fixed to parity. **Open question, not yet decided — see Section 12.**
+
+
+22. **`idLog` has two related-but-unclear fields**: `LastSynced` (Header DisplayName: "Last Verified") and a separate physical `LastVerified` column, confirmed empty on every row in the live export. Original intent not documented and not remembered. Candidate meaning proposed 2026-08-22: `LastSynced` = last automatic engine touch, `LastVerified` = last explicit human/verify-function confirmation (`goVerifyImportToParent`/`goVerifyParentToLineup`) — not yet decided or wired.
+
+
+23. **`SL.MapRegistry.getMap()` duplicates map-loading logic that lives in `engine_maintenance.js`/`Engine.assembleSheetMap()`**, returning the legacy flat-number map shape rather than the current `{index, displayName}` object shape. Its own doc comment claims the flat shape is canonical, which is no longer true. Likely dead code; candidate for retirement pending confirmation nothing external still depends on it. **Found 2026-08-22, not yet resolved.**
+
+
+24. **`Mode_Config.AllowedBehaviors` is loaded but never enforced** — see Section 4. **Found 2026-08-22, prioritized ahead of the `SyncCheck` mode work (Section 15) since that feature's entire premise depends on this being real.**
 
 ## 12. Open Questions & Architectural Decisions Needed
 
 * **Standardizing Venue Event ID**: Confirm renaming `Venue_Cal_Log`'s `eventID` field to `EventID` in `Map_Registry`.
 * **Crew Column Binding**: Determine if `Crew_Calendar_Log` requires an explicit `Staff`/`Crew` column for assignment drop-downs.
-* **Header Metadata Flag**: Evaluate adding `HasHeaderRow` to `Sheet_Settings` to replace hardcoded sheet exclusions.
+* **Header Metadata Flag**: Evaluate adding `HasHeaderRow` to `Sheet_Settings` to replace hardcoded sheet exclusions — more clearly motivated now that `Lookup`'s convention has changed once already (Section 10).
+* **`repairHeaders()` vs. `resetHeaders()`**: once both are fixed to parity (Section 11, issues 19–20), is there still a reason to keep both, or does the targeted function make the wholesale one redundant except for deliberate full-schema-rewrite events?
+* **`idLog.LastSynced` vs. `LastVerified`**: formalize the proposed distinction (Section 11, issue 22), collapse to one field, or repurpose `LastVerified` for something else entirely?
+* **Draft role resolution trigger**: once `IMPORTDRAFT`/`PARENTDRAFT`/`LINEUPDRAFT` are wired in (Section 15), what should actually decide whether a function resolves to the `CURRENT` or `DRAFT` role at runtime — matching against `ctx.mode.mode` by name, or an explicit `ControlPanel` toggle independent of the active `Mode_Config` row?
+* **`SL.MapRegistry.getMap()`**: still referenced anywhere outside this project, or safe to retire?
+* **`AllowedLogTypes` filtering**: should this become a universal check inside `Engine.Log.write()`, stay as manual call-site checks, or be dropped as a stated design intention if it's not going to be made consistent?
 
 ## 13. Legacy Cleanup Boundaries
 
@@ -262,6 +311,9 @@ Still requires live spreadsheet verification:
 * Remove `repairEngineEnvironmentDefaults()` (obsolete hardcoded setup).
 * Strip `config.js` down to essential UI/compatibility wrappers.
 * Refactor `runSystemHealthCheck()` to eliminate hardcoded header creation.
+* `parseDatesFromRange.js` — confirmed orphaned (called from nowhere in the current codebase), fully superseded by `SL.TheatricalParser` + `Engine.Ingest.parseParentDatesAndTimes()`. Safe to delete.
+* `scriptLib_reconcile_gs` (`reconcileByFingerprint`, `reconcileVenuesByFuzzyFingerprint`) — confirmed pre-migration/outdated (hardcoded `VENUECALMAP`/`CREWCALMAP` legacy constants, calls `applyStatus()`/`masterLog()` instead of current `Engine.*` equivalents). Not safe to run as-is, but its `reconcileByFingerprint(params)` shape is the intended blueprint for the generalized reconciliation engine in Section 15 — retain for reference until that's built, then retire.
+* `SL.MapRegistry.getMap()` — see Section 11, issue 23.
 
 
 
@@ -275,12 +327,13 @@ Still requires live spreadsheet verification:
 
 * Never mutate `Mode_Config` sheets during test runs.
 * Check triggers and UI menu dependencies before deleting legacy functions.
+* Maintenance routines that touch physical headers must key off `Header DisplayName`, never `Field Name` (Section 2).
+* Maintenance routines must respect the headerless/do-not-touch sheet exemption list (currently `Lookup`; historically `import`) — do not add a routine that scans/writes physical row 1 without checking this list first (Section 11, issue 20).
+* New general-purpose logic starts in `Engine.*`, not `scriptLib`, until proven stable and genuinely reused (Section 6).
 
 
 * **Verification Checklist**:
-* [ ] Execute `repairMapRegistry()` and confirm `MAP_REPAIR` entry in `Audit_Log`.
-
-
+* [ ] Execute `repairMapRegistry()` (once rewritten per Section 11, issue 19) and confirm a `MAP_REPAIR` entry in `Audit_Log`, with no duplicate rows produced on a header that was only renamed.
 * [ ] Execute `Engine.Maintenance.runHealthCheck()` in read-only mode.
 * [ ] Test `Draft` mode with `skipPush: true` (confirm venue mirror skipping).
 
@@ -290,3 +343,23 @@ Still requires live spreadsheet verification:
 
 * [ ] Perform controlled calendar push with explicit opt-in on a test row.
 * [ ] Confirm `Audit_Log` accurately records mode, phase, reconciliation, and status transitions.
+* [ ] Re-run `goLineup()` against the live `Parent Lineup` sheet and confirm the `SL.TheatricalParser` fix holds (target: 0 rows with `UNPARSEABLE_DATES`, aside from genuinely empty/TBD rows).
+* [ ] Confirm `SpanDatePolicy`/`SpanOverride` are actually read by `goLineup()` once that code is re-uploaded and reviewed.
+* [ ] Fix the `IMPORTRAFT` → `IMPORTDRAFT` typo in `Sheet_Settings` before relying on draft-role resolution.
+* [ ] Apply the `repairHeaders()` headerless-sheet exemption before running it again.
+
+## 15. Roadmap / Deferred Feature Ideas
+
+Captured 2026-08-22 from a series of design discussions. None of these are implemented; ordered roughly by dependency, not necessarily priority.
+
+* **`AllowedBehaviors` enforcement** (Section 4/11) — foundational; several items below depend on this being real rather than loaded-but-unused.
+* **`SyncCheck` as a new `Mode_Config` mode**: a mode with its own `AllowedBehaviors`/policy row, invoked by a scheduled trigger calling `Engine.Sync.runMasterSync({ modeName: "SyncCheck" })`. Depends on `AllowedBehaviors` enforcement being real first — otherwise the mode is decorative.
+* **`import` → `Parent Lineup` change detection**: monitor the raw Draft Season import for changes while it's in active development (renamed events, changed dates, changed venues) and reflect those onto the Draft Season Google Calendar, matching on multiple signals (dates/times, venue, etc.) with different confidence levels driving auto-update vs. manual review. This is understood to unlock one of the project's original goals — using Google Calendar itself as an interaction surface for the draft season, with changes mirrored back to `Crew_Calendar_Log` (or its eventual successor, a proper draft-season log) and, eventually, into an updated Season Lineup export in delivery format.
+* **Generalized reconciliation engine**: the shape common to `reconcileLogs()`, `syncCrewCalendar()`, and the `import` reconciliation above — source, destination, ID/fingerprint match, policy-gated log/sync/update/delete. The pre-migration `reconcileByFingerprint(params)` in `scriptLib_reconcile_gs` is a working prior draft of this exact shape and should inform the rebuild (modernized onto `SL.Identity.generate()`, object-shape maps, `Engine.Status.apply()`/`Engine.Log.write()`, and `ctx.mode.allowedBehaviors`). Per Section 6's promotion policy, build and prove this inside `Engine.*` before considering a `scriptLib` promotion.
+* **Tiered reconciliation matching + revert path**: exact fingerprint match first; fuzzy substring title match (`vTitle.includes(cTitle) || cTitle.includes(vTitle)`, dropped during the Engine migration — Section 7) as an explicit fallback, not a silent equivalent; any fuzzy-based adoption must land in `Manual Review` rather than auto-confirm. This implies a genuine gap: there is currently no mechanism to revert/undo an adoption made in error. Needs design before the fuzzy fallback is reintroduced, not after.
+* **Multi-day span → individual-dates conversion tool**: convert an already-exploded `MULTI_DAY` `Lineup` row (with `EndDate` set) into individual per-date rows on demand. Foundation already in place via the `EndDate` field and `MULTI_DAY` policy (Section 11, issue 15) — this tool would just re-run the day-by-day loop for one row on request rather than automatically.
+* **Weekday filtering for `DAY_BY_DAY` span explosion**: not currently needed (per direct confirmation) — `DAY_BY_DAY` currently enumerates every calendar day in a span, including weekends. Flagged for future, not blocking.
+* **Cross-workbook `Lookup` list sync** ("one lookup list to rule them all"): keep domain lists (`Venue`/`CallType`/`Series`/`CrewStaff`) consistent across this and other workbooks. Recommended approach: one canonical workbook, others as a scheduled one-way pull/mirror, rather than true bidirectional sync — Apps Script has no transactional guarantees, so simultaneous bidirectional edits risk real conflicts without a versioning scheme. Full bidirectional merge is a separate, harder feature to build only once one-way mirroring is proven insufficient.
+* **`ref`-level Field Name master list**: a canonical enumeration of valid `Field Name`s across all sheets, for catching cross-sheet naming drift (e.g. `"UUID"` vs. `"uuid"` vs. `"ID"`). Decoupled from the `Map_Registry` repair fix — a data-quality lint, not a dependency of it.
+* **`ControlPanel` restructure**: split into `Settings` (user-edited) and `Status` (system-written) sections, with several previously-implied-but-unwired toggles (`AutoApplyChanges`, `PushAllCrewLog`, `RunMapRepair`) either wired up or clearly marked as not-yet-functional rather than silently inert. A draft CSV was produced 2026-08-22; not yet imported/tested. Longer-term, `ControlPanel` is intended as the project's dashboard, with a friendlier UI layer planned on top — the Settings/Status split is meant to make that migration easier when it happens.
+* **Clean-slate project copy**: once each pipeline stage tests clean, copy to a fresh project with the current one retained as reference. (Carried over from prior planning; unchanged.)

@@ -72,58 +72,101 @@ function goParent() {
 function goLineup() {
   const ctx = Engine.getContext();
   const ss = ctx.ss;
-  const pSheet = ss.getSheetByName("Parent Lineup");
-  const lSheet = ss.getSheetByName("Lineup");
+
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+
+  const pSheet = ctx.sheets[pRole] || ss.getSheetByName(ctx.getRole(pRole));
+  const lSheet = ctx.sheets[lRole] || ss.getSheetByName(ctx.getRole(lRole));
+
+  const pMap = ctx.getMap(pRole);
+  const lMap = ctx.getMap(lRole);
+
+  if (!pSheet || !lSheet || !pMap || !lMap) {
+    SL.notify("Parent Lineup or Lineup sheet/map not found.", "Error");
+    return;
+  }
   
-  const pMap = ctx.maps["Parent Lineup"];
-  const lMap = ctx.maps["Lineup"];
   const pData = pSheet.getDataRange().getValues();
   const lData = lSheet.getDataRange().getValues();
-  
+
   pData.shift();
 
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
   const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lCol(fieldName)).filter(index => index >= 0)) + 1;
+  const spanOverrideCol = pCol("SpanOverride");
 
-  // Create lookup for existing children to avoid duplicates
+  // ...rest is unchanged — everything downstream already goes through pCol/lCol
+
   const existingRecords = {};
   lData.forEach((row, idx) => {
     const key = `${row[lCol("parentID")]}|${row[lCol("RawDateStr")]}`;
     existingRecords[key] = { rowIdx: idx + 1, uuid: row[lCol("UUID")] };
   });
 
-  pData.forEach((pRow) => {
+  pData.forEach((pRow, idx) => {
     const parentID = pRow[pCol("parentID")];
     const rawDates = pRow[pCol("DatesAndTimes")];
     if (!parentID || !rawDates) return;
 
+    const rowIdx = idx + 2;
     const parsedDates = Engine.Ingest.parseParentDatesAndTimes(rawDates);
-    const performanceDates = parsedDates.dates;
-    if (performanceDates.length === 0) {
+
+    if (parsedDates.dates.length === 0 && parsedDates.spans.length === 0) {
       Engine.Log.write(ctx, {
-        stage: "INGEST",
-        sheetName: "Parent Lineup",
-        rowIdx: pData.indexOf(pRow) + 2,
-        id: parentID,
+        stage: "INGEST", sheetName: "Parent Lineup", rowIdx: rowIdx, id: parentID,
         type: "UNPARSEABLE_DATES",
         details: `No usable dates found: ${parsedDates.errors.join(" | ") || "unknown format"}`
       });
       return;
     }
 
-    performanceDates.forEach((dObj, index) => {
-      const dateStr = Utilities.formatDate(dObj, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy HH:mm");
+    // Build the final set of Lineup entries this row should produce.
+    const entries = parsedDates.dates.map(d => ({ date: d, endDate: null }));
+
+    parsedDates.spans.forEach(span => {
+      const override = spanOverrideCol >= 0 ? String(pRow[spanOverrideCol] || "").trim().toUpperCase() : "";
+      const policy = override || ctx.mode.spanDatePolicy || "BYPASS";
+
+      if (policy === "MULTI_DAY") {
+        entries.push({ date: span.start, endDate: span.end });
+        return;
+      }
+
+      if (policy === "DAY_BY_DAY") {
+        for (let d = new Date(span.start); d <= span.end; d.setDate(d.getDate() + 1)) {
+          entries.push({ date: new Date(d), endDate: null });
+        }
+        return;
+      }
+
+      // BYPASS, or an unrecognized policy value — fail safe to manual review
+      // rather than guessing what the operator wanted.
+      Engine.Status.apply(ctx, "Parent Lineup", rowIdx, "Date Span - Manual Review", {
+        stage: "INGEST",
+        id: parentID,
+        details: `Span not exploded (policy: ${policy}): ${span.raw}`
+      });
+    });
+
+    if (entries.length === 0) return; // every span on this row was bypassed
+
+    entries.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    entries.forEach((entry, index) => {
+      const dateStr = Utilities.formatDate(entry.date, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy HH:mm");
       const lookupKey = `${parentID}|${dateStr}`;
       const record = existingRecords[lookupKey];
 
       const rowArray = new Array(lWidth).fill("");
       rowArray[lCol("EventName")] = pRow[pCol("EventName")];
       rowArray[lCol("parentID")] = parentID;
-      rowArray[lCol("Date")] = dObj;
+      rowArray[lCol("Date")] = entry.date;
       rowArray[lCol("RawDateStr")] = dateStr;
-      rowArray[lCol("EventOfTotal")] = `${index + 1} of ${performanceDates.length}`;
+      rowArray[lCol("EventOfTotal")] = `${index + 1} of ${entries.length}`;
       rowArray[lCol("Venue")] = pRow[pCol("Venue")];
+      if (entry.endDate && lCol("EndDate") >= 0) rowArray[lCol("EndDate")] = entry.endDate;
 
       if (record) {
         rowArray[lCol("UUID")] = record.uuid;
@@ -156,33 +199,44 @@ Engine.Ingest = Engine.Ingest || {};
  * Parses the multiline DatesAndTimes cells used by Parent Lineup.
  */
 Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
-  const result = { dates: [], errors: [] };
+  const result = { dates: [], spans: [], errors: [] };
   const parser = typeof SL !== "undefined" && SL.TheatricalParser && SL.TheatricalParser.parse;
   if (!parser || !rawDates) {
     if (rawDates) result.errors.push("Theatrical parser unavailable");
     return result;
   }
 
-  const lines = String(rawDates)
+  const rawLines = String(rawDates)
     .replace(/\r/g, "")
     .split("\n")
     .map(line => line.trim())
     .filter(Boolean);
 
+  const lines = [];
+  rawLines.forEach(line => {
+    if (/^through\b/i.test(line) && lines.length > 0) {
+      lines[lines.length - 1] = `${lines[lines.length - 1]} ${line}`;
+    } else {
+      lines.push(line);
+    }
+  });
+
   lines.forEach(line => {
+    if (/^\(.*\)$/.test(line)) return; // parenthetical annotation, not a date
+
     const content = line.replace(/^(Performance|Session\s*\d+|Sensory-Friendly Performance|School Performance)\s*:\s*/i, "").trim();
     if (!content || /^(Performance|Session\s*\d+|Sensory-Friendly Performance|School Performance)\s*:?$/i.test(content)) return;
 
-    const spanMatch = content.match(/^(?:[A-Za-z]+,\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})\s+through\s+(?:[A-Za-z]+,\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})$/i);
+    const spanMatch = content.match(/^(?:[A-Za-z]+,\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})(?:\s+at\s+\d{1,2}:\d{2}\s*[ap]m)?\s+through\s+(?:[A-Za-z]+,\s+)?([A-Za-z]+\s+\d{1,2},\s+\d{4})(?:\s+at\s+\d{1,2}:\d{2}\s*[ap]m)?$/i);
     if (spanMatch) {
       const start = new Date(spanMatch[1]);
       const end = new Date(spanMatch[2]);
       if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end >= start) {
-        for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
-          result.dates.push(new Date(date));
-        }
-        return;
+        result.spans.push({ raw: content, start: start, end: end });
+      } else {
+        result.errors.push(content);
       }
+      return;
     }
 
     const parsed = parser(content);
