@@ -7,7 +7,6 @@ This document records the canonical architectural intentions, metadata specifica
 > **Merge note (2026-08-22):** this revision was drafted from the 2026-08-19 baseline. If you've edited this file locally since then, diff before overwriting — this is not guaranteed to be authoritative over your working copy.
 
 ## 1. Core Architecture & Logic Governance
-
 * **Platform**: Google Apps Script (GAS) and Google Sheets form the runtime environment.
 * **Canonical Entrypoint**: `Engine.getContext()` is the sole entrypoint for initializing runtime state (`ctx`).
 * **Single Source of Truth**: The engine owns configuration, sync state, sheet maps, operational modes, audit logging, status rules, and identity mapping.

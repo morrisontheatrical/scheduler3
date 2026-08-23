@@ -393,13 +393,22 @@ var Engine = {
         map: {}
       };
 
-      mapData.filter(m => m[0] === sheetName).forEach(m => {
-        const fieldName = m[1];
-        const colIndex = Number(m[2]);
-        if (fieldName && !isNaN(colIndex)) {
-          sheetConfig.map[fieldName] = { index: colIndex };
-        }
-      });
+    mapData.filter(m => m[0] === sheetName).forEach(m => {
+      const fieldName = m[1];
+      const colIndex = Number(m[2]);
+      const displayName = String(m[4] || "").trim() || fieldName; // col E, "Header DisplayName"; blank falls back to Field Name
+      if (fieldName && !isNaN(colIndex)) {
+        sheetConfig.map[fieldName] = { index: colIndex, displayName: displayName };
+      }
+    });
+ 
+// 2. New accessor, alongside getColumnIndex.
+Engine.getDisplayName = function(map, fieldName) {
+  if (!map || !map[fieldName]) return fieldName;
+  const fieldDef = map[fieldName];
+  return (typeof fieldDef === "object" && fieldDef.displayName) || fieldName;
+};
+
 
       ctx.sheetDefs[sheetName] = sheetConfig;
       ctx.schema[sheetName] = sheetConfig;
