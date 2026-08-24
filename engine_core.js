@@ -116,6 +116,14 @@ var Engine = {
     return Number.isInteger(columnIndex) && columnIndex >= 0 ? columnIndex : -1;
   },
 
+  getLibraryModule: function(moduleName) {
+    if (typeof scriptLib !== "undefined" && scriptLib.SL && scriptLib.SL[moduleName]) {
+      return scriptLib.SL[moduleName];
+    }
+    if (typeof SL !== "undefined" && SL[moduleName]) return SL[moduleName];
+    return null;
+  },
+
   parseModeList: function(value) {
     if (value === undefined || value === null || value === "") return [];
     if (Array.isArray(value)) return value.map(v => String(v).trim()).filter(Boolean);

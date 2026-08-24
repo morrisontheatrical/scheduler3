@@ -267,10 +267,10 @@ This document records the canonical architectural intentions, metadata specifica
 13. **Missing Target Calendar Config**: ~~`ControlPanel` lacks `"Crew Draft Calendar ID"`.~~ **Resolved** — confirmed present and correctly resolved by `_getCrewDraftCalendarId()`'s multi-key fallback (`"Crew Draft Calendar ID"` / `"CrewDraftCal"` / `"Crew Draft Calendar"`), 2026-08-22 review.
 
 
-14. **Date parsing pipeline near-total failure (found 2026-08-21)**: `SL.TheatricalParser` was referenced in `engine_ingest.js` but never implemented, and the original working parser (`parseDatesFromRange.js`) had been orphaned during migration — called from nowhere. Root cause of ~97% (60/62) of `Parent Lineup` rows failing to parse, confirmed via live `Audit_Log` export. `SL.TheatricalParser.parse()` built and validated against the live sheet 2026-08-21; needs a live re-run to confirm the fix holds against real data.
+14. **Date parsing library namespace failure**: scheduler3 was checking the undeclared/global `SL` namespace even though the library is imported as `scriptLib`. This produced `Theatrical parser unavailable` for every Parent Lineup row in the 2026-08-23 audit. The ingest and IO paths now resolve library modules through the imported namespace; rerun verification to confirm the deployed clasp library contains `TheatricalParser`.
 
 
-15. **"through" date spans required a policy decision, not a hardcoded explosion (designed 2026-08-21)**: Originally the parser exploded every span into one row per calendar day unconditionally. Redesigned so the parser only *detects and reports* spans (`{raw, start, end}`); `goLineup()` resolves policy via `Mode_Config.SpanDatePolicy` (`BYPASS`/`MULTI_DAY`/`DAY_BY_DAY`), with an optional per-row `Parent Lineup.SpanOverride`. `BYPASS` routes through the new `Date Span - Manual Review` status (`Row.Exception = Manual Review`) rather than a bespoke logging path. `Lineup.EndDate` added to support `MULTI_DAY`. Spreadsheet side confirmed live (2026-08-22 export); `goLineup()` code-side implementation not yet re-confirmed against a fresh `engine_ingest.js` upload.
+15. **"through" date spans required a policy decision, not a hardcoded explosion (designed 2026-08-21)**: Originally the parser exploded every span into one row per calendar day unconditionally. Redesigned so the parser only *detects and reports* spans (`{raw, start, end}`); `goLineup()` resolves policy via `Mode_Config.SpanDatePolicy` (`BYPASS`/`MULTI_DAY`/`DAY_BY_DAY`), with an optional per-row `Parent Lineup.SpanOverride`. `BYPASS` routes through the new `Date Span - Manual Review` status (`Row.Exception = Manual Review`) rather than a bespoke logging path. `Lineup.EndDate` added to support `MULTI_DAY`. Spreadsheet side confirmed live (2026-08-22 export); rerun after the library namespace fix.
 
 
 16. **Sheet role resolution used hardcoded sheet names instead of `SheetRole`**: `goLineup()` referenced `"Parent Lineup"`/`"Lineup"` directly instead of resolving through `ctx.sheets[role]`/`ctx.getMap(role)`, even though `assembleSheetMap()` already supports role-based lookup (used elsewhere, e.g. `Engine.Calendar.pullCalendarEvents`). Fix drafted 2026-08-22, using `Engine.Roles` constants (`PARENTCURRENT`/`LINEUPCURRENT`) rather than bare string literals.
@@ -353,6 +353,10 @@ This document records the canonical architectural intentions, metadata specifica
 * [ ] Confirm `SpanDatePolicy`/`SpanOverride` are actually read by `goLineup()` once that code is re-uploaded and reviewed.
 * [ ] Fix the `IMPORTRAFT` → `IMPORTDRAFT` typo in `Sheet_Settings` before relying on draft-role resolution.
 * [ ] Apply the `repairHeaders()` headerless-sheet exemption before running it again.
+* [ ] Run `resolveParentDuplicates()` to identify duplicate candidates; merge only after choosing keeper and duplicate IDs with `mergeParentDuplicate(keepParentID, duplicateParentID)`.
+* [ ] Rerun `goParent()` and confirm Parent Lineup `SyncStatus`, `LastSynced`, `LastUpdated`, and `SyncHash` populate for new and changed rows.
+* [ ] Rerun `goVerifyParentToLineup()` and confirm parser availability, nonzero Lineup checks, and status timestamps.
+* [ ] Run `repairBlankHashes()` and confirm only blank `SyncHash` cells change, with repair counts in `Audit_Log`.
 
 ## 15. Roadmap / Deferred Feature Ideas
 
@@ -372,4 +376,5 @@ Captured 2026-08-22 from a series of design discussions. None of these are imple
 * **Registry and identity helpers**: consolidate sheet/role/map resolution and identity association into a small set of Engine helpers. `UniqueID` remains the idLog key because it can contain different ID forms; the source/record type determines how it is interpreted. An XLOOKUP-style spreadsheet helper is not required for runtime behavior, but a typed engine lookup by `UniqueID`, `RecordType`, and `SheetLocation` may be useful.
 * **Sync policy enforcement**: return to `engine_sync.js` after the maintenance and ingest slices are stable. Enforce `AllowedBehaviors`, reconcile `UniqueID`/`UUID` registry usage, and add focused sync-menu tests before enabling calendar writes.
 * **scriptLib stabilization**: maintain `scriptLib` as a separately versioned shared dependency with its own development intentions. Keep scheduler-specific registry maintenance in `Engine.Maintenance`; retire `SL.MapRegistry` after confirming no external project depends on it.
+* **Recover deprecated functionality**: use the readable sources in `scriptLib/Depreciated` as references while rebuilding workbook-wide hash repair, generalized fingerprint reconciliation, venue fuzzy matching, and duplicate-row cleanup under current Engine/context APIs. Deprecated files are reference-only and must not export their former production names.
 * **Clean-slate project copy**: once each pipeline stage tests clean, copy to a fresh project with the current one retained as reference. (Carried over from prior planning; unchanged.)

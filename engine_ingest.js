@@ -29,10 +29,8 @@ function goParent() {
   const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pCol(fieldName)).filter(index => index >= 0)) + 1;
   const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
  
-  // Only fields Map_Registry marks "Source (Read-Only)" are ever written
-  // here. User Owned (ShowNotes, EventNeeds, SpanOverride) and
-  // System-Managed (SyncStatus, LastSynced, SyncHash, etc.) are never
-  // touched by this function, on either the insert or update path.
+  // Source fields mirror import. System fields are maintained by this
+  // operation so every successful import pass has a visible audit state.
   const sourceFields = Object.keys(pMap).filter(fieldName =>
     Engine.getSyncBehavior(pMap, fieldName) === "Source (Read-Only)"
   );
@@ -79,7 +77,10 @@ function goParent() {
       });
       rowArray[pCol("parentID")] = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
       rowArray[pCol("SyncStatus")] = "Active";
+      if (pCol("LastSynced") >= 0) rowArray[pCol("LastSynced")] = new Date();
+      if (pCol("LastUpdated") >= 0) rowArray[pCol("LastUpdated")] = new Date();
       pSheet.appendRow(rowArray);
+      Engine.Ingest._writeParentIdentity(ctx, pSheet.getLastRow(), rowArray, pMap);
       created++;
       return;
     }
@@ -116,6 +117,10 @@ function goParent() {
         changed = true;
       }
     });
+    const now = new Date();
+    if (pCol("LastSynced") >= 0) pSheet.getRange(match.rowIdx, pCol("LastSynced") + 1).setValue(now);
+    if (changed && pCol("LastUpdated") >= 0) pSheet.getRange(match.rowIdx, pCol("LastUpdated") + 1).setValue(now);
+    if (pCol("SyncStatus") >= 0) pSheet.getRange(match.rowIdx, pCol("SyncStatus") + 1).setValue("Active");
     if (changed) updated++;
   });
  
@@ -124,6 +129,121 @@ function goParent() {
     type: "SUCCESS",
     details: `Parent Lineup Updated: ${created} created, ${updated} updated, ${flaggedForReview} flagged for manual review (rename candidates).`
   });
+}
+
+Engine.Ingest._writeParentIdentity = function(ctx, rowNumber, rowArray, pMap) {
+  const identity = Engine.getLibraryModule("Identity");
+  const hashCol = Engine.getColumnIndex(pMap, "SyncHash");
+  if (!identity || hashCol < 0 || typeof identity.generate !== "function") return;
+  const titleCol = Engine.getColumnIndex(pMap, "EventName");
+  const dateCol = Engine.getColumnIndex(pMap, "DatesAndTimes");
+  const venueCol = Engine.getColumnIndex(pMap, "Venue");
+  const generated = identity.generate({
+    title: titleCol >= 0 ? rowArray[titleCol] : "",
+    date: dateCol >= 0 ? rowArray[dateCol] : "",
+    time: "",
+    venue: venueCol >= 0 ? rowArray[venueCol] : ""
+  });
+  if (generated && generated.hash) ctx.ss.getSheetByName("Parent Lineup").getRange(rowNumber, hashCol + 1).setValue(generated.hash);
+};
+
+Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
+  options = options || {};
+  const sheet = ctx.ss.getSheetByName("Parent Lineup");
+  const map = ctx.getMap("Parent Lineup");
+  if (!sheet || !map) return { groups: [], merged: 0 };
+  const col = field => Engine.getColumnIndex(map, field);
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const data = sheet.getDataRange().getValues();
+  const rows = data.slice(1).map((row, index) => ({ row: row, rowNumber: index + 2 }));
+  const groups = {};
+  rows.forEach(item => {
+    const key = ["Opening", "Range", "Venue"].map(field => normalize(col(field) >= 0 ? item.row[col(field)] : "")).join("|");
+    if (key !== "||") (groups[key] = groups[key] || []).push(item);
+  });
+  const duplicateGroups = Object.values(groups).filter(group => group.length > 1);
+  let merged = 0;
+  duplicateGroups.forEach(group => {
+    const keep = group.slice().sort((a, b) => a.rowNumber - b.rowNumber)[0];
+    const duplicates = group.filter(item => item !== keep);
+    duplicates.forEach(item => {
+      Engine.Log.write(ctx, {
+        stage: "INGEST", sheetName: "Parent Lineup", rowIdx: item.rowNumber,
+        id: item.row[col("parentID")], type: "PARENT_DUPLICATE",
+        details: `Duplicate candidate for ${keep.row[col("parentID")]}; retained earliest row ${keep.rowNumber}.`
+      });
+      if (options.merge === true) {
+        const statusCol = col("SyncStatus");
+        if (statusCol >= 0) sheet.getRange(item.rowNumber, statusCol + 1).setValue("Manual Review");
+        merged++;
+      }
+    });
+  });
+  return { groups: duplicateGroups.map(group => group.map(item => item.rowNumber)), merged: merged };
+};
+
+Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParentID) {
+  if (!keepParentID || !duplicateParentID || keepParentID === duplicateParentID) {
+    throw new Error("mergeParentDuplicate requires two different parent IDs");
+  }
+
+  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const parentMap = ctx.getMap("Parent Lineup");
+  if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map not found");
+  const parentIdCol = Engine.getColumnIndex(parentMap, "parentID");
+  const parentData = parentSheet.getDataRange().getValues();
+  const duplicateRow = parentData.findIndex((row, index) => index > 0 && row[parentIdCol] === duplicateParentID);
+  if (duplicateRow < 0) throw new Error(`Duplicate Parent Lineup row not found: ${duplicateParentID}`);
+  const keepRow = parentData.findIndex((row, index) => index > 0 && row[parentIdCol] === keepParentID);
+  if (keepRow < 0) throw new Error(`Keeper Parent Lineup row not found: ${keepParentID}`);
+
+  const changedLocations = [];
+  Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
+    const map = ctx.getMap(sheetName);
+    const sheet = ctx.ss.getSheetByName(sheetName);
+    const col = Engine.getColumnIndex(map, "parentID");
+    if (!sheet || col < 0 || sheetName === "Parent Lineup") return;
+    const values = sheet.getDataRange().getValues();
+    for (let i = 1; i < values.length; i++) {
+      if (values[i][col] === duplicateParentID) {
+        sheet.getRange(i + 1, col + 1).setValue(keepParentID);
+        changedLocations.push(`${sheetName}!R${i + 1}`);
+      }
+    }
+  });
+
+  const idLog = ctx.sheets.ID_LOG;
+  const idMap = ctx.maps.ID_LOG;
+  const idCol = Engine.getColumnIndex(idMap, "UniqueID");
+  const idStatusCol = Engine.getColumnIndex(idMap, "SyncStatus");
+  const idDetailsCol = Engine.getColumnIndex(idMap, "LogDetails");
+  const idData = idLog && idLog.getDataRange().getValues();
+  if (idData && idCol >= 0) {
+    const idRow = idData.findIndex((row, index) => index > 0 && row[idCol] === duplicateParentID);
+    if (idRow >= 0) {
+      if (idStatusCol >= 0) idLog.getRange(idRow + 1, idStatusCol + 1).setValue("Merged");
+      if (idDetailsCol >= 0) idLog.getRange(idRow + 1, idDetailsCol + 1).setValue(`Merged into ParentID ${keepParentID}`);
+    }
+  }
+
+  parentSheet.deleteRow(duplicateRow + 1);
+  Engine.Log.write(ctx, {
+    stage: "INGEST",
+    sheetName: "Parent Lineup",
+    id: duplicateParentID,
+    type: "PARENT_DUPLICATE_MERGED",
+    details: `Merged into ${keepParentID}. Repointed ${changedLocations.length} dependent row(s).`
+  });
+  return { keepParentID: keepParentID, duplicateParentID: duplicateParentID, changedLocations: changedLocations };
+};
+
+function mergeParentDuplicate(keepParentID, duplicateParentID) {
+  return Engine.Ingest.mergeParentDuplicate(Engine.getContext(), keepParentID, duplicateParentID);
+}
+
+function resolveParentDuplicates(merge) {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.resolveParentDuplicates(ctx, { merge: Boolean(merge) });
 }
 
 /**
@@ -260,7 +380,8 @@ Engine.Ingest = Engine.Ingest || {};
  */
 Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
   const result = { dates: [], spans: [], errors: [] };
-  const parser = typeof SL !== "undefined" && SL.TheatricalParser && SL.TheatricalParser.parse;
+  const parserModule = Engine.getLibraryModule("TheatricalParser");
+  const parser = parserModule && parserModule.parse;
   if (!parser || !rawDates) {
     if (rawDates) result.errors.push("Theatrical parser unavailable");
     return result;
@@ -666,7 +787,9 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
       if (dateDrift || venueDrift) {
         flagged++;
         const statusCol = lCol("SyncStatus");
+        const lastSyncedCol = lCol("LastSynced");
         if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Manual Review");
+        if (lastSyncedCol >= 0) lSheet.getRange(child.rowIdx, lastSyncedCol + 1).setValue(new Date());
         Engine.Log.write(ctx, {
           stage: "VERIFY_PARENT",
           sheetName: "Lineup",

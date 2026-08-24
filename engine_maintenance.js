@@ -421,7 +421,6 @@ Engine.Maintenance = {
         if (entry.notes.indexOf(staleTag) === 0) {
           registrySheet.getRange(entry.rowNumber, colNotes + 1).setValue(entry.notes.replace(staleTag, "").trim());
         }
-        reports.push(`Reunited in ${sheetName}: "${entry.fieldName}" now at column ${physicalIndex} (matched by Field Name).`);
         reports.push(`Reunited in ${sheetName}: "${entry.fieldName}" now at column ${physicalIndex}.`);
       });
 
@@ -466,6 +465,70 @@ Engine.Maintenance = {
 
     return [summary].concat(reports);
   }
+};
+
+Engine.Maintenance.repairBlankHashes = function(ctx, options) {
+  ctx = ctx || Engine.getContext();
+  options = options || {};
+  const hashMaintenance = Engine.getLibraryModule("HashMaintenance");
+  if (!hashMaintenance || typeof hashMaintenance.repopulateSheetHashes !== "function") {
+    throw new Error("scriptLib.SL.HashMaintenance.repopulateSheetHashes is unavailable");
+  }
+
+  const identityFieldsBySheet = {
+    "Lineup": { title: "EventName", date: "Date", time: "Time", venue: "Venue" },
+    "Parent Lineup": { title: "EventName", date: "Opening", time: "DatesAndTimes", venue: "Venue" },
+    "import": { title: "EventName", date: "Opening", time: "DatesAndTimes", venue: "Venue" },
+    "Calls": { title: "Title", date: "Date", time: "CallTime", venue: "Location" },
+    "Crew_Calendar_Log": { title: "Title", date: "Date", time: "Start", venue: "Location" },
+    "Venue_Cal_Log": { title: "Title", date: "Date", time: "Start", venue: "Location" }
+  };
+  const reports = [];
+  let repaired = 0;
+
+  Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
+    const sheetDef = ctx.sheetDefs[sheetName];
+    const sheet = sheetDef && sheetDef.sheet;
+    const map = sheetDef && sheetDef.map;
+    const hashCol = Engine.getColumnIndex(map, "SyncHash");
+    if (!sheet || !map || hashCol < 0) return;
+    if (sheetDef.settings && sheetDef.settings.isProtected && !options.confirmProtected) {
+      reports.push(`Skipped protected sheet ${sheetName}`);
+      return;
+    }
+
+    const data = sheet.getDataRange().getValues();
+    const blankRows = [];
+    data.slice(1).forEach((row, index) => {
+      if (row[hashCol] === "" || row[hashCol] === null || row[hashCol] === undefined) blankRows.push(index + 2);
+    });
+    if (!blankRows.length) return;
+
+    const fieldNames = identityFieldsBySheet[sheetName] || { title: "Title", date: "Date", time: "Start", venue: "Location" };
+    const count = hashMaintenance.repopulateSheetHashes(
+      sheetName,
+      map,
+      ctx.ss,
+      fieldNames,
+      { blankOnly: true }
+    );
+    const now = new Date();
+    const lastSyncedCol = Engine.getColumnIndex(map, "LastSynced");
+    const lastUpdatedCol = Engine.getColumnIndex(map, "LastUpdated");
+    blankRows.forEach(rowNumber => {
+      if (lastSyncedCol >= 0) sheet.getRange(rowNumber, lastSyncedCol + 1).setValue(now);
+      if (lastUpdatedCol >= 0) sheet.getRange(rowNumber, lastUpdatedCol + 1).setValue(now);
+    });
+    repaired += count;
+    reports.push(`Repaired ${count} blank hash(es) in ${sheetName}`);
+  });
+
+  Engine.Log.write(ctx, {
+    stage: "MAINTENANCE",
+    type: "HASH_REPAIR",
+    details: `Blank hash repair completed: ${repaired} row(s). ${reports.join(" | ")}`
+  });
+  return { repaired: repaired, reports: reports };
 };
 
 // Explicit registry operations. These are intentionally separate from repair:
@@ -537,6 +600,10 @@ function createRegistry() {
 
 function deleteRegistry(sheetName, fieldName) {
   return Engine.Maintenance.deleteRegistry({ sheetName: sheetName, fieldName: fieldName });
+}
+
+function repairBlankHashes() {
+  return Engine.Maintenance.repairBlankHashes(Engine.getContext());
 }
 
 /**

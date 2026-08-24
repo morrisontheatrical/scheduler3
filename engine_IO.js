@@ -44,11 +44,9 @@ function batchWrite(role, dataObjects, ctx) {
       venue: dataObj.Location || dataObj.Venue
     };
 
-    if (typeof SL !== "undefined" && SL.Identity && typeof SL.Identity.generate === "function") {
-      return SL.Identity.generate(identityInput);
-    }
-    if (typeof scriptLib !== "undefined" && scriptLib.Identity && typeof scriptLib.Identity.generate === "function") {
-      return scriptLib.Identity.generate(identityInput);
+    const identityModule = Engine.getLibraryModule("Identity");
+    if (identityModule && typeof identityModule.generate === "function") {
+      return identityModule.generate(identityInput);
     }
     return null;
   };
@@ -94,11 +92,10 @@ function patchRows(role, updatedObjects, ctx) {
       time: obj.Start,
       venue: obj.Location
     };
-    const identity = typeof SL !== "undefined" && SL.Identity && typeof SL.Identity.generate === "function"
-      ? SL.Identity.generate(identityInput)
-      : typeof scriptLib !== "undefined" && scriptLib.Identity && typeof scriptLib.Identity.generate === "function"
-        ? scriptLib.Identity.generate(identityInput)
-        : null;
+    const identityModule = Engine.getLibraryModule("Identity");
+    const identity = identityModule && typeof identityModule.generate === "function"
+      ? identityModule.generate(identityInput)
+      : null;
     if (identity) obj.SyncHash = identity.hash;
 
     const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field)).filter(index => index >= 0);

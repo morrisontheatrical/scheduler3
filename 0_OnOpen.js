@@ -19,6 +19,7 @@ function onOpen() {
     .addItem('Open Audit Log', 'openAuditLog')
     .addSeparator()
     .addItem('Repair Map Registry', 'repairMapRegistry')
+    .addItem('Repair Blank Hashes', 'repairBlankHashes')
     .addItem('Reset Headers', 'resetHeadersMenu')
     .addToUi();
 
