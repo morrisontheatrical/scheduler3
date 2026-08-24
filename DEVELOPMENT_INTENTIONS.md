@@ -64,13 +64,20 @@ This document records the canonical architectural intentions, metadata specifica
 
 * **Authority**: `Map_Registry` is authoritative for field-to-column maps; `Sheet_Settings` identifies managed sheets and roles.
 
+* **Registry maintenance contract**:
+	* Read physical headers from a managed sheet and write/update the corresponding `Header DisplayName` and `Column Index` in `Map_Registry`.
+	* Write physical headers from `Map_Registry` using each row's `Field Name`/`Header DisplayName` association.
+	* `createRegistry` may add missing registry entries from physical headers.
+	* `deleteRegistry` is an explicit operation; repair must never silently delete rows.
+	* `Field Name` is the stable code-facing identity. `Header DisplayName` is the physical/user-facing label. The registry row and column index associate them; a display-name change must not rename the field.
+
 
 * **Automated Header Repair (`Engine.Maintenance.repairMapRegistry`)**:
 * Dynamically discovers managed sheets from workbook metadata.
 * Reads physical row-1 headers and reconciles them against `Map_Registry` **by matching `Header DisplayName` (falling back to `Field Name` for legacy rows without one set)** — matching directly against `Field Name` was the pre-2026-08-22 behavior and is deprecated; it could not recognize a renamed header as the same field, so every rename produced a duplicate row instead of an update.
 * Permitted actions: Add missing physical headers to registry, update column indices on movement, report missing sheets, duplicate headers, duplicate registry entries, and stale fields.
 * Restricted actions: Must **never** silently delete registry rows or overwrite physical workbook headers. Deleted/orphaned columns must be flagged persistently (e.g. a `[STALE: ...]` marker in `Notes`) rather than only surfaced in an ephemeral run report — this was a gap identified 2026-08-22 and is now part of the intended design (not yet live-tested).
-* **Explicitly exempt from automated repair**: `Lookup`. It does not follow the standard header convention (see Section 10), and running header-matching logic against it risks corrupting real dropdown data or, historically, registering stray row-1 text as phantom fields.
+* **Header convention**: all current sheets are expected to have headers. `isProtected` remains a write guard, and header writers should require explicit confirmation before overwriting a protected sheet. `Lookup` is now headered and may be scanned, provided its row 1 is excluded when building dropdown values.
 
 
 * **Health Checks**: `Engine.Maintenance.runHealthCheck()` performs read-only diagnostic comparisons without mutating workbook data. Must compare against `Header DisplayName`, matching the repair function's convention.
@@ -102,7 +109,7 @@ This document records the canonical architectural intentions, metadata specifica
 * **Canonical Hash (`SyncHash`)**:
 * Field name of record across `import`, `Lineup`, `Parent Lineup`, `Calls`, `Crew_Calendar_Log`, `Venue_Cal_Log`, and `idLog`.
 * `Sheet_Settings.ID Key` for `import` must be updated from `Fingerprint` to `SyncHash`. **Still open as of 2026-08-22** — deliberately: `import` rows are raw and unstable (row position isn't trustworthy against an `ImportRange`-fed source), so `Fingerprint` remains the practical row-identity mechanism until the `import`→`Parent Lineup` reconciliation feature (Section 15) is built to properly track drift by content rather than position.
-* Calculated as a SHA-256 fingerprint derived from normalized event data (`Title | StartTime | EndTime | Location`).
+* Calculated by one shared, deterministic fingerprint implementation derived from normalized event data (`Title | StartTime | EndTime | Location`). The encoding/hash algorithm is an implementation detail; consistency across all producers and consumers is the requirement. Existing records must be migrated deliberately if the algorithm changes.
 * Mismatches during execution flag the row as `Data Drift Detected` and route action according to `Mode_Config.ConflictPolicy`.
 
 
@@ -245,7 +252,7 @@ This document records the canonical architectural intentions, metadata specifica
 8. **Direct Object Map Indexing**: ~~Several maintenance routines treat `{index: N}` as raw numbers.~~ **Resolved** via `Engine.getColumnIndex()` normalization, 2026-08-19.
 
 
-9. **`applyDropdowns()` Field Mismatches**: References `lMap.Crew` instead of `CrewStaff`, and targets missing `Staff`/`Venue` fields on `Crew_Calendar_Log`. **Still open.**
+9. **`applyDropdowns()` Field Mismatches**: `Lookup` now has a header row and the reader must exclude it. Crew and call-type lists are loaded but not applied, and the target mapping still needs confirmation for crew/staff assignment fields. **Partially addressed in code; field wiring remains open.**
 
 
 10. **Dropdown Data Truncation**: ~~`applyDropdowns()` `.slice(1)` drops the first dropdown option.~~ **Reclassified 2026-08-22** — this is no longer a bug under the new `Lookup` header convention (Section 10); the same code is now correct and should stay as-is. Verify the range/read-start logic still matches once the header row lands for real.
@@ -275,10 +282,10 @@ This document records the canonical architectural intentions, metadata specifica
 18. **`Lookup`/`ref` duplication and `repairMapRegistry` pollution (found 2026-08-22)**: see Section 10 for the full account. `repairMapRegistry()` lacked `runHealthCheck()`'s `Lookup` exemption, and treated row-1 non-header text as real field names, registering junk entries (`confirm sync`, `Log types`, `Sheet.Behavior`, `Dept`, `Tech Status`, `Ren Priority`) including a genuine column-index collision (`Log Types` and `confirm sync` both claiming index 12). `Lookup` now has a real header (Section 10); the `Lookup` exemption in `repairMapRegistry()` should be revisited once the `ref`-duplicate columns are actually removed and the new header convention is confirmed stable.
 
 
-19. **`Map_Registry` matches on `Field Name` instead of `Header DisplayName` (found 2026-08-22)**: caused a literal duplicate row (`import, Event Name, 0` appears twice) and is the general mechanism behind issue 18's junk entries. `assembleSheetMap()` also never loaded `Header DisplayName` into the runtime map object at all — the actual root cause, since `resetHeaders()` had no display-name value available to write even if it wanted to. Fix drafted 2026-08-22 (`{index, displayName}` map shape, `Engine.getDisplayName()`, rewritten `repairMapRegistry()` using a new local `Engine.Maintenance._diffHeaders()` helper — see Section 6's promotion policy for why this stayed local rather than moving to `scriptLib`). Not yet implemented/tested live.
+19. **`Map_Registry` duplicate/header association**: the registry must preserve stable `Field Name` while tracking physical `Header DisplayName` by column index. `Engine.Maintenance` now reads headers into the registry, updates moved/renamed associations, reports duplicate rows, and provides explicit create/delete/write entrypoints. Live verification is still required, especially against the known `Lookup` index collision.
 
 
-20. **`repairHeaders()` has the same Field-Name-vs-DisplayName bug as `resetHeaders()` did, plus a more serious gap**: it has no headerless-sheet exemption at all (unlike `resetHeaders()`'s `Lookup`/`import` skip-list), meaning running it as currently written risks overwriting `Lookup`'s real dropdown data or `import`'s externally-sourced header row. **Found 2026-08-22, not yet fixed — treat as higher priority than the display-name issue given the corruption risk.**
+20. **Protected header writes**: all current sheets are expected to have headers, so the old headerless-sheet exemption is no longer the governing rule. `repairHeaders()` and `resetHeaders()` now skip protected sheets by default and support an explicit confirmation path before overwriting them. Live verification is still required.
 
 
 21. **Three maintenance functions with overlapping responsibility**: `repairHeaders()` (targeted, all sheets, safe), `resetHeaders()` (wholesale rewrite, all sheets, safe but heavier), and `reset()` (single-sheet, UI-confirmed, genuinely destructive — can wipe row data). The first two overlap enough in practice that it's worth deciding whether both are needed going forward, once both are fixed to parity. **Open question, not yet decided — see Section 12.**
@@ -287,7 +294,7 @@ This document records the canonical architectural intentions, metadata specifica
 22. **`idLog` has two related-but-unclear fields**: `LastSynced` (Header DisplayName: "Last Verified") and a separate physical `LastVerified` column, confirmed empty on every row in the live export. Original intent not documented and not remembered. Candidate meaning proposed 2026-08-22: `LastSynced` = last automatic engine touch, `LastVerified` = last explicit human/verify-function confirmation (`goVerifyImportToParent`/`goVerifyParentToLineup`) — not yet decided or wired.
 
 
-23. **`SL.MapRegistry.getMap()` duplicates map-loading logic that lives in `engine_maintenance.js`/`Engine.assembleSheetMap()`**, returning the legacy flat-number map shape rather than the current `{index, displayName}` object shape. Its own doc comment claims the flat shape is canonical, which is no longer true. Likely dead code; candidate for retirement pending confirmation nothing external still depends on it. **Found 2026-08-22, not yet resolved.**
+23. **`SL.MapRegistry.getMap()` duplicates map-loading logic that lives in `engine_maintenance.js`/`Engine.assembleSheetMap()`**, returning the legacy flat-number map shape rather than the current `{index, displayName}` object shape. It is unused by this project and is now treated as deprecated; do not promote scheduler registry maintenance into it unless another project proves the need.
 
 
 24. **`Mode_Config.AllowedBehaviors` is loaded but never enforced** — see Section 4. **Found 2026-08-22, prioritized ahead of the `SyncCheck` mode work (Section 15) since that feature's entire premise depends on this being real.**
@@ -361,4 +368,8 @@ Captured 2026-08-22 from a series of design discussions. None of these are imple
 * **Cross-workbook `Lookup` list sync** ("one lookup list to rule them all"): keep domain lists (`Venue`/`CallType`/`Series`/`CrewStaff`) consistent across this and other workbooks. Recommended approach: one canonical workbook, others as a scheduled one-way pull/mirror, rather than true bidirectional sync — Apps Script has no transactional guarantees, so simultaneous bidirectional edits risk real conflicts without a versioning scheme. Full bidirectional merge is a separate, harder feature to build only once one-way mirroring is proven insufficient.
 * **`ref`-level Field Name master list**: a canonical enumeration of valid `Field Name`s across all sheets, for catching cross-sheet naming drift (e.g. `"UUID"` vs. `"uuid"` vs. `"ID"`). Decoupled from the `Map_Registry` repair fix — a data-quality lint, not a dependency of it.
 * **`ControlPanel` restructure**: split into `Settings` (user-edited) and `Status` (system-written) sections, with several previously-implied-but-unwired toggles (`AutoApplyChanges`, `PushAllCrewLog`, `RunMapRepair`) either wired up or clearly marked as not-yet-functional rather than silently inert. A draft CSV was produced 2026-08-22; not yet imported/tested. Longer-term, `ControlPanel` is intended as the project's dashboard, with a friendlier UI layer planned on top — the Settings/Status split is meant to make that migration easier when it happens.
+* **Calendar metadata expansion**: expand `Calendars` beyond display name, ID, and venue to include a deliberate calendar role plus read/write capabilities and any sync-window or mode restrictions. Replace name-based `Draft` detection with these metadata fields.
+* **Registry and identity helpers**: consolidate sheet/role/map resolution and identity association into a small set of Engine helpers. `UniqueID` remains the idLog key because it can contain different ID forms; the source/record type determines how it is interpreted. An XLOOKUP-style spreadsheet helper is not required for runtime behavior, but a typed engine lookup by `UniqueID`, `RecordType`, and `SheetLocation` may be useful.
+* **Sync policy enforcement**: return to `engine_sync.js` after the maintenance and ingest slices are stable. Enforce `AllowedBehaviors`, reconcile `UniqueID`/`UUID` registry usage, and add focused sync-menu tests before enabling calendar writes.
+* **scriptLib stabilization**: maintain `scriptLib` as a separately versioned shared dependency with its own development intentions. Keep scheduler-specific registry maintenance in `Engine.Maintenance`; retire `SL.MapRegistry` after confirming no external project depends on it.
 * **Clean-slate project copy**: once each pipeline stage tests clean, copy to a fresh project with the current one retained as reference. (Carried over from prior planning; unchanged.)

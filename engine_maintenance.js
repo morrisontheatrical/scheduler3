@@ -106,13 +106,24 @@ Engine.Maintenance = {
    * — leaves everything else in row 1 untouched. Safe to run broadly;
    * skips anything Sheet_Settings marks isProtected.
    */
-  repairHeaders: function() {
+  repairHeaders: function(options) {
     const ctx = Engine.getContext();
     const results = [];
+    options = options || {};
 
     Object.keys(ctx.schema).forEach(sheetName => {
       const sheetDef = ctx.schema[sheetName];
-      if (!sheetDef || (sheetDef.settings && sheetDef.settings.isProtected)) return;
+      if (!sheetDef) return;
+      if (sheetDef.settings && sheetDef.settings.isProtected) {
+        if (!options.confirmProtected) return;
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.alert(
+          "Confirm protected sheet overwrite",
+          `Rewrite headers on protected sheet ${sheetName} from Map_Registry?`,
+          ui.ButtonSet.YES_NO
+        );
+        if (response !== ui.Button.YES) return;
+      }
 
       const sheet = ctx.ss.getSheetByName(sheetName);
       if (!sheet) return;
@@ -144,7 +155,7 @@ Engine.Maintenance = {
     const lMap = ctx.maps["Lookup"];
     if (!lookupSheet || !lMap) return;
 
-    const lData = lookupSheet.getDataRange().getValues();
+    const lData = lookupSheet.getDataRange().getValues().slice(1);
     const getList = (colIdx) => {
       if (colIdx < 0) return [];
       return lData
@@ -195,14 +206,24 @@ Engine.Maintenance = {
    * — overwrites even cells that already matched. Skips anything
    * Sheet_Settings marks isProtected.
    */
-  resetHeaders: function(ctx) {
+  resetHeaders: function(ctx, options) {
     const ss = ctx.ss;
     const sheetDefs = ctx.sheetDefs || {};
+    options = options || {};
 
     for (const [sheetName, sheetDef] of Object.entries(sheetDefs)) {
       if (sheetDef.settings && sheetDef.settings.isProtected) {
-        console.warn(`Maintenance: Skipping header reset for protected sheet "${sheetName}" (Sheet_Settings.isProtected).`);
-        continue;
+        if (!options.confirmProtected) {
+          console.warn(`Maintenance: Skipping header reset for protected sheet "${sheetName}" (Sheet_Settings.isProtected).`);
+          continue;
+        }
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.alert(
+          "Confirm protected sheet overwrite",
+          `Rewrite headers on protected sheet ${sheetName} from Map_Registry?`,
+          ui.ButtonSet.YES_NO
+        );
+        if (response !== ui.Button.YES) continue;
       }
 
       const sheet = sheetDef.sheet || ss.getSheetByName(sheetName);
@@ -254,16 +275,27 @@ Engine.Maintenance = {
   _diffHeaders: function(physicalHeaders, registryEntries) {
     const matched = [];
     const orphaned = [];
+    const duplicateEntries = [];
+    const claimedIndices = new Set();
+    const seenEntries = new Map();
+
     registryEntries.forEach(entry => {
+      const identity = `${entry.fieldName.toLowerCase()}|${entry.index}`;
+      if (seenEntries.has(identity)) {
+        duplicateEntries.push({ entry: entry, original: seenEntries.get(identity) });
+        return;
+      }
+      seenEntries.set(identity, entry);
+
       const text = String(physicalHeaders[entry.index] || "").trim();
-      if (text) {
-        matched.push(entry);
+      if (text && !claimedIndices.has(entry.index)) {
+        matched.push({ entry: entry, physicalText: text });
+        claimedIndices.add(entry.index);
       } else {
         orphaned.push(entry);
       }
     });
 
-    const claimedIndices = new Set(matched.map(e => e.index));
     const unclaimed = [];
     physicalHeaders.forEach((text, physicalIndex) => {
       const headerText = String(text || "").trim();
@@ -275,9 +307,12 @@ Engine.Maintenance = {
     const reunited = [];
     const stillOrphaned = [];
     orphaned.forEach(entry => {
-      const matchIdx = unclaimed.findIndex(u =>
-        u.physicalText.trim().toLowerCase() === String(entry.fieldName || "").trim().toLowerCase()
-      );
+      const displayName = String(entry.displayName || "").trim().toLowerCase();
+      const fieldName = String(entry.fieldName || "").trim().toLowerCase();
+      let matchIdx = unclaimed.findIndex(u => u.physicalText.toLowerCase() === displayName);
+      if (matchIdx === -1) {
+        matchIdx = unclaimed.findIndex(u => u.physicalText.toLowerCase() === fieldName);
+      }
       if (matchIdx === -1) {
         stillOrphaned.push(entry);
       } else {
@@ -286,7 +321,13 @@ Engine.Maintenance = {
       }
     });
 
-    return { matched: matched, reunited: reunited, newPhysical: unclaimed, staleRegistry: stillOrphaned };
+    return {
+      matched: matched,
+      reunited: reunited,
+      newPhysical: unclaimed,
+      staleRegistry: stillOrphaned,
+      duplicateEntries: duplicateEntries
+    };
   },
 
   /**
@@ -365,8 +406,14 @@ Engine.Maintenance = {
 
       const diff = Engine.Maintenance._diffHeaders(physicalHeaders, registryEntries);
 
-      // matched: still present at their own recorded index. No action —
-      // Header DisplayName is never required to match physical text.
+      // A column at its recorded index is the association. The physical header
+      // is authoritative for Header DisplayName; Field Name remains stable.
+      diff.matched.forEach(({ entry, physicalText }) => {
+        if (entry.displayName === physicalText) return;
+        registrySheet.getRange(entry.rowNumber, colDisplayName + 1).setValue(physicalText);
+        updated++;
+        reports.push(`Updated display name in ${sheetName}: field "${entry.fieldName}" is now "${physicalText}".`);
+      });
 
       diff.reunited.forEach(({ entry, physicalIndex }) => {
         registrySheet.getRange(entry.rowNumber, colIndex + 1).setValue(physicalIndex);
@@ -375,6 +422,11 @@ Engine.Maintenance = {
           registrySheet.getRange(entry.rowNumber, colNotes + 1).setValue(entry.notes.replace(staleTag, "").trim());
         }
         reports.push(`Reunited in ${sheetName}: "${entry.fieldName}" now at column ${physicalIndex} (matched by Field Name).`);
+        reports.push(`Reunited in ${sheetName}: "${entry.fieldName}" now at column ${physicalIndex}.`);
+      });
+
+      diff.duplicateEntries.forEach(({ entry, original }) => {
+        reports.push(`Duplicate registry entry in ${sheetName}: "${entry.fieldName}" at index ${entry.index} duplicates row ${original.rowNumber}; no row was deleted.`);
       });
 
       diff.newPhysical.forEach(({ physicalIndex, physicalText }) => {
@@ -416,6 +468,45 @@ Engine.Maintenance = {
   }
 };
 
+// Explicit registry operations. These are intentionally separate from repair:
+// repair may add or move metadata, but it never deletes registry rows.
+Engine.Maintenance.readHeadersToRegistry = function() {
+  return Engine.Maintenance.repairMapRegistry();
+};
+
+Engine.Maintenance.writeHeadersFromRegistry = function(ctx, options) {
+  ctx = ctx || Engine.getContext();
+  return Engine.Maintenance.resetHeaders(ctx, options);
+};
+
+Engine.Maintenance.createRegistry = function() {
+  return Engine.Maintenance.repairMapRegistry();
+};
+
+Engine.Maintenance.deleteRegistry = function(options) {
+  options = options || {};
+  if (!options.sheetName || !options.fieldName) {
+    throw new Error("deleteRegistry requires sheetName and fieldName");
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const registrySheet = ss.getSheetByName("Map_Registry");
+  if (!registrySheet) return false;
+  const data = registrySheet.getDataRange().getValues();
+  const headers = data[0] || [];
+  const sheetCol = headers.indexOf("Sheet Name");
+  const fieldCol = headers.indexOf("Field Name");
+  if (sheetCol < 0 || fieldCol < 0) throw new Error("Map_Registry is missing Sheet Name or Field Name");
+
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][sheetCol]).trim() === options.sheetName && String(data[i][fieldCol]).trim() === options.fieldName) {
+      registrySheet.deleteRow(i + 1);
+      return true;
+    }
+  }
+  return false;
+};
+
 // Thin global wrappers — required so Apps Script custom menus (0_OnOpen.js
 // uses .addItem('...', 'repairMapRegistry') / 'resetHeadersMenu') can resolve
 // them. Menu bindings need top-level function names; they cannot call a
@@ -429,6 +520,23 @@ function repairMapRegistry() {
 function resetHeadersMenu() {
   const ctx = Engine.getContext();
   Engine.Maintenance.resetHeaders(ctx);
+}
+
+function readHeadersToRegistry() {
+  return Engine.Maintenance.readHeadersToRegistry();
+}
+
+function writeHeadersFromRegistry(confirmProtected) {
+  const ctx = Engine.getContext();
+  return Engine.Maintenance.writeHeadersFromRegistry(ctx, { confirmProtected: Boolean(confirmProtected) });
+}
+
+function createRegistry() {
+  return Engine.Maintenance.createRegistry();
+}
+
+function deleteRegistry(sheetName, fieldName) {
+  return Engine.Maintenance.deleteRegistry({ sheetName: sheetName, fieldName: fieldName });
 }
 
 /**
