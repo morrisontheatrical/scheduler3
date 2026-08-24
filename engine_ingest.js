@@ -12,7 +12,8 @@ function goParent() {
   const pSheet = ss.getSheetByName("Parent Lineup");
  
   if (!iSheet || !pSheet) {
-    SL.notify("Import or Parent Lineup sheet not found.", "Error");
+    const utils = Engine.getLibraryModule("Utils");
+    if (utils && typeof utils.notify === "function") utils.notify("Import or Parent Lineup sheet not found.", "Error");
     return;
   }
  
@@ -265,7 +266,8 @@ function goLineup() {
   const lMap = ctx.getMap(lRole);
 
   if (!pSheet || !lSheet || !pMap || !lMap) {
-    SL.notify("Parent Lineup or Lineup sheet/map not found.", "Error");
+    const utils = Engine.getLibraryModule("Utils");
+    if (utils && typeof utils.notify === "function") utils.notify("Parent Lineup or Lineup sheet/map not found.", "Error");
     return;
   }
   
@@ -361,7 +363,8 @@ function goLineup() {
     });
   });
 
-  SL.notify("Lineup Explosion Complete", "Success");
+  const utils = Engine.getLibraryModule("Utils");
+  if (utils && typeof utils.notify === "function") utils.notify("Lineup Explosion Complete", "Success");
 }
 
 /**

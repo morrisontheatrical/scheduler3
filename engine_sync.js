@@ -215,6 +215,9 @@ Engine.Sync = {
   const canWrite = ctx.runtime && ctx.runtime.allowCalendarWrites !== undefined
     ? Boolean(ctx.runtime.allowCalendarWrites)
     : Boolean(ctx.mode && ctx.mode.writeToCalendar);
+  const allowedBehaviors = (ctx.mode && ctx.mode.allowedBehaviors) || [];
+  const modeAllowsCalendarWrites = ctx.mode && ctx.mode.syncMode !== "AUDIT_ONLY"
+    && (allowedBehaviors.length === 0 || allowedBehaviors.includes("SYNC_ALLOWED"));
 
   // We need the Target Calendar ID (defaults to the "Draft" entry in Calendars; ControlPanel can override)
   const targetCalId = this._getCrewDraftCalendarId(ctx);
@@ -232,7 +235,7 @@ Engine.Sync = {
     // 2. ACTION: DELETE (status-driven, or a manual "Delete from Calendar" trigger)
     if (crewRow.SyncStatus === "To Delete on calendar" || crewRow.Options === "Delete from Calendar") {
       if (crewRow.EventID) {
-        if (canWrite) {
+        if (canWrite && modeAllowsCalendarWrites) {
           Engine.Calendar.deleteEvent(targetCalId, crewRow.EventID);
           crewRow.Options = "AutoSync"; // one-shot trigger resets itself
           Engine.Status.apply(ctx, role, null, "Deleted by Calendar", { targetObj: crewRow });
@@ -249,7 +252,7 @@ Engine.Sync = {
 
     // 3. ACTION: CREATE (No EventID exists)
     if (!crewRow.EventID || crewRow.EventID === "") {
-      if (canWrite) {
+      if (canWrite && modeAllowsCalendarWrites) {
         const newEventId = Engine.Calendar.createEvent(targetCalId, crewRow, ctx);
         crewRow.EventID = newEventId;
         if (forcedPush) crewRow.Options = "AutoSync";
@@ -268,7 +271,7 @@ Engine.Sync = {
     // 4. ACTION: UPDATE (hash drift, or a manual "Push to Calendar" override)
     const registryEntry = ctx.registry[crewRow.UUID]; // Assuming ctx loaded registry
     if (forcedPush || (registryEntry && registryEntry.SyncHash !== crewRow.SyncHash)) {
-      if (canWrite) {
+      if (canWrite && modeAllowsCalendarWrites) {
         Engine.Calendar.updateEvent(targetCalId, crewRow.EventID, crewRow);
         if (forcedPush) crewRow.Options = "AutoSync";
         Engine.Status.apply(ctx, role, null, "Calendar Log Updated", { targetObj: crewRow });

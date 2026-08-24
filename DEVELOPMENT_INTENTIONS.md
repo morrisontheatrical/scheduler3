@@ -158,6 +158,8 @@ This document records the canonical architectural intentions, metadata specifica
 
 * `Engine.Maintenance`: Header repair, dropdown refresh, health checks, sheet resets.
 
+* `ctx.timeZone` is bound from `SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone()` and is the preferred timezone source for date/calendar conversions.
+
 
 
 * **Promotion policy (added 2026-08-22)**: `scriptLib` is shared across projects outside this one, and churn there has real cost — described directly as causing "backlash" in another project. New general-purpose-*candidate* logic should be built and proven inside `Engine.*` first (private, prefixed `_` if not meant for external use), and only promoted into `SL.*` once it is genuinely stable, genuinely reused elsewhere, and not still being iterated on. `Engine.Maintenance._diffHeaders` (Section 11) is the first function built under this policy — it deliberately stayed in `engine_maintenance.js` rather than `SL_Utils.js` for this reason.
@@ -297,7 +299,7 @@ This document records the canonical architectural intentions, metadata specifica
 23. **`SL.MapRegistry.getMap()` duplicates map-loading logic that lives in `engine_maintenance.js`/`Engine.assembleSheetMap()`**, returning the legacy flat-number map shape rather than the current `{index, displayName}` object shape. It is unused by this project and is now treated as deprecated; do not promote scheduler registry maintenance into it unless another project proves the need.
 
 
-24. **`Mode_Config.AllowedBehaviors` is loaded but never enforced** — see Section 4. **Found 2026-08-22, prioritized ahead of the `SyncCheck` mode work (Section 15) since that feature's entire premise depends on this being real.**
+24. **`Mode_Config.AllowedBehaviors` is only partially enforced** — calendar create/update/delete operations now require `SYNC_ALLOWED` and are blocked for `AUDIT_ONLY`; row-level `LOCKED`/`BYPASS` behavior checks remain in place. Reconciliation and the broader `SyncCheck` policy still need a dedicated pass.
 
 ## 12. Open Questions & Architectural Decisions Needed
 

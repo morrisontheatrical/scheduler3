@@ -30,6 +30,7 @@ var Engine = {
     
     let ctx = {
       ss: ss,
+      timeZone: ss.getSpreadsheetTimeZone(),
       sheets: {},
       sheetDefs: {},
       maps: {},
@@ -349,11 +350,9 @@ var Engine = {
       const map = lookupSheetDef.map;
       let cleanColumn = null;
 
-      if (typeof SL !== "undefined" && SL.Utils && typeof SL.Utils.getCleanColumn === "function") {
-        cleanColumn = SL.Utils.getCleanColumn;
-      } else if (typeof scriptLib !== "undefined" && typeof scriptLib.getCleanColumn === "function") {
-        cleanColumn = scriptLib.getCleanColumn;
-      }
+      const utils = this.getLibraryModule("Utils");
+      if (utils && typeof utils.getCleanColumn === "function") cleanColumn = utils.getCleanColumn;
+      else if (typeof scriptLib !== "undefined" && typeof scriptLib.getCleanColumn === "function") cleanColumn = scriptLib.getCleanColumn;
 
       Object.keys(map).forEach(fieldName => {
         const colIdx = this.getColumnIndex(map, fieldName);
