@@ -637,6 +637,43 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   let parentOnly = 0;
   let renamedCandidate = 0;
   const matchedParentRows = {};
+  const addDecision = (values) => {
+    if (!Engine.Decisions || typeof Engine.Decisions.addPending !== "function") return;
+    try {
+      Engine.Decisions.addPending(ctx, Object.assign({
+        ReviewType: "IMPORT_PARENT",
+        Decision: "PENDING",
+        ActionStatus: "PENDING"
+      }, values));
+    } catch (error) {
+      Engine.Log.write(ctx, { stage: "VERIFY_IMPORT", type: "DECISION_LOG_ERROR", details: error.message });
+    }
+  };
+
+  const applyReviewStatus = (rowIdx, parentID, statusName, details, decisionValues) => {
+    const currentStatus = pSheet.getRange(rowIdx, pCol("SyncStatus") + 1).getValue();
+    if (Engine.Status.blocksWrite(ctx, currentStatus)) {
+      Engine.Log.write(ctx, {
+        stage: "VERIFY_IMPORT",
+        sheetName: "Parent Lineup",
+        rowIdx: rowIdx,
+        id: parentID,
+        type: "REVIEW_BLOCKED",
+        details: `${details} Existing status "${currentStatus}" blocks status updates.`
+      });
+      addDecision(Object.assign({}, decisionValues, {
+        ReviewNotes: `${details} Existing status "${currentStatus}" blocked the automatic status update.`
+      }));
+      return false;
+    }
+    Engine.Status.apply(ctx, "Parent Lineup", rowIdx, statusName, {
+      stage: "VERIFY_IMPORT",
+      id: parentID,
+      details: details
+    });
+    addDecision(decisionValues);
+    return true;
+  };
 
   iData.forEach((iRow, index) => {
     const name = iRow[iCol("EventName")];
@@ -681,8 +718,30 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
 
     if (drifted || isRenameCandidate) {
       flagged++;
-      const statusCol = pCol("SyncStatus");
-      if (statusCol >= 0) pSheet.getRange(match.rowIdx, statusCol + 1).setValue("Manual Review");
+      const decisionValues = {
+        ReviewID: `IMPORT_PARENT_${index + 2}_${match.row[pCol("parentID")] || "NO_PARENT_ID"}`,
+        SourceSheet: "import",
+        SourceRow: index + 2,
+        CandidateSheet: "Parent Lineup",
+        CandidateRow: match.rowIdx,
+        ImportTitle: name,
+        ParentTitle: match.row[pCol("EventName")],
+        ExistingParentID: match.row[pCol("parentID")],
+        MatchedFields: isRenameCandidate ? "Opening, Range, Venue" : "EventName",
+        ChangedFields: isRenameCandidate ? "EventName" : fieldsToCompare.filter(field => {
+          const iIdx = iCol(field), pIdx = pCol(field);
+          return iIdx >= 0 && pIdx >= 0 && String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
+        }).join(", "),
+        Confidence: isRenameCandidate ? "MEDIUM" : "LOW",
+        RequestedAction: isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT"
+      };
+      applyReviewStatus(
+        match.rowIdx,
+        match.row[pCol("parentID")],
+        isRenameCandidate ? "Possible Duplicate" : "Manual Review",
+        isRenameCandidate ? `Possible duplicate from import: ${name}` : "Parent Lineup no longer matches import.",
+        decisionValues
+      );
       Engine.Log.write(ctx, {
         stage: "VERIFY_IMPORT",
         sheetName: "Parent Lineup",
@@ -700,6 +759,23 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     const rowIdx = index + 2;
     if (matchedParentRows[rowIdx]) return;
     parentOnly++;
+    const decisionValues = {
+      ReviewID: `PARENT_ONLY_${pRow[pCol("parentID")] || rowIdx}`,
+      SourceSheet: "import",
+      CandidateSheet: "Parent Lineup",
+      CandidateRow: rowIdx,
+      ParentTitle: pRow[pCol("EventName")],
+      ExistingParentID: pRow[pCol("parentID")],
+      Confidence: "LOW",
+      RequestedAction: "REVIEW_PARENT_ONLY"
+    };
+    applyReviewStatus(
+      rowIdx,
+      pRow[pCol("parentID")] || pRow[pCol("EventName")],
+      "Manual Review",
+      "No matching import row found.",
+      decisionValues
+    );
     Engine.Log.write(ctx, {
       stage: "VERIFY_IMPORT",
       sheetName: "Parent Lineup",
@@ -791,6 +867,19 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
 
       if (dateDrift || venueDrift) {
         flagged++;
+        const currentStatus = child.row[lCol("SyncStatus")];
+        const details = "Lineup row no longer matches its Parent Lineup's dates/venue.";
+        if (Engine.Status.blocksWrite(ctx, currentStatus)) {
+          Engine.Log.write(ctx, {
+            stage: "VERIFY_PARENT",
+            sheetName: "Lineup",
+            rowIdx: child.rowIdx,
+            id: child.row[lCol("UUID")],
+            type: "REVIEW_BLOCKED",
+            details: `${details} Existing status "${currentStatus}" blocks status updates.`
+          });
+          return;
+        }
         const statusCol = lCol("SyncStatus");
         const lastSyncedCol = lCol("LastSynced");
         if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Manual Review");
@@ -801,7 +890,7 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
           rowIdx: child.rowIdx,
           id: child.row[lCol("UUID")],
           type: "DRIFT_DETECTED",
-          details: "Lineup row no longer matches its Parent Lineup's dates/venue."
+          details: details
         });
       }
     });

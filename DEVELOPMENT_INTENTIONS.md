@@ -186,6 +186,10 @@ This document records the canonical architectural intentions, metadata specifica
 * **Status & Behavior Enforcement**:
 * Status behavior is checked via `ctx.status[crewRow.SyncStatus]?.behavior`.
 
+* A checked row receives a status/timestamp update when its current `Row.Exception` behavior allows it. `LOCKED` and `BYPASS` rows are not mutated during verification or synchronization, but detected changes are still logged and may create a `decision_log` review item.
+
+* `Possible Duplicate` is a review status whose `Row.Exception` is `Manual Review`; it should create a pending decision rather than being treated as an automatic update command.
+
 
 * Rows with behaviors marked `LOCKED` or `BYPASS` (or listed in `idLog` bypass lists) are skipped during reconciliation and calendar writes.
 
@@ -364,6 +368,8 @@ This document records the canonical architectural intentions, metadata specifica
 * [ ] Rerun `goParent()` and confirm Parent Lineup `SyncStatus`, `LastSynced`, `LastUpdated`, and `SyncHash` populate for new and changed rows.
 * [ ] Rerun `goVerifyParentToLineup()` and confirm parser availability, nonzero Lineup checks, and status timestamps.
 * [ ] Run `repairBlankHashes()` and confirm only blank `SyncHash` cells change, with repair counts in `Audit_Log`.
+* [ ] Confirm `LOCKED`/`BYPASS` verification rows remain unchanged while `REVIEW_BLOCKED` entries are logged.
+* [ ] Confirm `Possible Duplicate` rows create `PENDING` decision-log entries.
 
 ## 15. Roadmap / Deferred Feature Ideas
 

@@ -473,6 +473,16 @@ Engine.getDisplayName = function(map, fieldName) {
   },
 
   Status: {
+    getBehavior: function(ctx, statusName) {
+      const status = ctx && ctx.status && ctx.status[statusName];
+      return status ? Engine.parseModeList(status.behavior) : [];
+    },
+
+    blocksWrite: function(ctx, statusName) {
+      const behaviors = this.getBehavior(ctx, statusName);
+      return behaviors.includes("LOCKED") || behaviors.includes("BYPASS");
+    },
+
     apply: function(ctx, roleOrSheetName, rowIdx, statusName, logContext = {}) {
       const sheet = ctx.sheets[roleOrSheetName] || ctx.ss.getSheetByName(ctx.getRole(roleOrSheetName) || roleOrSheetName);
       const map = ctx.getMap(roleOrSheetName) || ctx.maps[roleOrSheetName];

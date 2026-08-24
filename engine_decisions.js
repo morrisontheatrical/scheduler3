@@ -74,6 +74,28 @@ Engine.Decisions = {
     if (reviewedByCol >= 0) table.sheet.getRange(sheetRow, reviewedByCol + 1).setValue(Session.getActiveUser().getEmail());
     if (reviewedAtCol >= 0) table.sheet.getRange(sheetRow, reviewedAtCol + 1).setValue(new Date());
     return true;
+  },
+
+  addPending: function(ctx, values) {
+    const table = this.ensureSchema(ctx);
+    const data = table.sheet.getDataRange().getValues();
+    const reviewCol = this._col(table.map, "ReviewID");
+    const statusCol = this._col(table.map, "ActionStatus");
+    const existing = data.slice(1).some(row =>
+      String(row[reviewCol] || "") === String(values.ReviewID || "") &&
+      String(row[statusCol] || "PENDING").trim().toUpperCase() === "PENDING"
+    );
+    if (existing) return false;
+
+    const indices = Object.keys(table.map).map(fieldName => this._col(table.map, fieldName)).filter(index => index >= 0);
+    const row = new Array(Math.max(...indices) + 1).fill("");
+    Object.keys(values).forEach(fieldName => {
+      const index = this._col(table.map, fieldName);
+      if (index >= 0) row[index] = values[fieldName];
+    });
+    if (statusCol >= 0 && !row[statusCol]) row[statusCol] = "PENDING";
+    table.sheet.appendRow(row);
+    return true;
   }
 };
 
@@ -90,4 +112,14 @@ function openDecisionLog() {
 
 function markDecisionReviewed(reviewID, decision, requestedAction, details) {
   return Engine.Decisions.markReviewed(Engine.getContext(), reviewID, decision, requestedAction, details);
+}
+
+function addPendingDecision(values) {
+  return Engine.Decisions.addPending(Engine.getContext(), values);
+}
+
+function listPendingDecisions() {
+  const pending = Engine.Decisions.pending(Engine.getContext());
+  console.log(pending);
+  return pending;
 }
