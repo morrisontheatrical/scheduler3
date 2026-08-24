@@ -10,60 +10,120 @@ function goParent() {
   const ss = ctx.ss;
   const iSheet = ss.getSheetByName("import");
   const pSheet = ss.getSheetByName("Parent Lineup");
-
-  
+ 
   if (!iSheet || !pSheet) {
     SL.notify("Import or Parent Lineup sheet not found.", "Error");
     return;
   }
-
+ 
   const iMap = ctx.getMap("import");
   const pMap = ctx.getMap("Parent Lineup");
   const iData = iSheet.getDataRange().getValues();
   const pData = pSheet.getDataRange().getValues();
-  
-  iData.shift(); // Remove headers
-
+ 
+  iData.shift();
+  pData.shift();
+ 
   const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pCol(fieldName)).filter(index => index >= 0)) + 1;
-
-  // Map existing Parent events by Name for quick lookup
-  const pLookup = {};
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+ 
+  // Only fields Map_Registry marks "Source (Read-Only)" are ever written
+  // here. User Owned (ShowNotes, EventNeeds, SpanOverride) and
+  // System-Managed (SyncStatus, LastSynced, SyncHash, etc.) are never
+  // touched by this function, on either the insert or update path.
+  const sourceFields = Object.keys(pMap).filter(fieldName =>
+    Engine.getSyncBehavior(pMap, fieldName) === "Source (Read-Only)"
+  );
+ 
+  const pByName = {};
   pData.forEach((row, idx) => {
-    const name = row[pCol("EventName")];
-    if (name) pLookup[name] = { rowIdx: idx + 1, id: row[pCol("parentID")] };
+    const name = normalize(row[pCol("EventName")]);
+    if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
   });
-
-  iData.forEach((iRow) => {
+ 
+  let created = 0, updated = 0, flaggedForReview = 0;
+ 
+  iData.forEach(iRow => {
     const eventName = iRow[iCol("EventName")];
     if (!eventName) return;
-
-    const existing = pLookup[eventName];
-    const rowArray = new Array(pWidth).fill("");
-
-    rowArray[pCol("EventName")] = eventName;
-    rowArray[pCol("Series")] = iRow[iCol("Series")];
-    rowArray[pCol("Opening")] = iRow[iCol("Opening")];
-    rowArray[pCol("Range")] = iRow[iCol("Range")];
-    rowArray[pCol("DatesAndTimes")] = iRow[iCol("DatesAndTimes")];
-    rowArray[pCol("Venue")] = iRow[iCol("Venue")];
-    rowArray[pCol("Pricing")] = iRow[iCol("Pricing")];
-    rowArray[pCol("ShowNotes")] = iRow[iCol("ShowNotes")];
-
-    if (existing) {
-      // UPDATE: Record already exists
-      rowArray[pCol("parentID")] = existing.id;
-      pSheet.getRange(existing.rowIdx, 1, 1, rowArray.length).setValues([rowArray]);
-    } else {
-      // INSERT: New event
+ 
+    let match = pByName[normalize(eventName)];
+    let isRenameCandidate = false;
+ 
+    if (!match) {
+      // Same conservative fallback verifyImportToParent() already uses:
+      // only treat this as the same event if Opening+Range+Venue all agree
+      // AND exactly one Parent Lineup row qualifies. Anything less certain
+      // falls through to "genuinely new event" below, on purpose.
+      const candidates = pData
+        .map((row, rowIdx) => ({ row: row, rowIdx: rowIdx + 2 }))
+        .filter(candidate => ["Opening", "Range", "Venue"].every(field => {
+          const iIdx = iCol(field);
+          const pIdx = pCol(field);
+          return iIdx >= 0 && pIdx >= 0 && normalize(iRow[iIdx]) === normalize(candidate.row[pIdx]);
+        }));
+      if (candidates.length === 1) {
+        match = candidates[0];
+        isRenameCandidate = true;
+      }
+    }
+ 
+    if (!match) {
+      // Genuinely new event — mint a new parentID. This is now the ONLY
+      // path that creates one.
+      const rowArray = new Array(pWidth).fill("");
+      sourceFields.forEach(fieldName => {
+        rowArray[pCol(fieldName)] = iRow[iCol(fieldName)];
+      });
       rowArray[pCol("parentID")] = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
       rowArray[pCol("SyncStatus")] = "Active";
       pSheet.appendRow(rowArray);
+      created++;
+      return;
     }
+ 
+    if (isRenameCandidate) {
+      // Ambiguous — don't auto-merge a rename. Flag it exactly like
+      // verifyImportToParent() does, and leave the actual merge to
+      // Engine.Ingest.acceptImportDrift(). The existing parentID and row
+      // are left completely alone otherwise.
+      const statusCol = pCol("SyncStatus");
+      if (statusCol >= 0) pSheet.getRange(match.rowIdx, statusCol + 1).setValue("Manual Review");
+      flaggedForReview++;
+      Engine.Log.write(ctx, {
+        stage: "INGEST",
+        sheetName: "Parent Lineup",
+        rowIdx: match.rowIdx,
+        id: match.row[pCol("parentID")],
+        type: "RENAME_CANDIDATE",
+        details: `Possible renamed event: import "${eventName}" vs Parent Lineup "${match.row[pCol("EventName")]}". Not auto-merged — use Engine.Ingest.acceptImportDrift() to apply.`
+      });
+      return;
+    }
+ 
+    // Clean match by name — this is what Sheet_Settings.SheetBehavior
+    // "MIRROR" means for Parent Lineup: safe to auto-apply Source
+    // (Read-Only) field changes. Only the fields that actually differ get
+    // written, and only fields tagged Source (Read-Only) are touched at all.
+    let changed = false;
+    sourceFields.forEach(fieldName => {
+      const newVal = iRow[iCol(fieldName)];
+      const colIdx = pCol(fieldName);
+      if (String(match.row[colIdx] || "") !== String(newVal || "")) {
+        pSheet.getRange(match.rowIdx, colIdx + 1).setValue(newVal);
+        changed = true;
+      }
+    });
+    if (changed) updated++;
   });
-
-  Engine.Log.write(ctx, { stage: "INGEST", type: "SUCCESS", details: "Parent Lineup Updated" });
+ 
+  Engine.Log.write(ctx, {
+    stage: "INGEST",
+    type: "SUCCESS",
+    details: `Parent Lineup Updated: ${created} created, ${updated} updated, ${flaggedForReview} flagged for manual review (rename candidates).`
+  });
 }
 
 /**
@@ -501,7 +561,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         stage: "VERIFY_IMPORT",
         sheetName: "Parent Lineup",
         rowIdx: match.rowIdx,
-        id: name,
+        id: match.row[pCol("parentID")],
         type: isRenameCandidate ? "RENAME_CANDIDATE" : "DRIFT_DETECTED",
         details: isRenameCandidate
           ? `Possible renamed event: import "${name}" vs Parent Lineup "${match.row[pCol("EventName")]}".`
@@ -627,3 +687,124 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
 
   return { checked: checked, flagged: flagged, unparseable: unparseable };
 };
+
+// ============================================================
+// engine_ingest.js — new: Engine.Ingest.acceptImportDrift()
+// The explicit, deliberate merge step for RENAME_CANDIDATE (and any
+// DRIFT_DETECTED) rows goParent() correctly refused to auto-apply.
+// ============================================================
+Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
+  const ss = ctx.ss;
+  const iSheet = ss.getSheetByName("import");
+  const pSheet = ss.getSheetByName("Parent Lineup");
+  const iMap = ctx.getMap("import");
+  const pMap = ctx.getMap("Parent Lineup");
+  const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+ 
+  const pData = pSheet.getDataRange().getValues(); // includes header at index 0
+  const pRowIdx = pData.findIndex(row => row[pCol("parentID")] === parentID);
+  if (pRowIdx === -1) {
+    Engine.Log.write(ctx, { stage: "INGEST", type: "DRIFT_ACCEPT_FAILED", id: parentID, details: "No Parent Lineup row found for this parentID." });
+    return false;
+  }
+  const pRow = pData[pRowIdx];
+  const sheetRowNum = pRowIdx + 1; // pData[0] is the header row, so index N is sheet row N+1
+ 
+  const iData = iSheet.getDataRange().getValues();
+  iData.shift();
+ 
+  const pName = normalize(pRow[pCol("EventName")]);
+  let importRow = iData.find(row => normalize(row[iCol("EventName")]) === pName);
+ 
+  if (!importRow) {
+    // Same fallback used everywhere else: Opening+Range+Venue triple match.
+    const candidates = iData.filter(row =>
+      ["Opening", "Range", "Venue"].every(field => {
+        const iIdx = iCol(field);
+        const pIdx = pCol(field);
+        return iIdx >= 0 && pIdx >= 0 && normalize(row[iIdx]) === normalize(pRow[pIdx]);
+      })
+    );
+    if (candidates.length === 1) importRow = candidates[0];
+  }
+ 
+  if (!importRow) {
+    Engine.Log.write(ctx, { stage: "INGEST", type: "DRIFT_ACCEPT_FAILED", id: parentID, details: "No matching import row found to accept drift from." });
+    return false;
+  }
+ 
+  const sourceFields = Object.keys(pMap).filter(fieldName =>
+    Engine.getSyncBehavior(pMap, fieldName) === "Source (Read-Only)"
+  );
+ 
+  const changes = [];
+  sourceFields.forEach(fieldName => {
+    const oldVal = pRow[pCol(fieldName)];
+    const newVal = importRow[iCol(fieldName)];
+    if (String(oldVal || "") !== String(newVal || "")) {
+      pSheet.getRange(sheetRowNum, pCol(fieldName) + 1).setValue(newVal);
+      changes.push(`${fieldName}: "${oldVal}" -> "${newVal}"`);
+    }
+  });
+ 
+  const now = new Date();
+  const lastUpdatedCol = pCol("LastUpdated");
+  const updateDetailsCol = pCol("UpdateDetails");
+  const syncStatusCol = pCol("SyncStatus");
+  if (lastUpdatedCol >= 0) pSheet.getRange(sheetRowNum, lastUpdatedCol + 1).setValue(now);
+  if (updateDetailsCol >= 0) pSheet.getRange(sheetRowNum, updateDetailsCol + 1).setValue(changes.join(" | ") || "No field changes (accepted as-is)");
+  if (syncStatusCol >= 0) pSheet.getRange(sheetRowNum, syncStatusCol + 1).setValue("Active");
+ 
+  Engine.Log.write(ctx, {
+    stage: "INGEST",
+    sheetName: "Parent Lineup",
+    rowIdx: sheetRowNum,
+    id: parentID,
+    type: "DRIFT_ACCEPTED",
+    details: changes.length ? changes.join(" | ") : "Drift accepted with no field changes."
+  });
+ 
+  return true;
+};
+ 
+// Global wrapper — single row, e.g. run from the script editor or a
+// prompt-driven menu item with a specific parentID.
+function acceptDriftForParentID(parentID) {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.acceptImportDrift(ctx, parentID);
+}
+ 
+// Global wrapper — bulk, with a confirmation dialog. Accepts every Parent
+// Lineup row currently sitting at SyncStatus = "Manual Review". Deliberately
+// separate from the single-row version rather than the default behavior.
+function acceptAllFlaggedDrift() {
+  const ctx = Engine.getContext();
+  const ss = ctx.ss;
+  const pSheet = ss.getSheetByName("Parent Lineup");
+  const pMap = ctx.getMap("Parent Lineup");
+  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const pData = pSheet.getDataRange().getValues();
+  pData.shift();
+ 
+  const ui = SpreadsheetApp.getUi();
+  const flaggedIds = pData
+    .filter(row => row[pCol("SyncStatus")] === "Manual Review")
+    .map(row => row[pCol("parentID")]);
+ 
+  if (!flaggedIds.length) {
+    ui.alert("No Parent Lineup rows are currently flagged for Manual Review.");
+    return;
+  }
+ 
+  const response = ui.alert('CAUTION', `Accept drift for all ${flaggedIds.length} flagged row(s)? This overwrites Source (Read-Only) fields from import.`, ui.ButtonSet.YES_NO);
+  if (response !== ui.Button.YES) return;
+ 
+  let accepted = 0;
+  flaggedIds.forEach(id => {
+    if (Engine.Ingest.acceptImportDrift(ctx, id)) accepted++;
+  });
+  ui.alert(`Accepted drift for ${accepted} of ${flaggedIds.length} row(s).`);
+}
+ 

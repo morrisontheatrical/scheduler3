@@ -226,7 +226,7 @@ Engine.Maintenance = {
       }
 
       sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
-      sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight("bold").setBackground("#eeeeee");
+      //sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight("bold").setBackground("#eeeeee");
 
       Engine.Log.write(ctx, {
         stage: "MAINTENANCE",
