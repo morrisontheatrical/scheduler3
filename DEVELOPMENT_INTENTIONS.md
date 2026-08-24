@@ -158,6 +158,8 @@ This document records the canonical architectural intentions, metadata specifica
 
 * `Engine.Maintenance`: Header repair, dropdown refresh, health checks, sheet resets.
 
+* `Engine.Decisions`: durable manual-review decisions in `decision_log`; `SyncStatus` remains state, event-sheet `Options` remains an operational override, and `RequestedAction`/`ActionStatus` control decision processing.
+
 * `ctx.timeZone` is bound from `SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone()` and is the preferred timezone source for date/calendar conversions.
 
 
@@ -206,6 +208,9 @@ This document records the canonical architectural intentions, metadata specifica
 
 * **Top-Level Wrappers**: Required for execution from the GAS function picker:
 * `test_DiagnosticDump`, `test_MirrorVenues`, `test_DraftModeSheetOnly`, `test_LiveModeSheetOnly`, `test_CustomRuntimeSheetOnly`, `test_ReconcileLogs`, `test_SyncCrewCalendar`, `test_SyncIDRegistry`, `test_RefreshDropdowns`.
+
+* **Menu organization**: development actions are grouped into Diagnostics, Verification, Maintenance, Decision Review, and Sync Tests. The `Scheduler` menu remains the short user-facing pipeline. Future row-level commands should live in a separate Row Actions menu and operate on an explicit selected row or supplied ID; each action needs validation, confirmation, and audit behavior.
+* **Header operation names**: `Read Sheet Headers into Registry` updates `Map_Registry` from physical sheets; `Repair Headers from Registry` changes only mismatched header cells; `Write Headers from Registry`/`Reset Headers` writes the registry's display names to live sheets. Protected sheets are skipped unless an explicit confirmation path is added.
 
 
 
@@ -379,4 +384,5 @@ Captured 2026-08-22 from a series of design discussions. None of these are imple
 * **Sync policy enforcement**: return to `engine_sync.js` after the maintenance and ingest slices are stable. Enforce `AllowedBehaviors`, reconcile `UniqueID`/`UUID` registry usage, and add focused sync-menu tests before enabling calendar writes.
 * **scriptLib stabilization**: maintain `scriptLib` as a separately versioned shared dependency with its own development intentions. Keep scheduler-specific registry maintenance in `Engine.Maintenance`; retire `SL.MapRegistry` after confirming no external project depends on it.
 * **Recover deprecated functionality**: use the readable sources in `scriptLib/Depreciated` as references while rebuilding workbook-wide hash repair, generalized fingerprint reconciliation, venue fuzzy matching, and duplicate-row cleanup under current Engine/context APIs. Deprecated files are reference-only and must not export their former production names.
+* **Row Actions and decision processing**: add a separate user-facing action surface for selected-row or supplied-ID operations. Keep `SyncStatus` as state, `Options` as an operational override, and `decision_log.Decision`/`RequestedAction` as the durable review command. Process approved decisions explicitly and retain applied rows outside the pending view.
 * **Clean-slate project copy**: once each pipeline stage tests clean, copy to a fresh project with the current one retained as reference. (Carried over from prior planning; unchanged.)

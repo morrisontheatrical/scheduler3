@@ -585,6 +585,15 @@ function resetHeadersMenu() {
   Engine.Maintenance.resetHeaders(ctx);
 }
 
+function repairHeadersMenu() {
+  return Engine.Maintenance.repairHeaders();
+}
+
+function writeHeadersFromRegistryMenu() {
+  const ctx = Engine.getContext();
+  return Engine.Maintenance.writeHeadersFromRegistry(ctx);
+}
+
 function readHeadersToRegistry() {
   return Engine.Maintenance.readHeadersToRegistry();
 }
