@@ -96,6 +96,60 @@ Engine.Decisions = {
     if (statusCol >= 0 && !row[statusCol]) row[statusCol] = "PENDING";
     table.sheet.appendRow(row);
     return true;
+  },
+
+  applyPending: function(ctx) {
+    const table = this.ensureSchema(ctx);
+    const decisions = this.pending(ctx);
+    const statusCol = this._col(table.map, "ActionStatus");
+    const actionedAtCol = this._col(table.map, "ActionedAt");
+    const detailsCol = this._col(table.map, "ActionDetails");
+    const results = { applied: 0, failed: 0, skipped: 0 };
+
+    decisions.forEach(decision => {
+      const userDecision = String(decision.Decision || "PENDING").trim().toUpperCase();
+      const action = String(decision.RequestedAction || "").trim().toUpperCase();
+      if (userDecision === "PENDING" || !action) {
+        results.skipped++;
+        return;
+      }
+
+      let actionDetails = "";
+      try {
+        if (action === "ACCEPT_IMPORT") {
+          if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
+          if (!decision.ExistingParentID) throw new Error("ACCEPT_IMPORT requires ExistingParentID");
+          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID)) {
+            throw new Error("Import row could not be resolved for the selected Parent Lineup row");
+          }
+          actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
+        } else if (action === "MERGE_PARENT") {
+          if (userDecision !== "CONFIRMED_DUPLICATE") throw new Error("MERGE_PARENT requires Decision=CONFIRMED_DUPLICATE");
+          const keepID = decision.KeepParentID || decision.ExistingParentID;
+          const duplicateID = decision.DuplicateParentID;
+          if (!keepID || !duplicateID) throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
+          Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
+          actionDetails = `Merged ${duplicateID} into ${keepID}`;
+        } else if (["REJECT_MATCH", "REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "DEFERRED", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
+          actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
+        } else {
+          throw new Error(`Unsupported RequestedAction: ${action}`);
+        }
+
+        if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("APPLIED");
+        if (actionedAtCol >= 0) table.sheet.getRange(decision._rowNumber, actionedAtCol + 1).setValue(new Date());
+        if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(actionDetails);
+        Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_APPLIED", details: actionDetails });
+        results.applied++;
+      } catch (error) {
+        if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("FAILED");
+        if (actionedAtCol >= 0) table.sheet.getRange(decision._rowNumber, actionedAtCol + 1).setValue(new Date());
+        if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(error.message);
+        Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_FAILED", details: error.message });
+        results.failed++;
+      }
+    });
+    return results;
   }
 };
 
@@ -122,4 +176,8 @@ function listPendingDecisions() {
   const pending = Engine.Decisions.pending(Engine.getContext());
   console.log(pending);
   return pending;
+}
+
+function applyPendingDecisions() {
+  return Engine.Decisions.applyPending(Engine.getContext());
 }
