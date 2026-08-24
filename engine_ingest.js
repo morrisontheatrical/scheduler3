@@ -131,6 +131,8 @@ function goParent() {
   });
 }
 
+Engine.Ingest = Engine.Ingest || {};
+
 Engine.Ingest._writeParentIdentity = function(ctx, rowNumber, rowArray, pMap) {
   const identity = Engine.getLibraryModule("Identity");
   const hashCol = Engine.getColumnIndex(pMap, "SyncHash");
