@@ -135,6 +135,15 @@ Engine.Decisions = {
     return true;
   },
 
+  _setLinkedValue: function(ctx, sheet, rowNumber, column, sheetName, targetRow, label) {
+    if (column < 0) return;
+    if (targetRow) {
+      sheet.getRange(rowNumber, column + 1).setFormula(Engine.makeSheetRowLink(ctx, sheetName, targetRow, label));
+    } else {
+      sheet.getRange(rowNumber, column + 1).setValue(label || "");
+    }
+  },
+
   refreshLinks: function(ctx) {
     const table = this.ensureSchema(ctx);
     const resolveParentRow = parentID => {
@@ -147,6 +156,13 @@ Engine.Decisions = {
       return rowIndex >= 0 ? rowIndex + 1 : null;
     };
 
+    const sourceIdCol = this._col(table.map, "SourceID");
+    const candidateIdCol = this._col(table.map, "CandidateID");
+    const parentTitleCol = this._col(table.map, "ParentTitle");
+    const candidateTitleCol = this._col(table.map, "CandidateTitle");
+    const existingParentIdCol = this._col(table.map, "ExistingParentID");
+    const duplicateParentIdCol = this._col(table.map, "DuplicateParentID");
+    const keepParentIdCol = this._col(table.map, "KeepParentID");
     const sourceLinkCol = this._col(table.map, "SourceLink");
     const candidateLinkCol = this._col(table.map, "CandidateLink");
     const sourceRowCol = this._col(table.map, "SourceRow");
@@ -157,22 +173,27 @@ Engine.Decisions = {
     this.pending(ctx).filter(decision => String(decision.ReviewType || "") === "PARENT_DUPLICATE").forEach(decision => {
       const sourceRow = resolveParentRow(decision.SourceID);
       const candidateRow = resolveParentRow(decision.CandidateID);
-      if (sourceRow && sourceLinkCol >= 0) {
+      if (sourceRow) {
         table.sheet.getRange(decision._rowNumber, sourceRowCol + 1).setValue(sourceRow);
-        table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).setFormula(Engine.makeSheetRowLink(ctx, "Parent Lineup", sourceRow, decision.SourceID));
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, sourceIdCol, "Parent Lineup", sourceRow, decision.SourceID);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, "Parent Lineup", sourceRow, decision.ParentTitle);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, "Parent Lineup", sourceRow, decision.ExistingParentID);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, "Parent Lineup", sourceRow, decision.KeepParentID);
+        if (sourceLinkCol >= 0) table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
         linked++;
       }
-      if (candidateRow && candidateLinkCol >= 0) {
+      if (candidateRow) {
         table.sheet.getRange(decision._rowNumber, candidateRowCol + 1).setValue(candidateRow);
-        table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).setFormula(Engine.makeSheetRowLink(ctx, "Parent Lineup", candidateRow, decision.CandidateID));
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateIdCol, "Parent Lineup", candidateRow, decision.CandidateID);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateTitleCol, "Parent Lineup", candidateRow, decision.CandidateTitle);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, duplicateParentIdCol, "Parent Lineup", candidateRow, decision.DuplicateParentID);
+        if (candidateLinkCol >= 0) table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).clearContent();
         linked++;
       }
-      if (!sourceRow && sourceLinkCol >= 0) {
-        table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
+      if (!sourceRow) {
         cleared++;
       }
-      if (!candidateRow && candidateLinkCol >= 0) {
-        table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).clearContent();
+      if (!candidateRow) {
         cleared++;
       }
     });
@@ -184,11 +205,6 @@ Engine.Decisions = {
     const data = table.sheet.getDataRange().getValues();
     const reviewCol = this._col(table.map, "ReviewID");
     const statusCol = this._col(table.map, "ActionStatus");
-
-    const rowsToSet = {
-      SourceLink: ["SourceSheet", "SourceRow", "SourceID"],
-      CandidateLink: ["CandidateSheet", "CandidateRow", "CandidateID"]
-    };
 
     const existing = data.slice(1).some(row =>
       String(row[reviewCol] || "") === String(values.ReviewID || "") &&
@@ -203,16 +219,12 @@ Engine.Decisions = {
       if (index >= 0) row[index] = values[fieldName];
     });
 
-    Object.keys(rowsToSet).forEach(linkField => {
-      const index = this._col(table.map, linkField);
-      if (index < 0) return;
-      const [sheetField, rowField, idField] = rowsToSet[linkField];
+    [["SourceSheet", "SourceRow", "SourceID"], ["CandidateSheet", "CandidateRow", "CandidateID"]].forEach(([sheetField, rowField, idField]) => {
+      const index = this._col(table.map, idField);
       const sheetName = values[sheetField] || "";
       const rowNumber = values[rowField];
-      const label = values[idField] || (rowNumber ? `Row ${rowNumber}` : "View row");
-      if (sheetName && rowNumber && !row[index]) {
-        row[index] = Engine.makeSheetRowLink(ctx, sheetName, rowNumber, label);
-      }
+      const label = values[idField] || "";
+      if (index >= 0 && sheetName && rowNumber && label) row[index] = Engine.makeSheetRowLink(ctx, sheetName, rowNumber, label);
     });
 
     if (statusCol >= 0 && !row[statusCol]) row[statusCol] = "PENDING";
@@ -249,8 +261,34 @@ Engine.Decisions = {
     return { keepID: resolvedKeepID, duplicateID: resolvedDuplicateID };
   },
 
+  stampManualReviews: function(ctx) {
+    const table = this.ensureSchema(ctx);
+    const decisions = this.pending(ctx);
+    const reviewedByCol = this._col(table.map, "ReviewedBy");
+    const reviewedAtCol = this._col(table.map, "ReviewedAt");
+    const notesCol = this._col(table.map, "ReviewNotes");
+    let stamped = 0;
+
+    decisions.forEach(decision => {
+      const userDecision = String(decision.Decision || "PENDING").trim().toUpperCase();
+      if (userDecision === "PENDING" || userDecision === "DEFERRED") return;
+      if (reviewedByCol >= 0 && !decision.ReviewedBy) {
+        table.sheet.getRange(decision._rowNumber, reviewedByCol + 1).setValue(Session.getActiveUser().getEmail() || "Manual reviewer");
+        stamped++;
+      }
+      if (reviewedAtCol >= 0 && !decision.ReviewedAt) {
+        table.sheet.getRange(decision._rowNumber, reviewedAtCol + 1).setValue(new Date());
+      }
+      if (notesCol >= 0 && !decision.ReviewNotes) {
+        table.sheet.getRange(decision._rowNumber, notesCol + 1).setValue(`Manual decision: ${userDecision}`);
+      }
+    });
+    return { stamped: stamped };
+  },
+
   applyPending: function(ctx) {
     const table = this.ensureSchema(ctx);
+    this.stampManualReviews(ctx);
     // Delete applied queue rows from the bottom up so earlier deletions do not
     // shift the row numbers of decisions still being processed.
     const decisions = this.pending(ctx).sort((a, b) => b._rowNumber - a._rowNumber);
@@ -277,6 +315,11 @@ Engine.Decisions = {
         } else if (!action) {
           results.skipped++;
           return;
+        } else if (action === "REVIEW_IMPORT_DRIFT" && ["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) {
+          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID)) {
+            throw new Error("Import row could not be resolved for the selected Parent Lineup row");
+          }
+          actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
         } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {

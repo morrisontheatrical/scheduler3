@@ -295,6 +295,8 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
       SuggestionReason: `Likely duplicate match score ${best.score}% (${best.reasons})`,
       SuggestedKeepID: current.parentID,
       CandidateIDs: best.parentID,
+      MatchedFields: best.reasons,
+      ChangedFields: "EventName, Series, Opening, Range, DatesAndTimes, Venue, Pricing, Pit",
       ChangedDetails: `Likely duplicate of ${best.parentID} based on ${best.reasons}`,
       Evidence: `Opening=${current.Opening}, Range=${current.Range}, Venue=${current.Venue}`,
       ActionStatus: "PENDING"
