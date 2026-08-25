@@ -39,6 +39,10 @@ Verification may update status and `LastSynced` when the current behavior allows
 
 `decision_log` is the editable review queue. `Audit_Log` is historical output.
 
+For a Parent-to-Parent duplicate, compare `ParentTitle` (the proposed keeper)
+with `CandidateTitle` (the other Parent Lineup row). The source and candidate
+row links open the corresponding rows for the full field-level comparison.
+
 For an ordinary import update:
 
 ```text
@@ -50,12 +54,18 @@ ActionStatus: PENDING
 For a confirmed Parent duplicate:
 
 ```text
-Decision: CONFIRMED_DUPLICATE
+Decision: ACCEPT or CONFIRMED_DUPLICATE
 RequestedAction: MERGE_PARENT
 KeepParentID: <selected keeper>
 DuplicateParentID: <selected duplicate>
 ActionStatus: PENDING
 ```
+
+`Apply Reviewed Decisions (Includes Merges)` is the only normal queue-processing
+command. It preserves `KeepParentID` as the stable identity. For an accepted
+duplicate, `DuplicateParentID` is the source-data row: its title, dates, range,
+venue, and other source-managed values replace the retained row's values before
+downstream references are repointed and the duplicate Parent row is deleted.
 
 For a false match:
 

@@ -4,7 +4,7 @@ Engine.Decisions = {
   requiredFields: [
     "ReviewID", "ReviewType", "SourceSheet", "SourceRow", "SourceID", "SourceLink",
     "CandidateSheet", "CandidateRow", "CandidateID", "CandidateLink", "ImportTitle",
-    "ParentTitle", "ExistingParentID", "DuplicateParentID", "VenueEventID", "VenueUUID",
+    "ParentTitle", "CandidateTitle", "ExistingParentID", "DuplicateParentID", "VenueEventID", "VenueUUID",
     "MatchedFields", "ChangedFields", "ChangedDetails", "Evidence", "Confidence",
     "SuggestedAction", "SuggestionReason", "SuggestedKeepID", "CandidateIDs", "AffectedRows",
     "Decision", "RequestedAction", "KeepChoice", "KeepParentID", "ReviewNotes", "ReviewedBy",
@@ -24,8 +24,48 @@ Engine.Decisions = {
     return index >= 0 ? row[index] : "";
   },
 
+  ensureComparisonColumns: function(ctx) {
+    const sheet = ctx.ss.getSheetByName("decision_log");
+    const registry = ctx.ss.getSheetByName("Map_Registry");
+    if (!sheet || !registry) throw new Error("decision_log or Map_Registry sheet is missing");
+
+    const registryData = registry.getDataRange().getValues();
+    const registryHeaders = registryData[0] || [];
+    const sheetNameCol = registryHeaders.indexOf("Sheet Name");
+    const fieldNameCol = registryHeaders.indexOf("Field Name");
+    const columnIndexCol = registryHeaders.indexOf("Column Index");
+    const displayNameCol = registryHeaders.indexOf("Header DisplayName");
+    const dataTypeCol = registryHeaders.indexOf("Data Type");
+    const syncBehaviorCol = registryHeaders.indexOf("Sync Behavior");
+    if ([sheetNameCol, fieldNameCol, columnIndexCol, displayNameCol].includes(-1)) {
+      throw new Error("Map_Registry is missing required mapping columns for decision_log");
+    }
+
+    const exists = registryData.slice(1).some(row =>
+      String(row[sheetNameCol] || "").trim() === "decision_log" &&
+      String(row[fieldNameCol] || "").trim() === "CandidateTitle"
+    );
+    if (exists) return false;
+
+    const newColumn = sheet.getLastColumn() + 1;
+    sheet.insertColumnAfter(sheet.getLastColumn());
+    sheet.getRange(1, newColumn).setValue("Candidate Title");
+
+    const registryRow = new Array(registryHeaders.length).fill("");
+    registryRow[sheetNameCol] = "decision_log";
+    registryRow[fieldNameCol] = "CandidateTitle";
+    registryRow[columnIndexCol] = newColumn - 1;
+    registryRow[displayNameCol] = "Candidate Title";
+    if (dataTypeCol >= 0) registryRow[dataTypeCol] = "Text";
+    if (syncBehaviorCol >= 0) registryRow[syncBehaviorCol] = "System-Managed";
+    registry.appendRow(registryRow);
+    Engine.assembleSheetMap(ctx);
+    return true;
+  },
+
   ensureSchema: function(ctx) {
     const sheet = ctx.ss.getSheetByName("decision_log");
+    this.ensureComparisonColumns(ctx);
     const map = this._getMap(ctx);
     if (!sheet || !map) throw new Error("decision_log sheet or Map_Registry definition is missing");
 
@@ -83,6 +123,12 @@ Engine.Decisions = {
     const data = table.sheet.getDataRange().getValues();
     const reviewCol = this._col(table.map, "ReviewID");
     const statusCol = this._col(table.map, "ActionStatus");
+
+    const rowsToSet = {
+      SourceLink: ["SourceSheet", "SourceRow", "SourceID"],
+      CandidateLink: ["CandidateSheet", "CandidateRow", "CandidateID"]
+    };
+
     const existing = data.slice(1).some(row =>
       String(row[reviewCol] || "") === String(values.ReviewID || "") &&
       String(row[statusCol] || "PENDING").trim().toUpperCase() === "PENDING"
@@ -95,6 +141,19 @@ Engine.Decisions = {
       const index = this._col(table.map, fieldName);
       if (index >= 0) row[index] = values[fieldName];
     });
+
+    Object.keys(rowsToSet).forEach(linkField => {
+      const index = this._col(table.map, linkField);
+      if (index < 0) return;
+      const [sheetField, rowField, idField] = rowsToSet[linkField];
+      const sheetName = values[sheetField] || "";
+      const rowNumber = values[rowField];
+      const label = values[idField] || (rowNumber ? `Row ${rowNumber}` : "View row");
+      if (sheetName && rowNumber && !row[index]) {
+        row[index] = Engine.makeSheetRowLink(ctx, sheetName, rowNumber, label);
+      }
+    });
+
     if (statusCol >= 0 && !row[statusCol]) row[statusCol] = "PENDING";
     table.sheet.appendRow(row);
     return true;
@@ -167,13 +226,15 @@ Engine.Decisions = {
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
         } else if (action === "MERGE_PARENT") {
-          if (userDecision !== "CONFIRMED_DUPLICATE") throw new Error("MERGE_PARENT requires Decision=CONFIRMED_DUPLICATE");
+          if (!["ACCEPT", "CONFIRMED_DUPLICATE"].includes(userDecision)) {
+            throw new Error("MERGE_PARENT requires Decision=ACCEPT or CONFIRMED_DUPLICATE");
+          }
           const selection = this.resolveMergeSelection(decision);
           const keepID = selection.keepID;
           const duplicateID = selection.duplicateID;
           if (!keepID || !duplicateID) throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
-          Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
-          actionDetails = `Merged ${duplicateID} into ${keepID}`;
+          const mergeResult = Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
+          actionDetails = `Merged ${duplicateID} into ${keepID}; copied ${mergeResult.copiedFields.join(", ") || "no"} source fields`;
         } else {
           throw new Error(`Unsupported RequestedAction: ${action}`);
         }

@@ -60,6 +60,8 @@ import (raw IMPORTRANGE source)
     - MARK_*: change an operational state.
     - REFRESH_*: propagate an already-approved upstream change.
 - `decision_log.ActionStatus`: processing result.
+- `decision_log.ParentTitle` and `CandidateTitle`: the visible pair to compare
+  for a Parent-to-Parent duplicate; IDs and row links retain the row identity.
 
 `LOCKED` and `BYPASS` prevent mutation. Detected differences may still be logged and may create a pending decision.
 

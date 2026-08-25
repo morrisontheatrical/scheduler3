@@ -249,11 +249,20 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
         reasons.push("same range");
       }
 
-      const sameDateVenue = normalize(current.Opening) && normalize(current.Venue) && normalize(current.Opening) === normalize(candidate.Opening) && normalize(current.Venue) === normalize(candidate.Venue);
-      if (sameDateVenue) score += 30;
+      const sameOpening = normalize(current.Opening) && normalize(current.Opening) === normalize(candidate.Opening);
+      const sameVenue = normalize(current.Venue) && normalize(current.Venue) === normalize(candidate.Venue);
+      if (sameOpening && sameVenue) score += 30;
 
-      if (score >= 60) {
-        const candidateItem = { parentID: candidate.parentID, rowNumber: candidate.rowNumber, score, reasons: reasons.join(", ") };
+      // Placeholder titles and a shared venue are not duplicate evidence by
+      // themselves. Parent merges require the same full opening date and venue.
+      if (sameOpening && sameVenue && score >= 60) {
+        const candidateItem = {
+          parentID: candidate.parentID,
+          rowNumber: candidate.rowNumber,
+          eventName: candidate.EventName,
+          score: score,
+          reasons: reasons.join(", ")
+        };
         if (!best || candidateItem.score > best.score) best = candidateItem;
       }
     });
@@ -267,10 +276,13 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
       SourceSheet: "Parent Lineup",
       SourceRow: current.rowNumber,
       SourceID: current.parentID,
+      SourceLink: Engine.makeSheetRowLink(ctx, "Parent Lineup", current.rowNumber, `Row ${current.rowNumber}`),
       CandidateSheet: "Parent Lineup",
       CandidateRow: best.rowNumber,
       CandidateID: best.parentID,
+      CandidateLink: Engine.makeSheetRowLink(ctx, "Parent Lineup", best.rowNumber, `Row ${best.rowNumber}`),
       ParentTitle: current.EventName,
+      CandidateTitle: best.eventName,
       ExistingParentID: current.parentID,
       DuplicateParentID: best.parentID,
       Confidence: best.score >= 80 ? "HIGH" : "MEDIUM",
@@ -306,7 +318,7 @@ Engine.Ingest.applyConfirmedParentMerges = function(ctx) {
   const pending = Engine.Decisions.pending(ctx).filter(item => {
     const decision = String(item.Decision || "").trim().toUpperCase();
     const action = String(item.RequestedAction || "").trim().toUpperCase();
-    return decision === "CONFIRMED_DUPLICATE" && action === "MERGE_PARENT";
+    return ["ACCEPT", "CONFIRMED_DUPLICATE"].includes(decision) && action === "MERGE_PARENT";
   });
 
   let applied = 0;
@@ -319,13 +331,13 @@ Engine.Ingest.applyConfirmedParentMerges = function(ctx) {
       if (!keepID || !duplicateID) {
         throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
       }
-      Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
+      const mergeResult = Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
       const statusCol = Engine.getColumnIndex(table.map, "ActionStatus");
       const actionedCol = Engine.getColumnIndex(table.map, "ActionedAt");
       const detailsCol = Engine.getColumnIndex(table.map, "ActionDetails");
       if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("APPLIED");
       if (actionedCol >= 0) table.sheet.getRange(decision._rowNumber, actionedCol + 1).setValue(new Date());
-      if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(`Merged ${duplicateID} into ${keepID}`);
+      if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(`Merged ${duplicateID} into ${keepID}; copied ${mergeResult.copiedFields.join(", ") || "no"} source fields`);
       table.sheet.deleteRow(decision._rowNumber);
       applied++;
     } catch (error) {
@@ -356,6 +368,26 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   if (duplicateRow < 0) throw new Error(`Duplicate Parent Lineup row not found: ${duplicateParentID}`);
   const keepRow = parentData.findIndex((row, index) => index > 0 && row[parentIdCol] === keepParentID);
   if (keepRow < 0) throw new Error(`Keeper Parent Lineup row not found: ${keepParentID}`);
+
+  const keepValues = parentData[keepRow];
+  const duplicateValues = parentData[duplicateRow];
+  const sourceFields = [...new Set([
+    "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit",
+    ...Object.keys(parentMap).filter(fieldName => Engine.getSyncBehavior(parentMap, fieldName) === "Source (Read-Only)")
+  ])].filter(fieldName => Engine.getColumnIndex(parentMap, fieldName) >= 0);
+  const copiedFields = [];
+  sourceFields.forEach(fieldName => {
+    const column = Engine.getColumnIndex(parentMap, fieldName);
+    const sourceValue = duplicateValues[column] === null || duplicateValues[column] === undefined
+      ? ""
+      : duplicateValues[column];
+    const existingValue = keepValues[column] === null || keepValues[column] === undefined
+      ? ""
+      : keepValues[column];
+    if (String(existingValue) === String(sourceValue)) return;
+    parentSheet.getRange(keepRow + 1, column + 1).setValue(sourceValue);
+    copiedFields.push(fieldName);
+  });
 
   const changedLocations = [];
   Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
@@ -392,9 +424,14 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
     sheetName: "Parent Lineup",
     id: duplicateParentID,
     type: "PARENT_DUPLICATE_MERGED",
-    details: `Merged into ${keepParentID}. Repointed ${changedLocations.length} dependent row(s).`
+    details: `Merged into ${keepParentID}. Copied source fields: ${copiedFields.join(", ") || "none"}. Repointed ${changedLocations.length} dependent row(s).`
   });
-  return { keepParentID: keepParentID, duplicateParentID: duplicateParentID, changedLocations: changedLocations };
+  return {
+    keepParentID: keepParentID,
+    duplicateParentID: duplicateParentID,
+    copiedFields: copiedFields,
+    changedLocations: changedLocations
+  };
 };
 
 function mergeParentDuplicate(keepParentID, duplicateParentID) {

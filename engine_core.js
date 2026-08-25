@@ -117,6 +117,19 @@ var Engine = {
     return Number.isInteger(columnIndex) && columnIndex >= 0 ? columnIndex : -1;
   },
 
+  makeSheetRowLink: function(ctx, sheetName, rowNumber, label) {
+    if (!ctx || !ctx.ss || !sheetName || !rowNumber) return "";
+    const parsedRow = Number(rowNumber);
+    if (!Number.isFinite(parsedRow) || parsedRow <= 0) return "";
+
+    const targetSheet = ctx.ss.getSheetByName(sheetName);
+    if (!targetSheet) return label || `Row ${parsedRow}`;
+
+    const gid = targetSheet.getSheetId();
+    const text = label || `Row ${parsedRow}`;
+    return `=HYPERLINK("#gid=${gid}&range=A${parsedRow}","${String(text).replace(/"/g, '""')}")`;
+  },
+
   getLibraryModule: function(moduleName) {
     if (typeof scriptLib !== "undefined" && scriptLib.SL && scriptLib.SL[moduleName]) {
       return scriptLib.SL[moduleName];
