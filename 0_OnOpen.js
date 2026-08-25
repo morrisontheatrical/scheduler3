@@ -49,7 +49,7 @@ function onOpen() {
 
 function goSync() {
   if (Engine && Engine.Sync && Engine.Sync.runMasterSync) {
-    Engine.Sync.runMasterSync();
+    Engine.Sync.runMasterSync({ runtime: { applyDecisions: true } });
     return;
   }
 

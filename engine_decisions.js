@@ -100,7 +100,9 @@ Engine.Decisions = {
 
   applyPending: function(ctx) {
     const table = this.ensureSchema(ctx);
-    const decisions = this.pending(ctx);
+    // Delete applied queue rows from the bottom up so earlier deletions do not
+    // shift the row numbers of decisions still being processed.
+    const decisions = this.pending(ctx).sort((a, b) => b._rowNumber - a._rowNumber);
     const statusCol = this._col(table.map, "ActionStatus");
     const actionedAtCol = this._col(table.map, "ActionedAt");
     const detailsCol = this._col(table.map, "ActionDetails");
@@ -109,14 +111,22 @@ Engine.Decisions = {
     decisions.forEach(decision => {
       const userDecision = String(decision.Decision || "PENDING").trim().toUpperCase();
       const action = String(decision.RequestedAction || "").trim().toUpperCase();
-      if (userDecision === "PENDING" || !action) {
+      if (userDecision === "PENDING" || (userDecision !== "REJECTED" && userDecision !== "DEFERRED" && !action)) {
         results.skipped++;
         return;
       }
 
       let actionDetails = "";
       try {
-        if (action === "ACCEPT_IMPORT") {
+        if (userDecision === "REJECTED") {
+          actionDetails = `Decision rejected by reviewer; no data change for ${decision.ReviewID}`;
+        } else if (userDecision === "DEFERRED") {
+          results.skipped++;
+          return;
+        } else if (!action) {
+          results.skipped++;
+          return;
+        } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
           if (!decision.ExistingParentID) throw new Error("ACCEPT_IMPORT requires ExistingParentID");
           if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID)) {
@@ -130,7 +140,7 @@ Engine.Decisions = {
           if (!keepID || !duplicateID) throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
           Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
           actionDetails = `Merged ${duplicateID} into ${keepID}`;
-        } else if (["REJECT_MATCH", "REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "DEFERRED", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
+        } else if (["REJECT_MATCH", "REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else {
           throw new Error(`Unsupported RequestedAction: ${action}`);
@@ -140,6 +150,7 @@ Engine.Decisions = {
         if (actionedAtCol >= 0) table.sheet.getRange(decision._rowNumber, actionedAtCol + 1).setValue(new Date());
         if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(actionDetails);
         Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_APPLIED", details: actionDetails });
+        table.sheet.deleteRow(decision._rowNumber);
         results.applied++;
       } catch (error) {
         if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("FAILED");

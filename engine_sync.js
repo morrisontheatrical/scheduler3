@@ -11,6 +11,15 @@ Engine.Sync = {
     // 1. Get Context
     const ctx = Engine.getContext(options);
     const runtime = ctx.runtime || {};
+
+    if (runtime.applyDecisions && Engine.Decisions && typeof Engine.Decisions.applyPending === "function") {
+      const decisionResults = Engine.Decisions.applyPending(ctx);
+      Engine.Log.write(ctx, {
+        stage: "DECISION",
+        type: "DECISION_BATCH",
+        details: `Applied reviewed decisions at sync start: ${decisionResults.applied} applied, ${decisionResults.failed} failed, ${decisionResults.skipped} skipped.`
+      });
+    }
   
     // 2. Log active mode at start
     const activeMode = ctx.mode && ctx.mode.mode ? ctx.mode.mode : "Unknown";
