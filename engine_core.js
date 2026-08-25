@@ -569,6 +569,14 @@ Engine.getDisplayName = function(map, fieldName) {
       auditSheet.insertRowAfter(1);
       auditSheet.getRange(2, 1, 1, logRow.length).setValues([logRow]);
     },
+    command: function(ctx, commandName, details) {
+      this.write(ctx, {
+        stage: "USER_COMMAND",
+        id: commandName,
+        type: "COMMAND_INVOKED",
+        details: details || `User invoked ${commandName}`
+      });
+    },
     // ADD THESE HELPERS to prevent the "is not a function" error:
     info: function(ctx, stage, details) {
       this.write(ctx, { stage: stage, type: "INFO", details: details });

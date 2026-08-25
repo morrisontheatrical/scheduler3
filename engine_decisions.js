@@ -118,6 +118,67 @@ Engine.Decisions = {
     return true;
   },
 
+  markSuperseded: function(ctx, reviewID, details) {
+    const table = this.ensureSchema(ctx);
+    const data = table.sheet.getDataRange().getValues();
+    const reviewCol = this._col(table.map, "ReviewID");
+    const statusCol = this._col(table.map, "ActionStatus");
+    const actionedAtCol = this._col(table.map, "ActionedAt");
+    const detailsCol = this._col(table.map, "ActionDetails");
+    const rowIndex = data.findIndex((row, index) => index > 0 && String(row[reviewCol]) === String(reviewID));
+    if (rowIndex < 0) return false;
+
+    const sheetRow = rowIndex + 1;
+    if (statusCol >= 0) table.sheet.getRange(sheetRow, statusCol + 1).setValue("SUPERSEDED");
+    if (actionedAtCol >= 0) table.sheet.getRange(sheetRow, actionedAtCol + 1).setValue(new Date());
+    if (detailsCol >= 0) table.sheet.getRange(sheetRow, detailsCol + 1).setValue(details);
+    return true;
+  },
+
+  refreshLinks: function(ctx) {
+    const table = this.ensureSchema(ctx);
+    const resolveParentRow = parentID => {
+      const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
+      const parentMap = ctx.getMap("Parent Lineup");
+      const idColumn = Engine.getColumnIndex(parentMap, "parentID");
+      if (!parentSheet || idColumn < 0 || !parentID) return null;
+      const data = parentSheet.getDataRange().getValues();
+      const rowIndex = data.findIndex((row, index) => index > 0 && String(row[idColumn]) === String(parentID));
+      return rowIndex >= 0 ? rowIndex + 1 : null;
+    };
+
+    const sourceLinkCol = this._col(table.map, "SourceLink");
+    const candidateLinkCol = this._col(table.map, "CandidateLink");
+    const sourceRowCol = this._col(table.map, "SourceRow");
+    const candidateRowCol = this._col(table.map, "CandidateRow");
+    let linked = 0;
+    let cleared = 0;
+
+    this.pending(ctx).filter(decision => String(decision.ReviewType || "") === "PARENT_DUPLICATE").forEach(decision => {
+      const sourceRow = resolveParentRow(decision.SourceID);
+      const candidateRow = resolveParentRow(decision.CandidateID);
+      if (sourceRow && sourceLinkCol >= 0) {
+        table.sheet.getRange(decision._rowNumber, sourceRowCol + 1).setValue(sourceRow);
+        table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).setFormula(Engine.makeSheetRowLink(ctx, "Parent Lineup", sourceRow, decision.SourceID));
+        linked++;
+      }
+      if (candidateRow && candidateLinkCol >= 0) {
+        table.sheet.getRange(decision._rowNumber, candidateRowCol + 1).setValue(candidateRow);
+        table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).setFormula(Engine.makeSheetRowLink(ctx, "Parent Lineup", candidateRow, decision.CandidateID));
+        linked++;
+      }
+      if (!sourceRow && sourceLinkCol >= 0) {
+        table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
+        cleared++;
+      }
+      if (!candidateRow && candidateLinkCol >= 0) {
+        table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).clearContent();
+        cleared++;
+      }
+    });
+    return { linked: linked, cleared: cleared };
+  },
+
   addPending: function(ctx, values) {
     const table = this.ensureSchema(ctx);
     const data = table.sheet.getDataRange().getValues();
@@ -283,5 +344,17 @@ function listPendingDecisions() {
 }
 
 function applyPendingDecisions() {
-  return Engine.Decisions.applyPending(Engine.getContext());
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Apply Reviewed Decisions");
+  const results = Engine.Decisions.applyPending(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Apply Reviewed Decisions", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+function refreshDecisionLinks() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Refresh Decision Row Links");
+  const results = Engine.Decisions.refreshLinks(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Refresh Decision Row Links", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
 }

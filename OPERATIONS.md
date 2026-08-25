@@ -67,6 +67,17 @@ duplicate, `DuplicateParentID` is the source-data row: its title, dates, range,
 venue, and other source-managed values replace the retained row's values before
 downstream references are repointed and the duplicate Parent row is deleted.
 
+After Parent duplicates are reconciled, run `Refresh Resolved Parent-Only
+Reviews`. It marks historical `PARENT_ONLY` rows as `SUPERSEDED` when their
+surviving Parent row now matches import. A Parent-only review never merges an
+import row: an exact import match is reviewed as `ACCEPT_IMPORT`; otherwise it
+remains a non-mutating `REVIEW_PARENT_ONLY` item.
+
+Before applying an older queue, run `Refresh Stale Parent Duplicate Reviews`.
+It supersedes duplicate decisions whose two Parent rows are no longer present
+or no longer share an opening date and venue. Generate new duplicate suggestions
+only after that refresh.
+
 For a false match:
 
 ```text

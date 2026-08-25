@@ -7,6 +7,7 @@ var Engine = Engine || {};
  */
 function goParent() {
   const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Ingest Season");
   const ss = ctx.ss;
   const iSheet = ss.getSheetByName("import");
   const pSheet = ss.getSheetByName("Parent Lineup");
@@ -445,7 +446,10 @@ function resolveParentDuplicates(merge) {
 
 function generateParentDuplicateSuggestions() {
   const ctx = Engine.getContext();
-  return Engine.Ingest.buildParentDuplicateSuggestions(ctx, {});
+  Engine.Log.command(ctx, "Generate Parent Duplicate Suggestions");
+  const results = Engine.Ingest.buildParentDuplicateSuggestions(ctx, {});
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Generate Parent Duplicate Suggestions", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
 }
 
 function applyConfirmedParentMerges() {
@@ -808,7 +812,10 @@ Engine.Ingest._reparseDateFromParent = function(ctx, parentID, eventOfTotal) {
  */
 function goVerifyImportToParent() {
   const ctx = Engine.getContext();
-  return Engine.Ingest.verifyImportToParent(ctx);
+  Engine.Log.command(ctx, "Verify Import vs Parent Lineup");
+  const results = Engine.Ingest.verifyImportToParent(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Verify Import vs Parent Lineup", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
 }
 
 Engine.Ingest.verifyImportToParent = function(ctx) {
@@ -893,6 +900,9 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         matches.push({
           importRow: index + 2,
           importTitle: importTitle,
+          importOpening: importOpening,
+          importRange: importRange,
+          importVenue: importVenue,
           score: score,
           reasons: reasons.join(", ")
         });
@@ -1041,30 +1051,39 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     parentOnly++;
     const likelyMatches = likelyParentMatches(pRow, rowIdx);
     const bestMatch = likelyMatches[0];
+    const hasExactSourceMatch = bestMatch &&
+      normalize(pRowValue(pRow, "Opening")) === normalize(bestMatch.importOpening) &&
+      normalize(pRowValue(pRow, "Range")) === normalize(bestMatch.importRange) &&
+      normalize(pRowValue(pRow, "Venue")) === normalize(bestMatch.importVenue);
     const decisionValues = {
       ReviewID: `PARENT_ONLY_${pRow[pCol("parentID")] || rowIdx}`,
-      SourceSheet: "import",
+      SourceSheet: hasExactSourceMatch ? "import" : "",
+      SourceRow: hasExactSourceMatch ? bestMatch.importRow : "",
+      SourceID: hasExactSourceMatch ? bestMatch.importTitle : "",
       CandidateSheet: "Parent Lineup",
       CandidateRow: rowIdx,
+      CandidateID: pRow[pCol("parentID")],
+      CandidateTitle: pRow[pCol("EventName")],
+      ImportTitle: hasExactSourceMatch ? bestMatch.importTitle : "",
       ParentTitle: pRow[pCol("EventName")],
       ExistingParentID: pRow[pCol("parentID")],
-      Confidence: bestMatch ? "MEDIUM" : "LOW",
-      SuggestedAction: bestMatch ? "MERGE_PARENT" : "REVIEW_PARENT_ONLY",
-      SuggestionReason: bestMatch
-        ? `Possible same event with import row ${bestMatch.importRow}; candidate scoring ${bestMatch.score}% (${bestMatch.reasons}). Keep the existing parent row unless a different keeper is selected.`
+      Confidence: hasExactSourceMatch ? "HIGH" : "LOW",
+      SuggestedAction: hasExactSourceMatch ? "ACCEPT_IMPORT" : "REVIEW_PARENT_ONLY",
+      SuggestionReason: hasExactSourceMatch
+        ? `Exact import match at row ${bestMatch.importRow}; accept import as the source of truth for the retained Parent ID.`
         : "No matching import row found; review before deleting or merging.",
       SuggestedKeepID: pRow[pCol("parentID")] || "",
-      CandidateIDs: bestMatch ? String(bestMatch.importRow) : "",
-      DuplicateParentID: bestMatch ? String(bestMatch.importRow) : "",
-      KeepChoice: bestMatch ? "KEEP_EXISTING" : "KEEP_EXISTING",
+      CandidateIDs: "",
+      DuplicateParentID: "",
+      KeepChoice: "KEEP_EXISTING",
       KeepParentID: pRow[pCol("parentID")] || "",
-      RequestedAction: bestMatch ? "MERGE_PARENT" : "REVIEW_PARENT_ONLY"
+      RequestedAction: hasExactSourceMatch ? "ACCEPT_IMPORT" : "REVIEW_PARENT_ONLY"
     };
     applyReviewStatus(
       rowIdx,
       pRow[pCol("parentID")] || pRow[pCol("EventName")],
       "Manual Review",
-      bestMatch ? `Possible import match: ${bestMatch.importTitle} (${bestMatch.reasons}).` : "No matching import row found.",
+      hasExactSourceMatch ? `Exact import match: ${bestMatch.importTitle}.` : "No matching import row found.",
       decisionValues
     );
     Engine.Log.write(ctx, {
@@ -1086,13 +1105,103 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   return { checked: iData.length, flagged: flagged, renamedCandidate: renamedCandidate, importOnly: importOnly, parentOnly: parentOnly };
 };
 
+Engine.Ingest.refreshParentOnlyDecisions = function(ctx) {
+  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const importSheet = ctx.ss.getSheetByName("import");
+  const parentMap = ctx.getMap("Parent Lineup");
+  const importMap = ctx.getMap("import");
+  if (!parentSheet || !importSheet || !parentMap || !importMap) {
+    throw new Error("Parent Lineup, import, or their maps are missing");
+  }
+
+  const pCol = field => Engine.getColumnIndex(parentMap, field);
+  const iCol = field => Engine.getColumnIndex(importMap, field);
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const parentById = {};
+  parentSheet.getDataRange().getValues().slice(1).forEach(row => {
+    parentById[row[pCol("parentID")]] = row;
+  });
+  const importRows = importSheet.getDataRange().getValues().slice(1);
+
+  let superseded = 0;
+  Engine.Decisions.pending(ctx)
+    .filter(decision => String(decision.ReviewID || "").startsWith("PARENT_ONLY_"))
+    .forEach(decision => {
+      const parentRow = parentById[decision.ExistingParentID];
+      const details = !parentRow
+        ? "Parent row no longer exists; it was resolved by a merge or manual cleanup."
+        : "Parent row now matches import after duplicate reconciliation.";
+      const matchesImport = parentRow && importRows.some(importRow =>
+        normalize(importRow[iCol("EventName")]) === normalize(parentRow[pCol("EventName")]) ||
+        ["Opening", "Range", "Venue"].every(field =>
+          normalize(importRow[iCol(field)]) && normalize(importRow[iCol(field)]) === normalize(parentRow[pCol(field)])
+        )
+      );
+      if ((!parentRow || matchesImport) && Engine.Decisions.markSuperseded(ctx, decision.ReviewID, details)) superseded++;
+    });
+
+  return { superseded: superseded };
+};
+
+function refreshParentOnlyDecisions() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Refresh Resolved Parent-Only Reviews");
+  const results = Engine.Ingest.refreshParentOnlyDecisions(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Refresh Resolved Parent-Only Reviews", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+Engine.Ingest.refreshParentDuplicateDecisions = function(ctx) {
+  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const parentMap = ctx.getMap("Parent Lineup");
+  if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map is missing");
+
+  const pCol = field => Engine.getColumnIndex(parentMap, field);
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const parentById = {};
+  parentSheet.getDataRange().getValues().slice(1).forEach(row => {
+    parentById[row[pCol("parentID")]] = row;
+  });
+
+  let superseded = 0;
+  Engine.Decisions.pending(ctx)
+    .filter(decision => String(decision.ReviewType || "") === "PARENT_DUPLICATE")
+    .forEach(decision => {
+      const keepRow = parentById[decision.KeepParentID || decision.ExistingParentID];
+      const duplicateRow = parentById[decision.DuplicateParentID || decision.CandidateID];
+      const validPair = keepRow && duplicateRow &&
+        normalize(keepRow[pCol("Opening")]) === normalize(duplicateRow[pCol("Opening")]) &&
+        normalize(keepRow[pCol("Venue")]) === normalize(duplicateRow[pCol("Venue")]);
+      if (!validPair && Engine.Decisions.markSuperseded(
+        ctx,
+        decision.ReviewID,
+        "Superseded: one Parent row is no longer present or the pair no longer shares the same opening date and venue."
+      )) {
+        superseded++;
+      }
+    });
+
+  return { superseded: superseded };
+};
+
+function refreshParentDuplicateDecisions() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Refresh Stale Parent Duplicate Reviews");
+  const results = Engine.Ingest.refreshParentDuplicateDecisions(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Refresh Stale Parent Duplicate Reviews", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
 /**
  * VERIFY (read-only): Flags Lineup rows whose Date/Venue no longer match a
  * re-parse of their Parent Lineup row's DatesAndTimes range. Does not overwrite.
  */
 function goVerifyParentToLineup() {
   const ctx = Engine.getContext();
-  return Engine.Ingest.verifyParentToLineup(ctx);
+  Engine.Log.command(ctx, "Verify Parent Lineup vs Lineup");
+  const results = Engine.Ingest.verifyParentToLineup(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Verify Parent Lineup vs Lineup", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
 }
 
 Engine.Ingest.verifyParentToLineup = function(ctx) {
