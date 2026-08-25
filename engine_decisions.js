@@ -2,11 +2,13 @@ var Engine = Engine || {};
 
 Engine.Decisions = {
   requiredFields: [
-    "ReviewID", "ReviewType", "SourceSheet", "SourceRow", "CandidateSheet", "CandidateRow",
-    "ImportTitle", "ParentTitle", "ExistingParentID", "DuplicateParentID", "VenueEventID",
-    "VenueUUID", "MatchedFields", "ChangedFields", "Confidence", "Decision", "RequestedAction",
-    "KeepParentID", "ReviewNotes", "ReviewedBy", "ReviewedAt", "ActionStatus", "ActionedAt",
-    "ActionDetails"
+    "ReviewID", "ReviewType", "SourceSheet", "SourceRow", "SourceID", "SourceLink",
+    "CandidateSheet", "CandidateRow", "CandidateID", "CandidateLink", "ImportTitle",
+    "ParentTitle", "ExistingParentID", "DuplicateParentID", "VenueEventID", "VenueUUID",
+    "MatchedFields", "ChangedFields", "ChangedDetails", "Evidence", "Confidence",
+    "SuggestedAction", "SuggestionReason", "SuggestedKeepID", "CandidateIDs", "AffectedRows",
+    "Decision", "RequestedAction", "KeepChoice", "KeepParentID", "ReviewNotes", "ReviewedBy",
+    "ReviewedAt", "ActionStatus", "ActionedAt", "ActionDetails"
   ],
 
   _getMap: function(ctx) {
@@ -98,6 +100,35 @@ Engine.Decisions = {
     return true;
   },
 
+  resolveMergeSelection: function(decision) {
+    const keepChoice = String(decision.KeepChoice || "").trim().toUpperCase();
+    const keepID = String(decision.KeepParentID || decision.ExistingParentID || "").trim();
+    const candidateID = String(decision.CandidateID || decision.DuplicateParentID || "").trim();
+    const suggestedKeep = String(decision.SuggestedKeepID || "").trim();
+    const existingID = String(decision.ExistingParentID || "").trim();
+    const candidateIDs = String(decision.CandidateIDs || "").split(",").map(part => String(part).trim()).filter(Boolean);
+    const fallbackCandidate = candidateIDs.length ? candidateIDs[0] : candidateID;
+
+    let resolvedKeepID = keepID || suggestedKeep || existingID;
+    let resolvedDuplicateID = decision.DuplicateParentID || fallbackCandidate || "";
+
+    if (keepChoice === "KEEP_EXISTING") {
+      resolvedKeepID = existingID || keepID || suggestedKeep || resolvedKeepID;
+      resolvedDuplicateID = fallbackCandidate || decision.DuplicateParentID || "";
+    } else if (keepChoice === "KEEP_CANDIDATE") {
+      resolvedKeepID = fallbackCandidate || suggestedKeep || keepID || existingID;
+      resolvedDuplicateID = existingID || decision.DuplicateParentID || "";
+    } else if (keepChoice === "KEEP_SOURCE") {
+      resolvedKeepID = existingID || keepID || suggestedKeep || resolvedKeepID;
+      resolvedDuplicateID = fallbackCandidate || decision.DuplicateParentID || "";
+    } else if (keepChoice === "KEEP_OTHER") {
+      resolvedKeepID = suggestedKeep || keepID || existingID;
+      resolvedDuplicateID = decision.DuplicateParentID || fallbackCandidate || "";
+    }
+
+    return { keepID: resolvedKeepID, duplicateID: resolvedDuplicateID };
+  },
+
   applyPending: function(ctx) {
     const table = this.ensureSchema(ctx);
     // Delete applied queue rows from the bottom up so earlier deletions do not
@@ -110,7 +141,7 @@ Engine.Decisions = {
 
     decisions.forEach(decision => {
       const userDecision = String(decision.Decision || "PENDING").trim().toUpperCase();
-      const action = String(decision.RequestedAction || "").trim().toUpperCase();
+      const action = String(decision.RequestedAction || decision.SuggestedAction || "").trim().toUpperCase();
       if (userDecision === "PENDING" || (userDecision !== "REJECTED" && userDecision !== "DEFERRED" && !action)) {
         results.skipped++;
         return;
@@ -126,6 +157,8 @@ Engine.Decisions = {
         } else if (!action) {
           results.skipped++;
           return;
+        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
+          actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
           if (!decision.ExistingParentID) throw new Error("ACCEPT_IMPORT requires ExistingParentID");
@@ -135,13 +168,12 @@ Engine.Decisions = {
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
         } else if (action === "MERGE_PARENT") {
           if (userDecision !== "CONFIRMED_DUPLICATE") throw new Error("MERGE_PARENT requires Decision=CONFIRMED_DUPLICATE");
-          const keepID = decision.KeepParentID || decision.ExistingParentID;
-          const duplicateID = decision.DuplicateParentID;
+          const selection = this.resolveMergeSelection(decision);
+          const keepID = selection.keepID;
+          const duplicateID = selection.duplicateID;
           if (!keepID || !duplicateID) throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
           Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
           actionDetails = `Merged ${duplicateID} into ${keepID}`;
-        } else if (["REJECT_MATCH", "REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
-          actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else {
           throw new Error(`Unsupported RequestedAction: ${action}`);
         }

@@ -185,6 +185,163 @@ Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
   return { groups: duplicateGroups.map(group => group.map(item => item.rowNumber)), merged: merged };
 };
 
+Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
+  options = options || {};
+  const sheet = ctx.ss.getSheetByName("Parent Lineup");
+  const map = ctx.getMap("Parent Lineup");
+  if (!sheet || !map) return { created: 0, suggested: 0 };
+
+  const col = field => Engine.getColumnIndex(map, field);
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const compact = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const similarity = (a, b) => {
+    const left = compact(a);
+    const right = compact(b);
+    if (!left || !right) return 0;
+    if (left === right) return 100;
+    if (left.includes(right) || right.includes(left)) return 80;
+    const leftWords = left.split(/\s+/).filter(Boolean);
+    const rightWords = right.split(/\s+/).filter(Boolean);
+    if (!leftWords.length || !rightWords.length) return 0;
+    const overlap = leftWords.filter(word => rightWords.includes(word)).length;
+    return Math.min(60, Math.round((overlap / Math.max(leftWords.length, rightWords.length)) * 100));
+  };
+
+  const data = sheet.getDataRange().getValues();
+  const rows = data.slice(1).map((row, index) => ({
+    rowNumber: index + 2,
+    parentID: row[col("parentID")],
+    EventName: row[col("EventName")],
+    Opening: row[col("Opening")],
+    Range: row[col("Range")],
+    Venue: row[col("Venue")]
+  })).filter(item => item.parentID);
+
+  let created = 0;
+  let suggested = 0;
+  const seen = {};
+
+  rows.forEach(current => {
+    if (seen[current.parentID]) return;
+    let best = null;
+
+    rows.forEach(candidate => {
+      if (candidate.parentID === current.parentID) return;
+      let score = 0;
+      const reasons = [];
+
+      const titleScore = similarity(current.EventName, candidate.EventName);
+      if (titleScore > 0) {
+        score += titleScore;
+        reasons.push(`title ${titleScore}%`);
+      }
+
+      if (normalize(current.Venue) && normalize(current.Venue) === normalize(candidate.Venue)) {
+        score += 25;
+        reasons.push("same venue");
+      }
+      if (normalize(current.Opening) && normalize(current.Opening) === normalize(candidate.Opening)) {
+        score += 20;
+        reasons.push("same opening");
+      }
+      if (normalize(current.Range) && normalize(current.Range) === normalize(candidate.Range)) {
+        score += 20;
+        reasons.push("same range");
+      }
+
+      const sameDateVenue = normalize(current.Opening) && normalize(current.Venue) && normalize(current.Opening) === normalize(candidate.Opening) && normalize(current.Venue) === normalize(candidate.Venue);
+      if (sameDateVenue) score += 30;
+
+      if (score >= 60) {
+        const candidateItem = { parentID: candidate.parentID, rowNumber: candidate.rowNumber, score, reasons: reasons.join(", ") };
+        if (!best || candidateItem.score > best.score) best = candidateItem;
+      }
+    });
+
+    if (!best) return;
+    suggested++;
+    const reviewID = `PARENT_DUPLICATE_${current.parentID}_${best.parentID}`;
+    const values = {
+      ReviewID: reviewID,
+      ReviewType: "PARENT_DUPLICATE",
+      SourceSheet: "Parent Lineup",
+      SourceRow: current.rowNumber,
+      SourceID: current.parentID,
+      CandidateSheet: "Parent Lineup",
+      CandidateRow: best.rowNumber,
+      CandidateID: best.parentID,
+      ParentTitle: current.EventName,
+      ExistingParentID: current.parentID,
+      DuplicateParentID: best.parentID,
+      Confidence: best.score >= 80 ? "HIGH" : "MEDIUM",
+      Decision: "PENDING",
+      RequestedAction: "MERGE_PARENT",
+      KeepChoice: "KEEP_EXISTING",
+      KeepParentID: current.parentID,
+      SuggestedAction: "MERGE_PARENT",
+      SuggestionReason: `Likely duplicate match score ${best.score}% (${best.reasons})`,
+      SuggestedKeepID: current.parentID,
+      CandidateIDs: best.parentID,
+      ChangedDetails: `Likely duplicate of ${best.parentID} based on ${best.reasons}`,
+      Evidence: `Opening=${current.Opening}, Range=${current.Range}, Venue=${current.Venue}`,
+      ActionStatus: "PENDING"
+    };
+
+    if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+      const inserted = Engine.Decisions.addPending(ctx, values);
+      if (inserted) created++;
+    }
+    seen[current.parentID] = true;
+    seen[best.parentID] = true;
+  });
+
+  return { created: created, suggested: suggested };
+};
+
+Engine.Ingest.applyConfirmedParentMerges = function(ctx) {
+  const decisionSheet = ctx.ss.getSheetByName("decision_log");
+  const table = Engine.Decisions && Engine.Decisions.ensureSchema ? Engine.Decisions.ensureSchema(ctx) : null;
+  if (!decisionSheet || !table) return { applied: 0, failed: 0 };
+
+  const pending = Engine.Decisions.pending(ctx).filter(item => {
+    const decision = String(item.Decision || "").trim().toUpperCase();
+    const action = String(item.RequestedAction || "").trim().toUpperCase();
+    return decision === "CONFIRMED_DUPLICATE" && action === "MERGE_PARENT";
+  });
+
+  let applied = 0;
+  let failed = 0;
+  pending.forEach(decision => {
+    try {
+      const selection = Engine.Decisions.resolveMergeSelection(decision);
+      const keepID = selection.keepID;
+      const duplicateID = selection.duplicateID;
+      if (!keepID || !duplicateID) {
+        throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
+      }
+      Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
+      const statusCol = Engine.getColumnIndex(table.map, "ActionStatus");
+      const actionedCol = Engine.getColumnIndex(table.map, "ActionedAt");
+      const detailsCol = Engine.getColumnIndex(table.map, "ActionDetails");
+      if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("APPLIED");
+      if (actionedCol >= 0) table.sheet.getRange(decision._rowNumber, actionedCol + 1).setValue(new Date());
+      if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(`Merged ${duplicateID} into ${keepID}`);
+      table.sheet.deleteRow(decision._rowNumber);
+      applied++;
+    } catch (error) {
+      const statusCol = Engine.getColumnIndex(table.map, "ActionStatus");
+      const actionedCol = Engine.getColumnIndex(table.map, "ActionedAt");
+      const detailsCol = Engine.getColumnIndex(table.map, "ActionDetails");
+      if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("FAILED");
+      if (actionedCol >= 0) table.sheet.getRange(decision._rowNumber, actionedCol + 1).setValue(new Date());
+      if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(error.message);
+      failed++;
+    }
+  });
+
+  return { applied: applied, failed: failed };
+};
+
 Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParentID) {
   if (!keepParentID || !duplicateParentID || keepParentID === duplicateParentID) {
     throw new Error("mergeParentDuplicate requires two different parent IDs");
@@ -247,6 +404,16 @@ function mergeParentDuplicate(keepParentID, duplicateParentID) {
 function resolveParentDuplicates(merge) {
   const ctx = Engine.getContext();
   return Engine.Ingest.resolveParentDuplicates(ctx, { merge: Boolean(merge) });
+}
+
+function generateParentDuplicateSuggestions() {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.buildParentDuplicateSuggestions(ctx, {});
+}
+
+function applyConfirmedParentMerges() {
+  const ctx = Engine.getContext();
+  return Engine.Ingest.applyConfirmedParentMerges(ctx);
 }
 
 /**
@@ -632,6 +799,71 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   });
 
   const fieldsToCompare = ["Series", "Opening", "Range", "Venue", "Pricing"];
+  const pRowValue = (row, fieldName) => {
+    const index = pCol(fieldName);
+    return index >= 0 ? row[index] : "";
+  };
+  const normalizeForCompare = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const titleSimilarityScore = (a, b) => {
+    const left = normalizeForCompare(a);
+    const right = normalizeForCompare(b);
+    if (!left || !right) return 0;
+    if (left === right) return 100;
+    if (left.includes(right) || right.includes(left)) return 80;
+    const leftWords = left.split(/\s+/).filter(Boolean);
+    const rightWords = right.split(/\s+/).filter(Boolean);
+    if (!leftWords.length || !rightWords.length) return 0;
+    const overlap = leftWords.filter(word => rightWords.includes(word)).length;
+    return Math.min(60, Math.round((overlap / Math.max(leftWords.length, rightWords.length)) * 100));
+  };
+  const likelyParentMatches = function(parentRow, rowIdx) {
+    const parentTitle = pRowValue(parentRow, "EventName");
+    const parentVenue = pRowValue(parentRow, "Venue");
+    const parentOpening = pRowValue(parentRow, "Opening");
+    const parentRange = pRowValue(parentRow, "Range");
+    const matches = [];
+
+    iData.forEach((iRow, index) => {
+      const importTitle = iRow[iCol("EventName")] || "";
+      const importVenue = iRow[iCol("Venue")] || "";
+      const importOpening = iRow[iCol("Opening")] || "";
+      const importRange = iRow[iCol("Range")] || "";
+      let score = 0;
+      let reasons = [];
+
+      const titleScore = titleSimilarityScore(parentTitle, importTitle);
+      if (titleScore > 0) {
+        score += titleScore;
+        reasons.push(`title similarity ${titleScore}%`);
+      }
+
+      if (normalizeForCompare(parentVenue) && normalizeForCompare(parentVenue) === normalizeForCompare(importVenue)) {
+        score += 25;
+        reasons.push("same venue");
+      }
+
+      if (normalizeForCompare(parentOpening) && normalizeForCompare(parentOpening) === normalizeForCompare(importOpening)) {
+        score += 20;
+        reasons.push("same opening");
+      }
+
+      if (normalizeForCompare(parentRange) && normalizeForCompare(parentRange) === normalizeForCompare(importRange)) {
+        score += 20;
+        reasons.push("same range");
+      }
+
+      if (score >= 35) {
+        matches.push({
+          importRow: index + 2,
+          importTitle: importTitle,
+          score: score,
+          reasons: reasons.join(", ")
+        });
+      }
+    });
+
+    return matches.sort((a, b) => b.score - a.score).slice(0, 3);
+  };
   let flagged = 0;
   let importOnly = 0;
   let parentOnly = 0;
@@ -718,22 +950,33 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
 
     if (drifted || isRenameCandidate) {
       flagged++;
+      const wantedAction = isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT";
+      const changedTitle = isRenameCandidate ? "EventName" : fieldsToCompare.filter(field => {
+        const iIdx = iCol(field), pIdx = pCol(field);
+        return iIdx >= 0 && pIdx >= 0 && String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
+      }).join(", ");
       const decisionValues = {
         ReviewID: `IMPORT_PARENT_${index + 2}_${match.row[pCol("parentID")] || "NO_PARENT_ID"}`,
         SourceSheet: "import",
         SourceRow: index + 2,
+        SourceID: name,
         CandidateSheet: "Parent Lineup",
         CandidateRow: match.rowIdx,
+        CandidateID: match.row[pCol("parentID")],
         ImportTitle: name,
         ParentTitle: match.row[pCol("EventName")],
         ExistingParentID: match.row[pCol("parentID")],
         MatchedFields: isRenameCandidate ? "Opening, Range, Venue" : "EventName",
-        ChangedFields: isRenameCandidate ? "EventName" : fieldsToCompare.filter(field => {
-          const iIdx = iCol(field), pIdx = pCol(field);
-          return iIdx >= 0 && pIdx >= 0 && String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
-        }).join(", "),
+        ChangedFields: isRenameCandidate ? "EventName" : changedTitle,
+        ChangedDetails: isRenameCandidate ? `Title changed from "${match.row[pCol("EventName")]}" to "${name}" while date/venue remained stable.` : `Import differs from Parent Lineup on ${changedTitle || "fields"}.`,
+        Evidence: isRenameCandidate ? `Opening=${iRow[iCol("Opening")]}, Range=${iRow[iCol("Range")]}, Venue=${iRow[iCol("Venue")]}` : `Import row ${index + 2} compared against Parent Lineup row ${match.rowIdx}.`,
         Confidence: isRenameCandidate ? "MEDIUM" : "LOW",
-        RequestedAction: isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT"
+        SuggestedAction: wantedAction,
+        SuggestionReason: isRenameCandidate ? "Stable Opening/Range/Venue with a title placeholder change suggests the same event." : "Row differs from import and needs explicit review before mutation.",
+        SuggestedKeepID: match.row[pCol("parentID")] || "",
+        CandidateIDs: match.row[pCol("parentID")] || "",
+        KeepChoice: isRenameCandidate ? "KEEP_EXISTING" : "",
+        RequestedAction: wantedAction
       };
       applyReviewStatus(
         match.rowIdx,
@@ -759,6 +1002,8 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     const rowIdx = index + 2;
     if (matchedParentRows[rowIdx]) return;
     parentOnly++;
+    const likelyMatches = likelyParentMatches(pRow, rowIdx);
+    const bestMatch = likelyMatches[0];
     const decisionValues = {
       ReviewID: `PARENT_ONLY_${pRow[pCol("parentID")] || rowIdx}`,
       SourceSheet: "import",
@@ -766,14 +1011,23 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       CandidateRow: rowIdx,
       ParentTitle: pRow[pCol("EventName")],
       ExistingParentID: pRow[pCol("parentID")],
-      Confidence: "LOW",
-      RequestedAction: "REVIEW_PARENT_ONLY"
+      Confidence: bestMatch ? "MEDIUM" : "LOW",
+      SuggestedAction: bestMatch ? "MERGE_PARENT" : "REVIEW_PARENT_ONLY",
+      SuggestionReason: bestMatch
+        ? `Possible same event with import row ${bestMatch.importRow}; candidate scoring ${bestMatch.score}% (${bestMatch.reasons}). Keep the existing parent row unless a different keeper is selected.`
+        : "No matching import row found; review before deleting or merging.",
+      SuggestedKeepID: pRow[pCol("parentID")] || "",
+      CandidateIDs: bestMatch ? String(bestMatch.importRow) : "",
+      DuplicateParentID: bestMatch ? String(bestMatch.importRow) : "",
+      KeepChoice: bestMatch ? "KEEP_EXISTING" : "KEEP_EXISTING",
+      KeepParentID: pRow[pCol("parentID")] || "",
+      RequestedAction: bestMatch ? "MERGE_PARENT" : "REVIEW_PARENT_ONLY"
     };
     applyReviewStatus(
       rowIdx,
       pRow[pCol("parentID")] || pRow[pCol("EventName")],
       "Manual Review",
-      "No matching import row found.",
+      bestMatch ? `Possible import match: ${bestMatch.importTitle} (${bestMatch.reasons}).` : "No matching import row found.",
       decisionValues
     );
     Engine.Log.write(ctx, {

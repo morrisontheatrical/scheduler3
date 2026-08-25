@@ -22,6 +22,8 @@ function onOpen() {
       .addItem('Open Decision Log', 'openDecisionLog')
       .addItem('Validate Decision Log Schema', 'ensureDecisionLogSchema')
       .addItem('List Pending Decisions', 'listPendingDecisions')
+      .addItem('Generate Parent Duplicate Suggestions', 'generateParentDuplicateSuggestions')
+      .addItem('Apply Confirmed Parent Merges', 'applyConfirmedParentMerges')
       .addItem('Apply Reviewed Decisions', 'applyPendingDecisions'))
     .addSubMenu(ui.createMenu('Sync Tests')
       .addItem('Mirror Venues', 'test_MirrorVenues')
