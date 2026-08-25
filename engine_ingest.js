@@ -112,7 +112,7 @@ function goParent() {
     sourceFields.forEach(fieldName => {
       const newVal = iRow[iCol(fieldName)];
       const colIdx = pCol(fieldName);
-      if (String(match.row[colIdx] || "") !== String(newVal || "")) {
+      if (!Engine.Ingest.sourceValuesEqual(ctx, fieldName, match.row[colIdx], newVal)) {
         pSheet.getRange(match.rowIdx, colIdx + 1).setValue(newVal);
         changed = true;
       }
@@ -149,6 +149,21 @@ Engine.Ingest.getParentSourceFields = function(iMap, pMap) {
   return canonicalFields.filter(fieldName =>
     Engine.getColumnIndex(iMap, fieldName) >= 0 && Engine.getColumnIndex(pMap, fieldName) >= 0
   );
+};
+
+Engine.Ingest.sourceValuesEqual = function(ctx, fieldName, left, right) {
+  const normalize = value => {
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      const pattern = fieldName === "Opening" ? "M/d/yyyy" : "M/d";
+      return Utilities.formatDate(value, ctx.timeZone, pattern);
+    }
+    return String(value === null || value === undefined ? "" : value)
+      .trim()
+      .toLowerCase()
+      .replace(/[–—]/g, "-")
+      .replace(/\s+/g, " ");
+  };
+  return normalize(left) === normalize(right);
 };
 
 Engine.Ingest._writeParentIdentity = function(ctx, rowNumber, rowArray, pMap) {
@@ -1024,16 +1039,21 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       const iIdx = iCol(field);
       const pIdx = pCol(field);
       if (iIdx < 0 || pIdx < 0) return false;
-      return String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
+      return !Engine.Ingest.sourceValuesEqual(ctx, field, iRow[iIdx], match.row[pIdx]);
     });
 
     if (drifted || isRenameCandidate) {
       flagged++;
       const wantedAction = isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT";
-      const changedTitle = isRenameCandidate ? "EventName" : fieldsToCompare.filter(field => {
+      const changedFields = isRenameCandidate ? ["EventName"] : fieldsToCompare.filter(field => {
         const iIdx = iCol(field), pIdx = pCol(field);
-        return iIdx >= 0 && pIdx >= 0 && String(iRow[iIdx] || "").trim() !== String(match.row[pIdx] || "").trim();
-      }).join(", ");
+        return iIdx >= 0 && pIdx >= 0 && !Engine.Ingest.sourceValuesEqual(ctx, field, iRow[iIdx], match.row[pIdx]);
+      });
+      const fieldComparison = changedFields.map(field => {
+        const iIdx = iCol(field);
+        const pIdx = pCol(field);
+        return `${field}: import="${iRow[iIdx]}" | Parent="${match.row[pIdx]}"`;
+      }).join(" | ");
       const decisionValues = {
         ReviewID: `IMPORT_PARENT_${index + 2}_${match.row[pCol("parentID")] || "NO_PARENT_ID"}`,
         SourceSheet: "import",
@@ -1046,9 +1066,9 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         ParentTitle: match.row[pCol("EventName")],
         ExistingParentID: match.row[pCol("parentID")],
         MatchedFields: isRenameCandidate ? "Opening, Range, Venue" : "EventName",
-        ChangedFields: isRenameCandidate ? "EventName" : changedTitle,
-        ChangedDetails: isRenameCandidate ? `Title changed from "${match.row[pCol("EventName")]}" to "${name}" while date/venue remained stable.` : `Import differs from Parent Lineup on ${changedTitle || "fields"}.`,
-        Evidence: isRenameCandidate ? `Opening=${iRow[iCol("Opening")]}, Range=${iRow[iCol("Range")]}, Venue=${iRow[iCol("Venue")]}` : `Import row ${index + 2} compared against Parent Lineup row ${match.rowIdx}.`,
+        ChangedFields: changedFields.join(", "),
+        ChangedDetails: isRenameCandidate ? `Title changed from "${match.row[pCol("EventName")]}" to "${name}" while date/venue remained stable.` : fieldComparison,
+        Evidence: isRenameCandidate ? `Opening=${iRow[iCol("Opening")]}, Range=${iRow[iCol("Range")]}, Venue=${iRow[iCol("Venue")]}` : `Import row ${index + 2} vs Parent Lineup row ${match.rowIdx}: ${fieldComparison}`,
         Confidence: isRenameCandidate ? "MEDIUM" : "LOW",
         SuggestedAction: wantedAction,
         SuggestionReason: isRenameCandidate ? "Stable Opening/Range/Venue with a title placeholder change suggests the same event." : "Row differs from import and needs explicit review before mutation.",
@@ -1128,13 +1148,22 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     });
   });
 
+  const parentDuplicateSuggestions = Engine.Ingest.buildParentDuplicateSuggestions(ctx, {});
+
   Engine.Log.write(ctx, {
     stage: "VERIFY_IMPORT",
     type: "VERIFY_IMPORT_COMPLETE",
-    details: `Checked ${iData.length} import rows. ${flagged} flagged (${renamedCandidate} possible rename), ${importOnly} import-only, ${parentOnly} Parent Lineup-only.`
+    details: `Checked ${iData.length} import rows. ${flagged} flagged (${renamedCandidate} possible rename), ${importOnly} import-only, ${parentOnly} Parent Lineup-only, ${parentDuplicateSuggestions.created} Parent duplicate suggestions created.`
   });
 
-  return { checked: iData.length, flagged: flagged, renamedCandidate: renamedCandidate, importOnly: importOnly, parentOnly: parentOnly };
+  return {
+    checked: iData.length,
+    flagged: flagged,
+    renamedCandidate: renamedCandidate,
+    importOnly: importOnly,
+    parentOnly: parentOnly,
+    parentDuplicateSuggestions: parentDuplicateSuggestions.created
+  };
 };
 
 Engine.Ingest.refreshParentOnlyDecisions = function(ctx) {
@@ -1390,7 +1419,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
   sourceFields.forEach(fieldName => {
     const oldVal = pRow[pCol(fieldName)];
     const newVal = importRow[iCol(fieldName)];
-    if (String(oldVal || "") !== String(newVal || "")) {
+    if (!Engine.Ingest.sourceValuesEqual(ctx, fieldName, oldVal, newVal)) {
       pSheet.getRange(sheetRowNum, pCol(fieldName) + 1).setValue(newVal);
       changes.push(`${fieldName}: "${oldVal}" -> "${newVal}"`);
     }
