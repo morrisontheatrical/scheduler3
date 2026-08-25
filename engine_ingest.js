@@ -33,9 +33,7 @@ function goParent() {
  
   // Source fields mirror import. System fields are maintained by this
   // operation so every successful import pass has a visible audit state.
-  const sourceFields = Object.keys(pMap).filter(fieldName =>
-    Engine.getSyncBehavior(pMap, fieldName) === "Source (Read-Only)"
-  );
+  const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
  
   const pByName = {};
   pData.forEach((row, idx) => {
@@ -131,9 +129,27 @@ function goParent() {
     type: "SUCCESS",
     details: `Parent Lineup Updated: ${created} created, ${updated} updated, ${flaggedForReview} flagged for manual review (rename candidates).`
   });
+  const results = { created: created, updated: updated, flaggedForReview: flaggedForReview };
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Ingest Season", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
 }
 
 Engine.Ingest = Engine.Ingest || {};
+
+Engine.Ingest.getParentSourceFields = function(iMap, pMap) {
+  const canonicalFields = [
+    "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit"
+  ];
+  const registrySourceFields = Object.keys(iMap || {}).filter(fieldName =>
+    Engine.getSyncBehavior(iMap, fieldName) === "Source (Read-Only)" &&
+    Engine.getColumnIndex(pMap, fieldName) >= 0
+  );
+  if (registrySourceFields.length) return registrySourceFields;
+
+  return canonicalFields.filter(fieldName =>
+    Engine.getColumnIndex(iMap, fieldName) >= 0 && Engine.getColumnIndex(pMap, fieldName) >= 0
+  );
+};
 
 Engine.Ingest._writeParentIdentity = function(ctx, rowNumber, rowArray, pMap) {
   const identity = Engine.getLibraryModule("Identity");
@@ -419,6 +435,20 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
       if (idStatusCol >= 0) idLog.getRange(idRow + 1, idStatusCol + 1).setValue("Merged");
       if (idDetailsCol >= 0) idLog.getRange(idRow + 1, idDetailsCol + 1).setValue(`Merged into ParentID ${keepParentID}`);
     }
+  }
+
+  const syncStatusCol = Engine.getColumnIndex(parentMap, "SyncStatus");
+  const lastSyncedCol = Engine.getColumnIndex(parentMap, "LastSynced");
+  const lastUpdatedCol = Engine.getColumnIndex(parentMap, "LastUpdated");
+  const updateDetailsCol = Engine.getColumnIndex(parentMap, "UpdateDetails");
+  const now = new Date();
+  if (syncStatusCol >= 0) parentSheet.getRange(keepRow + 1, syncStatusCol + 1).setValue("Active");
+  if (lastSyncedCol >= 0) parentSheet.getRange(keepRow + 1, lastSyncedCol + 1).setValue(now);
+  if (lastUpdatedCol >= 0) parentSheet.getRange(keepRow + 1, lastUpdatedCol + 1).setValue(now);
+  if (updateDetailsCol >= 0) {
+    parentSheet.getRange(keepRow + 1, updateDetailsCol + 1).setValue(
+      `Merged ${duplicateParentID}; imported source fields: ${copiedFields.join(", ") || "none"}`
+    );
   }
 
   parentSheet.deleteRow(duplicateRow + 1);
@@ -1354,9 +1384,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
     return false;
   }
  
-  const sourceFields = Object.keys(pMap).filter(fieldName =>
-    Engine.getSyncBehavior(pMap, fieldName) === "Source (Read-Only)"
-  );
+  const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
  
   const changes = [];
   sourceFields.forEach(fieldName => {

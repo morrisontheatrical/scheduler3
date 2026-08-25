@@ -113,7 +113,7 @@ Engine.Decisions = {
     table.sheet.getRange(sheetRow, actionCol + 1).setValue(requestedAction);
     if (actionStatusCol >= 0) table.sheet.getRange(sheetRow, actionStatusCol + 1).setValue("PENDING");
     if (notesCol >= 0 && details) table.sheet.getRange(sheetRow, notesCol + 1).setValue(details);
-    if (reviewedByCol >= 0) table.sheet.getRange(sheetRow, reviewedByCol + 1).setValue(Session.getActiveUser().getEmail());
+    if (reviewedByCol >= 0) table.sheet.getRange(sheetRow, reviewedByCol + 1).setValue("Manual reviewer");
     if (reviewedAtCol >= 0) table.sheet.getRange(sheetRow, reviewedAtCol + 1).setValue(new Date());
     return true;
   },
@@ -219,13 +219,25 @@ Engine.Decisions = {
       if (index >= 0) row[index] = values[fieldName];
     });
 
-    [["SourceSheet", "SourceRow", "SourceID"], ["CandidateSheet", "CandidateRow", "CandidateID"]].forEach(([sheetField, rowField, idField]) => {
-      const index = this._col(table.map, idField);
+    const setLinkedFields = (sheetField, rowField, fieldNames) => {
       const sheetName = values[sheetField] || "";
       const rowNumber = values[rowField];
-      const label = values[idField] || "";
-      if (index >= 0 && sheetName && rowNumber && label) row[index] = Engine.makeSheetRowLink(ctx, sheetName, rowNumber, label);
-    });
+      if (!sheetName || !rowNumber) return;
+      fieldNames.forEach(fieldName => {
+        const index = this._col(table.map, fieldName);
+        const label = values[fieldName] || "";
+        if (index >= 0 && label) row[index] = Engine.makeSheetRowLink(ctx, sheetName, rowNumber, label);
+      });
+    };
+
+    setLinkedFields("SourceSheet", "SourceRow", ["SourceID", "ImportTitle"]);
+    setLinkedFields("CandidateSheet", "CandidateRow", ["CandidateID", "CandidateTitle"]);
+    if (String(values.ReviewType || "") === "PARENT_DUPLICATE") {
+      setLinkedFields("SourceSheet", "SourceRow", ["ParentTitle", "ExistingParentID", "KeepParentID"]);
+      setLinkedFields("CandidateSheet", "CandidateRow", ["DuplicateParentID"]);
+    } else {
+      setLinkedFields("CandidateSheet", "CandidateRow", ["ParentTitle", "ExistingParentID", "KeepParentID"]);
+    }
 
     if (statusCol >= 0 && !row[statusCol]) row[statusCol] = "PENDING";
     table.sheet.appendRow(row);
@@ -273,7 +285,7 @@ Engine.Decisions = {
       const userDecision = String(decision.Decision || "PENDING").trim().toUpperCase();
       if (userDecision === "PENDING" || userDecision === "DEFERRED") return;
       if (reviewedByCol >= 0 && !decision.ReviewedBy) {
-        table.sheet.getRange(decision._rowNumber, reviewedByCol + 1).setValue(Session.getActiveUser().getEmail() || "Manual reviewer");
+        table.sheet.getRange(decision._rowNumber, reviewedByCol + 1).setValue("Manual reviewer");
         stamped++;
       }
       if (reviewedAtCol >= 0 && !decision.ReviewedAt) {
