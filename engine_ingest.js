@@ -344,6 +344,87 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
   return { created: created, suggested: suggested };
 };
 
+Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
+  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
+  const parentMap = ctx.getMap("Parent Lineup");
+  if (!parentSheet || !parentMap || !Engine.Decisions) return { created: 0, suggested: 0 };
+
+  const col = field => Engine.getColumnIndex(parentMap, field);
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const dateValue = value => {
+    if (value instanceof Date && !isNaN(value.getTime())) return value.getTime();
+    const parsed = new Date(value);
+    return isNaN(parsed.getTime()) ? null : parsed.getTime();
+  };
+  const isPlaceholder = title => /\b(title|tbd|show|musical)\b/i.test(String(title || ""));
+  const rows = parentSheet.getDataRange().getValues().slice(1).map((row, index) => ({
+    rowNumber: index + 2,
+    parentID: row[col("parentID")],
+    title: row[col("EventName")],
+    series: row[col("Series")],
+    opening: row[col("Opening")],
+    range: row[col("Range")],
+    venue: row[col("Venue")]
+  })).filter(item => item.parentID);
+
+  let created = 0;
+  let suggested = 0;
+  Engine.Decisions.pending(ctx)
+    .filter(decision => String(decision.ReviewID || "").startsWith("PARENT_ONLY_"))
+    .forEach(decision => {
+      const current = rows.find(row => row.parentID === decision.ExistingParentID);
+      if (!current || !isPlaceholder(current.title)) return;
+      const currentDate = dateValue(current.opening);
+      const candidates = rows.map(candidate => {
+        if (candidate.parentID === current.parentID) return null;
+        if (!normalize(current.series) || normalize(current.series) !== normalize(candidate.series)) return null;
+        const candidateDate = dateValue(candidate.opening);
+        if (!currentDate || !candidateDate) return null;
+        const daysApart = Math.abs(currentDate - candidateDate) / (24 * 60 * 60 * 1000);
+        if (daysApart > 45) return null;
+        const sameVenue = normalize(current.venue) && normalize(current.venue) === normalize(candidate.venue);
+        const score = 55 + (sameVenue ? 20 : 0) + Math.max(0, 20 - Math.round(daysApart));
+        return { candidate: candidate, daysApart: Math.round(daysApart), sameVenue: sameVenue, score: score };
+      }).filter(Boolean).sort((left, right) => right.score - left.score);
+      const best = candidates[0];
+      if (!best) return;
+
+      suggested++;
+      const reasons = [`same series (${current.series})`, `${best.daysApart} day date shift`];
+      if (best.sameVenue) reasons.push("same venue");
+      const inserted = Engine.Decisions.addPending(ctx, {
+        ReviewID: `PARENT_REPLACEMENT_${current.parentID}_${best.candidate.parentID}`,
+        ReviewType: "PARENT_REPLACEMENT",
+        SourceSheet: "Parent Lineup",
+        SourceRow: current.rowNumber,
+        SourceID: current.parentID,
+        CandidateSheet: "Parent Lineup",
+        CandidateRow: best.candidate.rowNumber,
+        CandidateID: best.candidate.parentID,
+        ParentTitle: current.title,
+        CandidateTitle: best.candidate.title,
+        ExistingParentID: current.parentID,
+        DuplicateParentID: best.candidate.parentID,
+        MatchedFields: reasons.join(", "),
+        ChangedFields: "EventName, Series, Opening, Range, DatesAndTimes, Venue, Pricing, Pit",
+        ChangedDetails: `Placeholder Parent row may have been replaced by a named event: ${reasons.join(", ")}.`,
+        Evidence: `Keeper: ${current.title} (${current.opening}, ${current.venue}) | Candidate: ${best.candidate.title} (${best.candidate.opening}, ${best.candidate.venue})`,
+        Confidence: best.sameVenue ? "MEDIUM" : "LOW",
+        SuggestedAction: "MERGE_PARENT",
+        SuggestionReason: `Possible title replacement; retain ${current.parentID} and copy source values from ${best.candidate.parentID}.`,
+        SuggestedKeepID: current.parentID,
+        CandidateIDs: best.candidate.parentID,
+        Decision: "PENDING",
+        RequestedAction: "MERGE_PARENT",
+        KeepChoice: "KEEP_EXISTING",
+        KeepParentID: current.parentID,
+        ActionStatus: "PENDING"
+      });
+      if (inserted) created++;
+    });
+  return { created: created, suggested: suggested };
+};
+
 Engine.Ingest.applyConfirmedParentMerges = function(ctx) {
   const decisionSheet = ctx.ss.getSheetByName("decision_log");
   const table = Engine.Decisions && Engine.Decisions.ensureSchema ? Engine.Decisions.ensureSchema(ctx) : null;

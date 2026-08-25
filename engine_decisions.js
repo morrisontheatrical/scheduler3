@@ -135,6 +135,31 @@ Engine.Decisions = {
     return true;
   },
 
+  archiveSuperseded: function(ctx) {
+    const table = this.ensureSchema(ctx);
+    const data = table.sheet.getDataRange().getValues();
+    const statusCol = this._col(table.map, "ActionStatus");
+    const reviewCol = this._col(table.map, "ReviewID");
+    const detailsCol = this._col(table.map, "ActionDetails");
+    const superseded = data.slice(1)
+      .map((row, index) => ({ row: row, rowNumber: index + 2 }))
+      .filter(item => String(item.row[statusCol] || "").trim().toUpperCase() === "SUPERSEDED")
+      .sort((left, right) => right.rowNumber - left.rowNumber);
+
+    superseded.forEach(item => {
+      Engine.Log.write(ctx, {
+        stage: "DECISION",
+        sheetName: "decision_log",
+        rowIdx: item.rowNumber,
+        id: item.row[reviewCol],
+        type: "DECISION_SUPERSEDED",
+        details: item.row[detailsCol] || "Superseded decision archived from active queue."
+      });
+      table.sheet.deleteRow(item.rowNumber);
+    });
+    return { archived: superseded.length };
+  },
+
   _setLinkedValue: function(ctx, sheet, rowNumber, column, sheetName, targetRow, label) {
     if (column < 0) return;
     if (targetRow) {
@@ -332,6 +357,9 @@ Engine.Decisions = {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
+        } else if (action === "REVIEW_PARENT_ONLY" && !["REJECTED", "NOT_DUPLICATE"].includes(userDecision)) {
+          results.skipped++;
+          return;
         } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {
