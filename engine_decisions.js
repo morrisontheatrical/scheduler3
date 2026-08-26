@@ -392,10 +392,22 @@ Engine.Decisions = {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
-        } else if (action === "REVIEW_PARENT_ONLY" && !["REJECTED", "NOT_DUPLICATE"].includes(userDecision)) {
-          results.skipped++;
-          return;
-        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_PARENT_ONLY", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
+        } else if (action === "REVIEW_PARENT_ONLY") {
+          // REVIEW_PARENT_ONLY has no automatic data mutation — the parent row
+          // exists without a matching import row.  The reviewer's decision
+          // (ACCEPT / REJECTED / NOT_DUPLICATE / DEFERRED) is the final
+          // disposition and the decision row should be closed out.
+          if (userDecision === "REJECTED") {
+            actionDetails = "Parent-only row rejected for retention; no data change.";
+          } else if (userDecision === "NOT_DUPLICATE") {
+            actionDetails = "Reviewer confirmed parent-only row is not a duplicate; retained as-is.";
+          } else if (userDecision === "ACCEPT") {
+            actionDetails = "Parent-only row retained (no import source); decision closed.";
+          } else {
+            results.skipped++;
+            return;
+          }
+        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
@@ -466,6 +478,14 @@ function applyPendingDecisions() {
   Engine.Log.command(ctx, "Apply Reviewed Decisions");
   const results = Engine.Decisions.applyPending(ctx);
   Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Apply Reviewed Decisions", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+function archiveSupersededDecisions() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Archive Superseded Decisions");
+  const results = Engine.Decisions.archiveSuperseded(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Archive Superseded Decisions", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
   return results;
 }
 

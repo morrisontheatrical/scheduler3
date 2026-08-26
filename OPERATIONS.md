@@ -22,13 +22,13 @@
 The primary user interface is organized under the **Event Manager** menu:
 
 ### Ingest
-- `goParent`: Navigate to Parent Lineup.
-- `goLineup`: Navigate to Lineup.
-- `goCrewLog`: Navigate to Crew Calendar Log.
+- `goParent`: CRUD `PARENTCURRENT` / `PARENTDRAFT` based on `IMPORTCURRENT` / `IMPORTDRAFT`
+- `goLineup`: parseDatesAndTimes to split Parent Events into individual show times
+- `goCrewLog`: CRUD `Crew_Calendar_Log` / `Draft_Season_Log` based on `LINEUPCURRENT` / `LINEUPDRAFT`
 
 ### Sync
 - `goSync(context)`: Execute sync based on provided context.
-- `Run Custom Sync`: (Future UI Dialog) Execute sync with user-defined parameters.
+- `Run Custom Sync`: (Future UI Dialog) Execute sync with user-defined parameters. Current implementation is 'ControlPanel'
 - `Report Mode`: `goSync("report")` - Perform a log-only verification pass.
 
 ### Navigation
@@ -63,7 +63,10 @@ Verification may update status and `LastSynced` when the current behavior allows
 
 * **Universal Hyperlinking:** `refreshLinks()` generates rich-text cell links for **all** review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`) into `SourceLink` and `CandidateLink`.
 * **Persistence:** Unresolved manual reviews (`PENDING`, `FAILED`) persist in `decision_log` across verification passes.
-* **Purge on Resolution / Supersede:** When a review item is applied or marked `SUPERSEDED`, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
+* **Applied rows:** When a review item is applied, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
+* **Superseded rows:** `Refresh Resolved Parent-Only Reviews` and `Refresh Stale Parent Duplicate Reviews` mark resolved items `SUPERSEDED` (with a reason in `ActionDetails`) but keep the row for reference. Use `Archive Superseded Decisions` to delete all `SUPERSEDED` rows from `decision_log` (each is logged to `Audit_Log` first).
+* **`REVIEW_PARENT_ONLY` + `ACCEPT`:** a Parent-only review has no automatic mutation. Reviewing it `ACCEPT` (retain), `NOT_DUPLICATE` (retain as confirmed non-duplicate), or `REJECTED` (dropped) closes the decision and removes the row; there is no import row to copy from.
+* **`REVIEW_IMPORT_DRIFT` / `ACCEPT_IMPORT`:** applies the import values over the Parent Lineup row. Requires the matching `import` row to still exist — if the import row was deleted upstream, the apply fails with "Import row could not be resolved" and the row stays `FAILED` for retry.
 
 For a Parent-to-Parent duplicate, compare `ParentTitle` (the proposed keeper)
 with `CandidateTitle` (the other Parent Lineup row). The source and candidate
@@ -130,7 +133,7 @@ If a destructive reset is required, use a Developer Override after confirming th
 Users can set operational statuses in `Parent Lineup` to dictate engine behavior during `ingest` and `verify` runs:
 
 * **`Bypassed`:** The engine completely skips this row during drift and duplicate checks. No `decision_log` items will be generated.
-* **`Delete Pending`:** The `ingest` script physically deletes the row from `Parent Lineup`, writes an audit record to `Audit_Log`, and clears any pending reviews for that ID from `decision_log`.
+* **`Delete Pending`:** `Ingest Season` (`goParent`) removes the row from `Parent Lineup`, supersedes any `decision_log` items referencing that `parentID`, and writes a `DELETE_PENDING_APPLIED` audit entry. The run summary reports `deletedPending`.
 * **`Possible Duplicate`:** The `verify` script explicitly scans this row against `Parent Lineup` and `import`. If a match is found, it creates a `PARENT_DUPLICATE` task. If no automated match is found, it generates a `REVIEW_PARENT_ONLY` task with the note: *"Flagged as Possible Duplicate by user, but no automated match found."*
 
 ## Season Promotion Protocol (Role Swapping)

@@ -1,13 +1,14 @@
 # Scheduler Roadmap and Decisions
 
 ## Immediate Priorities
+--UPDATE WHEN COMPLETE
 1. Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.
 2. Update `refreshLinks()` to generate universal hyperlinks for all review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`).
 3. Add `idLog` `Merged IDs` alias logging and cascading `parentID` updates in `Lineup` for "Keep New" merges.
-4. Enforce `decision_log` queue purge rule: copy superseded/applied items to `Audit_Log`, then delete from `decision_log`.
-5. Implement engine handlers for `Bypassed`, `Delete Pending`, and `Possible Duplicate` status overrides in `Parent Lineup`.
+4. Enforce `decision_log` queue purge rule: applied items are deleted immediately; `SUPERSEDED` rows are retained for reference and removed via `Archive Superseded Decisions`.
+5. ~~Implement engine handlers for `Bypassed`, `Delete Pending`, and `Possible Duplicate` status overrides in `Parent Lineup`.~~ — done: `Bypassed` blocks via status behavior; `Delete Pending` is applied in `goParent`; `Possible Duplicate` is handled by verify.
 6. Create/Revise a method to compress whole rows/events into a single "snapshot" cell, and back into "row". It should be able to easily be parsed for comparison. Check fingerprint/hashing functions first. This way a removed duplicate can have its fields saved in the audit_log or idLog before merge/deletion 
-7. Normalize `Status`, `ref`, behavior values, decisions, and requested actions.
+7. Normalize `Status`, `ref`, behavior values, decisions, and requested actions. --done? Status and Mode_Config could likely use another pass
 8. Add before/after evidence and links to decision records.
 9. Improve import -> Parent Lineup matching so placeholder titles can become real titles without losing `parentID`.
 10. Add read-only duplicate candidate reporting and explicit keeper selection.
@@ -21,8 +22,11 @@
 18. Implement "Custom Sync" capability: allow filtering sync runs by date range, venue, or specific context.
 19. Develop "Detailed Reporting" mode: a "log-only" verification pass for auditing without mutation.
 20. Implement UI-driven "Detailed Inspection" (popup/sidebar) for rapid entity review.
+21. Remove totally depreciated functions to scriptLib/Depreciated for reference. 
+22. Review engine organization/topography
 
 ## Decision Vocabulary
+--does this belong here or in ARCHITECTURE?
 
 `Decision` is the user's conclusion:
  - See ref.csv for live list
@@ -56,6 +60,7 @@
 Do not use `Options` or `SyncStatus` as decision commands.
 
 ## Status Vocabulary
+--does this belong here or in ARCHITECTURE?
 - See status.csv for live list
 Normal:
 
@@ -91,6 +96,7 @@ Terminal/history:
 - `Rejected`
 
 ## Planned Review Types
+--does this belong here or in ARCHITECTURE?
 
 - `IMPORT_PARENT`
 - `PARENT_LINEUP`
@@ -115,10 +121,14 @@ Terminal/history:
 - External Node/React/Firebase repositories provide reference patterns only.
 - `SheetRole` in `Sheet_Settings` is the canonical reference for sheet access; scripts must never hardcode sheet names.
 - `idLog` contains a `Merged IDs` column to preserve historical identity lineage and support cascading foreign key updates.
-- `decision_log` is strictly an active task queue. Resolved and superseded decisions are recorded in `Audit_Log` and removed from `decision_log`.
-- Parent Lineup statuses (`Bypassed`, `Delete Pending`, `Possible Duplicate`) override default automated sync behavior.
+- `decision_log` is strictly an active task queue. Applied decisions are recorded in `Audit_Log` and removed from `decision_log` immediately; `SUPERSEDED` rows stay in `decision_log` for reference until `Archive Superseded Decisions` removes them (logged to `Audit_Log` first).
+- Parent Lineup statuses (`Bypassed`, `Delete Pending`, `Possible Duplicate`) override default automated sync behavior. `Delete Pending` is executed by `Ingest Season`.
+- `REVIEW_PARENT_ONLY` is a non-mutating review: `ACCEPT` / `NOT_DUPLICATE` / `REJECTED` close the decision with no data change (there is no import row to copy from).
+- Import→Parent drift acceptance is governed by the active mode's `ImportUpdatePolicy` (`MANUAL_REVIEW` queues a decision; `AUTO_UPDATE` applies + summary log; `AUTO_UPDATE_AND_LOG` applies + per-field logs). The decision-apply path always bypasses the gate via `force: true`.
+- `Verify Import vs Parent Lineup` writes one semantic audit entry per flagged row (e.g. `PARENT_ONLY`, `DRIFT_DETECTED`); the status paint no longer logs a duplicate row.
 
 ## Deferred Recovery
+--UPDATE THIS WHEN WE RECOVER 
 
 Use the deprecated scriptLib sources as references to rebuild, inside `Engine.*` first:
 
@@ -129,3 +139,6 @@ Use the deprecated scriptLib sources as references to rebuild, inside `Engine.*`
 - workbook-wide hash repair orchestration.
 
 Promote code into `scriptLib` only after it is stable and reused outside scheduler3.
+
+## Completed Goals
+

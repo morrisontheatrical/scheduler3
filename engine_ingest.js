@@ -34,7 +34,42 @@ function goParent() {
   // Source fields mirror import. System fields are maintained by this
   // operation so every successful import pass has a visible audit state.
   const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
- 
+
+  // ── "Delete Pending" pre-pass ──
+  // User-marked deletions are applied as part of the ingest pass (documented
+  // in OPERATIONS.md). Deleted bottom-up so row numbers stay valid, and each
+  // pending decision referencing that parentID is superseded with an audit
+  // entry before the row is removed.
+  let deletedPending = 0;
+  if (pCol("SyncStatus") >= 0) {
+    const allRows = pSheet.getDataRange().getValues();
+    const toDelete = [];
+    allRows.forEach((row, idx) => {
+      if (idx > 0 && String(row[pCol("SyncStatus")] || "").trim() === "Delete Pending") {
+        toDelete.push({ row: row, rowNumber: idx + 1 });
+      }
+    });
+    toDelete.sort((a, b) => b.rowNumber - a.rowNumber).forEach(item => {
+      const parentID = item.row[pCol("parentID")] || "";
+      const title = item.row[pCol("EventName")] || "";
+      if (Engine.Decisions && typeof Engine.Decisions.pending === "function") {
+        Engine.Decisions.pending(ctx)
+          .filter(d => d.ExistingParentID === parentID || d.KeepParentID === parentID || d.DuplicateParentID === parentID)
+          .forEach(d => Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Parent row deleted by user (status Delete Pending)."));
+      }
+      Engine.Log.write(ctx, {
+        stage: "INGEST",
+        sheetName: "Parent Lineup",
+        rowIdx: item.rowNumber,
+        id: parentID,
+        type: "DELETE_PENDING_APPLIED",
+        details: `Row deleted from Parent Lineup per user status Delete Pending. ${title}`
+      });
+      pSheet.deleteRow(item.rowNumber);
+      deletedPending++;
+    });
+  }
+
   const pByName = {};
   pData.forEach((row, idx) => {
     const name = normalize(row[pCol("EventName")]);
@@ -127,9 +162,9 @@ function goParent() {
   Engine.Log.write(ctx, {
     stage: "INGEST",
     type: "SUCCESS",
-    details: `Parent Lineup Updated: ${created} created, ${updated} updated, ${flaggedForReview} flagged for manual review (rename candidates).`
+    details: `Parent Lineup Updated: ${created} created, ${updated} updated, ${flaggedForReview} flagged for manual review (rename candidates), ${deletedPending} "Delete Pending" row(s) removed.`
   });
-  const results = { created: created, updated: updated, flaggedForReview: flaggedForReview };
+  const results = { created: created, updated: updated, flaggedForReview: flaggedForReview, deletedPending: deletedPending };
   Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Ingest Season", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
   return results;
 }
@@ -1073,10 +1108,14 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       }));
       return false;
     }
+    // suppressLog: the caller immediately after this writes the semantic audit
+    // entry (PARENT_ONLY / DRIFT_DETECTED / RENAME_CANDIDATE). Logging here too
+    // produced two near-identical rows per event in Audit_Log.
     Engine.Status.apply(ctx, "Parent Lineup", rowIdx, statusName, {
       stage: "VERIFY_IMPORT",
       id: parentID,
-      details: details
+      details: details,
+      suppressLog: true
     });
     addDecision(decisionValues);
     return true;

@@ -9,10 +9,15 @@
 - **Context Object (`ctx`):** Initialized once per execution by `engine_core.buildContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
 
 ## Metadata Sources
-metadata lives in various tabs (see Sheet_data folder for current csv)
+metadata lives in various tabs (see Sheets_data folder for current csv)
 - `ref`: controlled enumerations for roles, behaviors, actions, decisions, log types, and sheet behavior.
 - `ControlPanel`: user settings and system summary values.
-- `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, and span policy.
+- `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, span policy, and `ImportUpdatePolicy`.
+  - `ImportUpdatePolicy` (per active mode) controls how `Engine.Ingest.acceptImportDrift()` handles import→Parent drift:
+    - `MANUAL_REVIEW`: does not auto-apply; queues an `IMPORT_DRIFT` decision and returns `false` (direct callers only — the decision-apply path passes `force: true` to bypass this gate).
+    - `AUTO_UPDATE`: applies the changed source fields and writes one summary audit entry.
+    - `AUTO_UPDATE_AND_LOG`: applies the changed source fields and writes a per-field audit entry for each change plus a summary.
+  - Exposed at runtime as `ctx.mode.importUpdatePolicy` (default `MANUAL_REVIEW`).
 - `Sheet_Settings`: sheet names, roles, ID keys, sync behavior, sync mode, and protection flags.
 - `Map_Registry`: field-to-column mappings plus display names, data types, and sync behavior.
 - `Status`: the canonical list of row states, colors, and exception/behavior rules.
@@ -36,14 +41,6 @@ All range access must convert through `Engine.getColumnIndex(map, fieldName)`. I
 
 The workbook operates across four distinct structural layers to maintain deterministic data flow and strict identity isolation:
 
-```mermaid
-graph TD
-    A[Raw Intake Layer: import/draft_import] -->|Fingerprint| B[Master Catalog Layer: Parent Lineup/draft_Parent]
-    B -->|parentID| C[Execution Layer: Lineup/draft_Lineup/Calls/Logs]
-    C -->|UUID/EventID| D[Governance Layer: decision_log/idLog/Audit_Log]
-    D -->|Sync/Update| E[External: Google Calendars]
-```
-
 1. **Raw Intake Layer (`IMPORTCURRENT` / `IMPORTDRAFT`):**
    - **Sheets:** `import`, `draft_import`
    - **Key:** `Fingerprint` | **Mode:** `READ_ONLY` / `SOURCE`
@@ -54,13 +51,17 @@ graph TD
    - **Sheets:** `Parent Lineup`, `draft_Parent`
    - **Key:** `parentID` | **Mode:** `OVERWRITE_ALLOWED` / `MIRROR`
    - Canonical entity identity layer. Maintains event identity across title and date drifts.
+   - Helps detect changes to `IMPORTCURRENT` / `IMPORTDRAFT`
 
 3. **Execution Layer (`LINEUPCURRENT` / `LINEUPDRAFT` & Calendars):**
    - **Sheets:** `Lineup`, `draft_Lineup`, `Calls`, `Crew_Calendar_Log`, `Venue_Cal_Log`, `Draft_Season_Log`
    - **Key:** `UUID` | **Mode:** `OVERWRITE_ALLOWED` / `SOURCE` / `SYNC` / `PULL`
+   - **Calendar Log Key:** 'eventID' once populated. If not populated, depending on options/mode/sheetBehavior, a calendar event should be created and the eventID populated. 
    - Granular event instance layer parsed into individual performance dates/times for calendar sync.
+   - parseDatesAndTimes performs the complex parsing of the DatesAndTimes field into individual evnts
 
 4. **Governance Layer:**
+   - See Metadata sources
    - **Sheets:** `decision_log`, `idLog`, `Audit_Log`, `Sheet_Settings`
    - Intercepts drift, tracks active review tasks, records historical audit logs, and maintains identity aliases.
 
@@ -73,39 +74,47 @@ All engine functions decouple script logic from static tab names by fetching wor
 
 ## Identity Chain & `idLog` Alias Table
 
-```text
-import (raw IMPORTRANGE source)
-  -> Parent Lineup (parentID)
-  -> Lineup (UUID per performance)
-  -> Crew_Calendar_Log (UUID + EventID)
-  -> Draft calendar (EventID)
-  -> Venue_Cal_Log (EventID + associated UUID)
-  -> idLog (UniqueID registry + Merged IDs alias table)
-```
 
+`IMPORTCURRENT` / `IMPORTDRAFT` (raw IMPORTRANGE source)
+  -> `PARENTCURRENT` / `PARENTDRAFT` (parentID)
+  -> `LINEUPCURRENT` / `LINEUPDRAFT` (UUID per performance)
+  -> `Crew_Calendar_Log` / `Draft_Season_Log` (UUID + EventID)
+  -> `Venue_Cal_Log` (EventID + associated UUID) 
+  -> 'idLog' (UniqueID registry + Merged IDs alias table)
 `import` is read-only because it is supplied by `IMPORTRANGE`. Its row number is not a permanent identity. Parent identity matching must use content/source evidence and preserve an existing `parentID` when continuity is established.
 
 `UniqueID` remains the mixed-form `idLog` key. Its interpretation comes from `RecordType`, source sheet, and location.
+
 ## Status, Behavior, and Decisions
 
+SEE METADATA SOURCES FOR LIVE DATA
+
+Below notes are incomplete
+
+**'Status.csv'** 
 - `SyncStatus`: current state/result of a row.
-- `Row.Exception` / `Behavior`: whether automatic mutation is allowed.
+   `Possible Duplicate` is a review status, not an automatic command. It should trigger a decision
+   'Delete Pending' was originally a way for the user to request deletion. this may need reconsidered. 
+- `Row.Exception` / `Behavior`: whether automatic mutation is allowed, based on applied status.
+
+**'ref.csv**
+- `Behavior`: whether automatic mutation is allowed
+   `LOCKED` and `BYPASS` prevent mutation. Detected differences may still be logged and may create a pending decision.
 - `Options`: row-level operational override such as `Bypass`, `Push to Calendar`, or `Prefer Venue Event`.
-- `decision_log.Decision`: user conclusion.
-- `decision_log.RequestedAction`: requested engine operation.
-    - REVIEW_*: create or retain a review item; no automatic data mutation.
-    - ACCEPT_*: apply an approved source update.
-    - MERGE_*: combine identities and repoint relationships.
-    - ADOPT_*: create an explicit cross-sheet association.
-    - MARK_*: change an operational state.
-    - REFRESH_*: propagate an already-approved upstream change.
-- `decision_log.ActionStatus`: processing result.
-- `decision_log.ParentTitle` and `CandidateTitle`: the visible pair to compare
-  for a Parent-to-Parent duplicate; IDs and row links retain the row identity.
 
-`LOCKED` and `BYPASS` prevent mutation. Detected differences may still be logged and may create a pending decision.
+- Decisions
+   - `decision_log.Decision`: user conclusion.
+   - `decision_log.RequestedAction`: requested engine operation.
+      - REVIEW_*: create or retain a review item; no automatic data mutation.
+      - ACCEPT_*: apply an approved source update.
+      - MERGE_*: combine identities and repoint relationships.
+      - ADOPT_*: create an explicit cross-sheet association.
+      - MARK_*: change an operational state.
+      - REFRESH_*: propagate an already-approved upstream change.
+   - `decision_log.ActionStatus`: processing result.
+   - `decision_log.ParentTitle` and `CandidateTitle`: the visible pair to compare
+   for a Parent-to-Parent duplicate; IDs and row links retain the row identity.
 
-`Possible Duplicate` is a review status, not an automatic command.
 
 ## Data Direction
 
@@ -117,6 +126,7 @@ The engine must support explicit modes for:
 - two-way: compare and apply policy-controlled changes.
 - **Source-Preference Policy:** Ensure engine prefers source data when destination fields are null/blank.
 Calendar event IDs must be preserved during property updates. Initial property patching covers title, start/end, location, and description. Use `ctx.timeZone` for date conversions.
+
 ## Developer Overrides
 
 Destructive operations remain available for recovery and initialization, but belong under a confirmed Developer Overrides menu. Examples include resetting Parent Lineup, initializing a log, clearing sync-managed fields, rebuilding headers, repairing hashes, and deleting selected rows.

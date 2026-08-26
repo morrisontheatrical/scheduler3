@@ -537,14 +537,16 @@ Engine.getDisplayName = function(map, fieldName) {
         return;
       }
 
-      Engine.Log.write(ctx, {
-        stage: logContext.stage || "STATUS_UPDATE",
-        sheetName: roleOrSheetName,
-        rowIdx: rowIdx || (targetObj && targetObj._rowNum) || "N/A",
-        id: logContext.id || (targetObj && (targetObj.UUID || targetObj.EventID)) || "N/A",
-        type: statusName,
-        details: logContext.details || `Status changed to ${statusName}`
-      });
+      if (!logContext.suppressLog) {
+        Engine.Log.write(ctx, {
+          stage: logContext.stage || "STATUS_UPDATE",
+          sheetName: roleOrSheetName,
+          rowIdx: rowIdx || (targetObj && targetObj._rowNum) || "N/A",
+          id: logContext.id || (targetObj && (targetObj.UUID || targetObj.EventID)) || "N/A",
+          type: statusName,
+          details: logContext.details || `Status changed to ${statusName}`
+        });
+      }
     }
   },
 
