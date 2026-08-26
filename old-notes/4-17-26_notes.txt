@@ -1,0 +1,12 @@
+- row by row scanner helper
+- how can scriptLib help my inventory process and managing livestreams?
+    - Seems like scriptLib could do lookup handling between sheets 
+- Lookups/status are essentially transposed maps
+- Config: season review mode behavior; comment on original row in season lineup with concern/overlap
+    - More realistic: option to prepare report of concerns for a manual review session. Include missing info (critical, allowed, no association possible) 
+- Maps —-> Sheet_config and index
+    - Map, headers, unique id, sheet behavior, column types, cell protected ?? 
+    - Reset sheet (sheet) 
+- #import scriptLib 
+- UI updates… maybe add some html soon. It’s not far off from reports and settings panels 
+- Mode = a preset of options. Add mode handling 

@@ -1,0 +1,338 @@
+engine.md v1
+
+Gemini Notes
+Questions for Clarity: (and my response) 
+1. UI Intent: When you "Run Custom Sync," are you expecting to select specific dates, or specific venues (e.g., "Only sync Ballroom events")?
+    1. I think we should build it in such a way that allows for any context be customized even if initial development. Essentially this customContext replaces default/controlPanel context. It is also a method we can use to test and develop while maintaining ingest and calendar functions
+    2. Detailed reporting, for instance, would be a mode(set of options) that should be able check everything requested 
+        1. Audit_Log updates by normal control panel log type selection 
+        2. syncStatus could still be checked as log_only as the “custom” sheet behavior/policy 
+        3. Any log types selected in the reporting functions and UI (eventually) would pass to the report, even if they don’t append the audit log 
+2. idLog Role: Is the idLog intended to be a global registry across different spreadsheets, or just a "Table of Contents" for this specific file? (If it's global, it definitely belongs in scriptLib via a standalone Web App or API).
+    1. It may be nice to eventually reference these ids in other spreadsheets, but so far all of the IDs in the spreadsheet are very scheduler specific. It is the scheduler ID lookup or
+    2. Realizing it may be helpful to rename all lookup and id stuff to index.gs (maybe eventually scriptLib.masterIndex that maintains index’s between spreadsheets)
+3. Conflict Resolution: If a Call (Load In) is scheduled at the same time as a Lineup event (Performance), do you want the engine to flag a "Location Conflict" automatically, or is that a separate "Health Check" step?
+    1. It depends on CallType and row exceptions. In this example, the Load In Call might be at the same location/ venue but the start time (or even date) is definitely not the same as the start time on the Lineup. The load in call would essentially be a child of the lineup event. However if the CallType was  Show and there were no row exceptions or sheet settings that designated a behavior then it would either prompt a UI choice and/Or log the item as needing manually review 
+Next Step Recommendation: Focus on the ctx object construction in engine_core. If that object isn't perfect, the rest of the engines will be brittle. Would you like me to draft a schema for the ctx object based on your Map_Registry?
+- yes. There are a lot of eventual goals in this project but it is important to build a good foundation that helps streamline later developments while maintaining existing functionality. The engine architecture rewrite has been a bit destructive, which is why I’ve taken the time to write this engine.md file. 
+- Review all decision logic. What existing/previous functions are serving the purpose of what is now to be a decision
+
+
+Gemini Instructions: 
+* Custom Gem: App Sheet Scheduler
+* engine.md is still a draft. There is room for additions, revisions, and expansion to additional .md files as needed. Please make suggestions when helpful. 
+    * Not every existing function is yet logged in this document. 
+    * Not every function listed in this document yet exists. 
+    * Reference gem knowledge when possible, especially the link to the Google sheet “Tester”
+* Reference scriptLib when possible. Functions with usefulness outside of the scheduler tool should be moved to scriptLib even if they are no longer specifically used by this engine.
+* Suggest existing libraries when possible
+* Suggest ways to more effectively use the gem knowledge or instruction file development such as this one. 
+    * Example: revisions made to code referenced in gem knowledge
+    * Specifically: code in scriptLib vs main library AND existing statuses and lookups
+* Prefer information referenced in this file. If I say something contradictory, encourage me to review or revise this file. 
+    * Suggest documentation that aids with consistency/continuity and decreases hallucinations
+    * Aid user in maintaining this documentation
+
+UI Menu: Event Manager
+Ingest
+- goParent
+- goLineup
+- goCrewLog
+Sync
+- goSync(context) 
+- Run Custom Sync —-> Eventually UI Dialog 
+- Report Mode: goSync(“report”)
+Navigation 
+- > Sheet options 
+Sheet
+- Sheet Settings (eventually UI to edit active sheet settings)
+- Repair (active) Sheet —> (source of truth confirm) 
+- Reset (active?) Sheet —> UI confirm 
+Calendar 
+- (If calendar log, is available) WipeCalendar(date range, “draft season calendarID”) —-> eventually UI with choice popup 
+- (If calendar log) Write log updates to Calendar
+- Pull Calendar Updates
+
+
+Libraries
+ScriptLib
+1. General use Helper Library: scriptLib
+    1. It is linked to our working script by script id (Head)
+    2. Organize functions by type. Maybe helper “classes” and create scriptLib.md as we organize 
+    3. CRUD.js - feels way under-utilized currently? Do we need CRUDforSheets.md?
+        1. Use CRUD for all idLog and Audit_Log operations. These sheets are "Append Only" or "Lookup Only," which is exactly what the db class excels at.
+        2. Use standard array batching for the "Ingests," but use CRUD for the "Maintenance" of single-record updates
+        3. Optimization: When engine_sync finds a change, it should send the "Before" and "After" state to scriptLib.appendAudit(ctx, oldRow, newRow). This keeps the logging logic out of your main sync loop.
+    4. Idea/Goal: globally define scriptLib to make calling those functions easier. 
+    5. This whole library is utilities and helpers that can be applied in the future. 
+    6. Functions:
+        1. reconcileSheets
+            1. Update scriptLib.reconcileSheets to accept a protectedFields array from the Map_Registry.
+        2. reconcileByFingerprint 
+        3. Add a validateTheatricalTime(timeStr) helper. Theatrical imports often have "TBD," "After Show," or weird ranges like "8:30am–11:30am." Your scriptLib should normalize these before they hit the engine_ingest.
+            1. Suggestion: Put this in scriptLib.TheatricalParser. It should handle "TBD" by assigning a default time (e.g., 12:00 PM) but flagging the SyncStatus as "Incomplete/TBD" so it doesn't push to a public-facing calendar by mistake.
+            2. Response: an all day event on Google calendar would be better than an assumed time.. but I don’t think we currently have logic for this. Something is flagging it as manual review 
+    7. ultility.gs Functions > scriptLib
+        1. checkOption(cellValue, command) checks/returns sheet, row, mode, behaviors  
+        2. createFingerprint(title, date, time, location) —> scriptLib? 
+        3. runMasterHealthCheck() maybe this is just goSync(“log_only”)
+        4. reconcileDataDrift(params)
+            1. reconcileSheets(params)
+            2. reconcileByFingerprint(params)
+        5. repairCrewCalendarLog() ——-> probably now a sync mode or custom context? 
+        6. Need to define fingerprint vs hash
+Scheduler v2: primary library for tester.sheets
+1. FILE: engine_core.gs
+    1. Goals: 
+        1. Helps define the relationships between fields
+            1. Define a status, sheet_schema, a log, a map, etc because even though they are in the sheet something in the code needs to know how to make those relationships
+            2. SheetSchema / Sheet_Settings
+                1. IdKey / unique id field
+                2. Sheet.map
+                    1. map.fieldName
+                    2. map.columnID
+                    3. map.Header
+                    4. map.description 
+                3. Sheet policies/options 
+                4. Tab Name
+                5. Sheet Description 
+                6. Sheet status 
+            3. Some of these currently hardcoded definitions can be written in a temporary repair/initialize function 
+            4. Parent.Lineup.Call
+                1. Parent.eventID
+                2. Lineup.eventID
+                3. Call.EventID
+            5. EventID.idRef
+            6. Status
+                1. Status.colorName
+                2. Status.colorHex 
+                3. Status.description 
+                4. Status.behavior: when this status is applied, this row exception should be assigned to the appropriate row updateDetails.exceptions
+                    1.  If a row has a status of "Manual Review," the engine should extract that row’s UUID and add it to a ctx.runtimeBypassList. This ensures that even if a "Batch Sync" is called, the core logic automatically skips that ID without needing to check the sheet again during the loop.
+        2. Config.gs defines the structure, and engine_core.gs builds the ctx (Context) object that gets passed to every other function.
+        3. Eventually: UI and functions that allow for “custom context” which would be helpful in developing goSync(context) 
+        4. onEdit(e) triggers appendLog(logData, logOptions) 
+    2. Action: Initializes the ctx (Context) object at the start of any run.
+        1. Config.loadDynamicMaps() loads Map_Registry into memory (column maps for sheets and header naming)
+        2. Config.getGlobalConfig() Loads ControlPanel settings (app & operation settings)
+        3. loads Status (defines status, status color, status behaviors)
+        4. loads lookup (lookup lists for dropdown menus) 
+            1. Venue
+            2. Staff / Crew
+            3. Call Types 
+            4. SheetPolicy:
+                1. Sheet Behavior (from Sheet_Settings) is the Policy (e.g., "This sheet is Read-Only"). 
+            5. RowException
+                1. Row Behavior (from Status) is the Exception (e.g., "This specific row is Locked/Bypassed"). Your sync engine should check Row Behavior first, then fallback to Sheet Behavior.
+            6. Sync modes (or is this a new sheet with modes 
+            7. ETC FILL IN
+        5. Config. loadSheetSettings() loads Sheet_Settings (replaces master ID schema) 
+            1. Sheet Name
+            2. Unique ID field for sheet
+            3. Sheet options behaviors
+        6. Config.mode —-> new sheet/map that defines modes and what options or behaviors are associated with that mode. Is mode the same as customContext? Or is that what getMode(mode) returns?
+    3. Triggers: Provides data and options to the other engines.
+    4. Functions: What does this logic replace? What needs added to this from existing code? What needs to move to scriptLib? 
+        1. See uploaded code
+        2. A master buildContext() function in engine_core.gs that runs once per execution. It should fetch Config.getGlobalConfig(), Config.loadDynamicMaps(), and the Lookup / Status rules, packaging them into one ctx object.
+        3. defaultContext = hardcoded settings to write to sheet_settings or controlpanel when empty values are present. May only be used for development 
+2. FILE: engine_ingest.gs
+    1. Goal: Handle spreadsheet data, convert the imported data to individual events, prepare the lineup for adopting an event or moving to the draft season calendar or crew calendar (see lineup options
+        1. The Parser & Data Pipeline
+    2. Trigger: 
+        1. user input (currently menu UI in onopen.gs)
+        2. If context allows, autoUpdate (and log the change/addition/deletion) 
+    3. Action: 
+        1. Converts raw Import -> Parent Lineup -> Lineup -> Crew Log.
+        2. If existing data is present, goSync? Or UI choice -> goSync 
+            1. During goParent -> goLineup, you need a "Collision Policy." If a user manually edited a Note in the Lineup sheet, and you re-run goLineup, will the engine overwrite the manual note
+            2. Recommendation: During goLineup, if a childID already exists, perform a Field-Level Reconcile rather than a row overwrite.
+                1. Behavior: If ctx.maps.Lineup.ShowNotes is marked as "User Owned" in your Map_Registry, the ingest engine should never overwrite it, even if the source data changed.
+    4. Method: They use scriptLib.reconcileSheets (or reconcileByFingerprint) to move the arrays of data from one sheet to the next.
+    5. Result: At the end of goLineup(), the Crew_Calendar_Log is fully updated with the latest sheet data, but the Google Calendars haven't been touched yet.
+    6. Functions: What does this logic replace? What needs added to this from existing code? What needs to move to scriptLib? 
+        1. See uploaded code
+        2. goParent() write/update Parent Lineup 
+            1. will call scriptLib.reconcileSheets() using the ctx.maps to process the data arrays in memory.
+        3. goLineup() write/update Lineup using scriptLib.ParseComplexDatesAndTimes
+            1. will call scriptLib.reconcileSheets() using the ctx.maps to process the data arrays in memory.
+        4. goCrewLog() is this the same as verify crewLog and calendar?
+            1. will call scriptLib.reconcileSheets() using the ctx.maps to process the data arrays in memory.
+            2. This should be the only function that assigns a sourceID. It acts as the "Traffic Controller" between Calls and Lineup.
+3. FILE: engine_calendar.gs
+    1. Goal: Handle Calendar sync functions and options
+        1. engine_sync.gs handles Sheet-to-Sheet syncing (like Calls to Crew Log), while engine_calendar.gs handles strictly Sheet-to-Google Calendar syncing.
+    2. Action: It loads the Crew_Calendar_Log or Venue_Cal_Log array into memory for comparison against Google calendar events 
+    3. Execution: It loops through the array, matching Sheet rows to Calendar Events. If they don't match, it passes the row and the event to handleSyncDrift() (which we rewrote above).
+        1. Crucial Distinction: In theater, the "Venue Calendar" (Master) often differs from the "Production Calendar" (Internal).
+        2. • Logic: If Venue_Cal_Log shows a conflict (two shows in the Ballroom), engine_calendar should not "fix" it. It should flag it as Manual Review in the SyncStatus column and post to the Audit_Log.
+        3. The Venue_Cal_Log should be treated as a "Reference" sheet. If a conflict is found there, it triggers a Manual Review status in the Lineup or Calls sheet. Never let the script automatically delete a Venue Calendar event.
+    4. Resolution: handleSyncDrift alters the array. Once the loop is done, goSync() does one single batch write (setValues) to save all statuses ("Pulled", "Pushed", "Manual Review") back to the Crew_Calendar_Log at once.
+    5. Functions: What does this logic replace? What needs added to this from existing code? What needs to move to scriptLib? 
+        1. See uploaded code
+        2. verifyCrewLogAndCalendar (see notes under engine_ingest)
+        3. handleSyncDrift() that updates arrays in memory instead of pinging the sheet directly.
+        4. getEventDetails(eventID) return details (or why don’t I need this with the engine_calendar)
+            1. (updateEvent vs handleSyncDrift): updateEvent should be a low-level scriptLib function that just talks to the API. handleSyncDrift is the high-level logic that decides what to update based on the Lookup behaviors (e.g., "Prefer Update from Source").
+        5. writeEvent(callID??)
+        6. updateEvent(eventID, updateData) is this the same thing as handleSyncDrift? 
+        7. GetEvents(calendarID)
+        8. getCalendarID(calendar name) or from lookup
+4. FILE: engine_maintenance.gs
+    1. Goal: 
+        1. action logging (see log settings… controlPanel?) 
+        2. Row/sheet status handling 
+        3. Initialize settings (what goes in core vs maintenance)
+        4. Lookup and dropdown maintenance 
+        5. Eventually: reporting
+    2. Triggers: Runs nightly, via UI, or as needed to prevent errors
+    3. Functions: What does this logic replace? What needs added to this from existing code? What needs to move to scriptLib? 
+        1. See uploaded code
+        2. appendLog(logData, logOptions)
+        3. clearLog -> UI Confirm
+        4. updateSyncStatus(sheet, rowID, statusData) —-> return logData and updateDetails? 
+        5. updateDetails {} 
+        6. What needs added:
+            1. Scheduled triggers. This is where your nightly repairAllSystemHashes() and updateDropdownValidations() functions will live.
+            2. check / update map registry and headers onEdit 
+                1. see reset header function & notes
+                    1. (Header Reset): * Risk: Users will insert columns.
+                    2. Solution: onEdit map registry maintenance 
+                        1. Function to Update lookups and data validation 
+                2. See CRUD
+            3. check / update status definitions & lookup 
+            4. maintain dropdowns
+            5. writeNewMode(options)
+            6. writeNewSheet(map, sheetSettings) or update sheet 
+        7. What moves to scriptLib:
+            1. generateHash(row, map, fields)
+            2. createFingerprint()
+5. FILE: engine_sync.gs
+    1. Example: Manual review row status causes a bypass behavior so that other functions skip until it has been manually reviewed. This behavior would be respected unless a sheet setting was “overwrite” and the confirmation UI was accepted
+        1. Need both batch(array) read/write and scan sheet vs scan array but the ids should be able to lookup and selectively replace 
+    2. Goal: log & Check the status and relationship of everything, using the global/local context for decision logic
+        1. engine_sync.gs handles Sheet-to-Sheet syncing (like Calls to Crew Log), while engine_calendar.gs handles strictly Sheet-to-Google Calendar syncing.
+        2. Something that checks for behavior/option conflicts and eventually can present UI choice selection (especially if destructive) 
+        3. Decisions: 
+            1. Batch or Scanned (need ability for both) 
+            2. SyncHash or Fingerprint use case (both have pros/cons but fingerprint was decided on for legibility purposes)
+            3. Row Exception/Behavior
+            4. Sheet.Policy behavior
+            5. Mode or customContext 
+    3. Trigger: UI menu 
+    4. Action 
+    5. Functions
+        1. setupEngineEnvironment(context) initializes settings. Empty settings trigger UI? Or maybe temporarily initializes empty settings to a default coded value. Look for opportunities to 
+        2. goSync() —> goSync(context) 
+        3. RowSync(behavior, sheet/map, rowID) 
+        4. getSSEvent(sheet/map, uniqueID) return event.details 
+        5. Read/write Engine.Data 
+6. FILE: Config.gs
+    1. Recommendation: Keep Config.gs strictly for Hardcoded Constants (like the Folder ID for backups or the Script ID for scriptLib). Move all Dynamic Loading (reading from the Map_Registry sheet) into engine_core.buildContext(). This separates "settings that never change" from "settings the user can edit on the sheets."
+    2. PURPOSE: 
+        1. Config.gs defines the structure, and engine_core.gs builds the ctx (Context) object that gets passed to every other function.
+        2. Loads UI Settings, Status Colors, and the dynamic Map Registry.
+        3. Seems like much of this is going to be integrated into engine_core.gs
+        4. Probably need to make a config.md 
+        5. Define status schema? (And other schemas? Or is this on sheet_settings or how do all these sheet things get pulled to memory ? 
+    3. Functions
+        1. getGlobalConfig()
+        2. loadDynamicMaps() —-> rename to getMapRegistry 
+            1. getMap(sheetName)
+            2. getSheet(mapName) 
+            3. maybe something like getRelationship(map, field1, field2) 
+            4. getRowException(sheet, row)
+            5. getSheetBehavior(sheet)
+            6. getMode
+        3. runSystemHealthCheck() how is this interacting with config and sync operations
+        4. runMasterHeaderReset() compares sheet headers to Map_Registry and updates the sheet as needed. If blank on Map_Registry, prefer current value from sheet. Does CRUD do this?   
+        5. runFirstTimeSetup() is this the same as setupEngineEnvironment(context)
+        6. loadSheetSettings()
+        7. getUIFriendlySchema(sheetName)
+7. FILE: UI_helper.gs: 
+    1. Purpose: move functions that only exist to allow for UI interactions and specific buttons here
+    2. Currently empty file. 
+    3. Eventually create schedulerUI.md
+8. FILE: search.gs 
+    1. Does not exist yet
+    2. Intent: ways to find individual events
+    3. Return reports or UI
+    4. Functions 
+        1. getParent(parentID)
+        2. getLineup(childID)
+        3. getCall(callID)
+        4. 
+9. OTHER FILES (some consolidated)
+    1. Recommendation: Get rid of the 0_ prefix. It’s a legacy GAS habit for ordering. Use descriptive names.
+        1. • Move to scriptLib: *
+            1. 0_hashes.gs -> SL.HashProvider
+            2. • 0_reconcile.gs -> SL.DataSync
+            3. • 0_helper.gs -> SL.Utils
+        2. • Keep in Project: * 0_idLog.gs -> engine_idManager.gs (This is too project-specific for a general library).
+    2. 0_OnOpen.gs > UI menu 
+    3. 0_hashes.gs repair and repopulate > scriptLib
+    4. 0_idLog.gs functions that deal with idLog sheet 
+    5. 0_reconcile.gs > script lib?
+    6. 0_status colors.gs > delete? Or revise into all status helpers Engine_core and config update status sheet/ color hex/status behaviors and can reset this sheet? Do we need syncStatus.md or a json for this and lookups? 
+    7. 0_sync calls and crew log.gs
+    8. 0_sync crew log w cal.gs
+    9. 0_sync venue cals.gs
+    10. 0_temp.gs functions that can be run once from the console for testing and development. 
+    11. 0_draft season.gs > functions specific to draft season calendar 
+    12. 0_helper.gs > scriptLib
+    13. 0_verify.gs 
+    14. e_import to parent lineup.gs > Delete
+    15. e_doublecheckme.gs > scriptLib
+
+
+Google Sheet: Tester
+ControlPanel: 
+1. Sync Settings and default values 
+2. Need initializeSheet(“ControlPanel”). This sheet might not have all of the field and value definitions that code is expecting.
+3. Need repairControlPanel()/ updateControlPanel()
+4. This sheet can currently be edited by users. Eventually it may be hidden and all of this may be interacted with by a separate UI. 
+Modes: 
+1. new sheet to define customContext presets 
+2. This sheet can currently be edited by users. Eventually it may be hidden and all of this may be interacted with by a separate UI. 
+3. Some modes can be hardcoded. They can write to this sheet for reference but this will help with some testing consistency 
+Sheet_Settings: 
+1. sheet definitions, properties, policies, column map array, uniqueID, etc 
+2. This sheet can currently be edited by users. Eventually it may be hidden and all of this may be interacted with by a separate UI. 
+idLog: 
+1. every uniqueID has a row here that helps with validation and update history 
+2. See questions for clarity & response
+Audit Log: 
+1. logs every action (that has its log type is selected in ControlPanel)
+Lookup: 
+1. dropdown menu lookup lists and calendarID reference 
+2. Considering moving calendar ID lookup/index to a separate tab. Then the calendars could have settings/properties too
+Status: 
+1. Status lookup, color, options/behaviors (these behaviors pass to the row when a status is applied) 
+2. Transitioned from master sheet schema but realized we need to define a sheet schema still?
+3. This sheet can currently be edited by users. Eventually it may be hidden and all of this may be interacted with by a separate UI. 
+Map_Registry: 
+1. columnID and header lookups for every sheet
+2. Transitioned from hardcoded maps to allow for dynamic maps 
+3. This sheet can currently be edited by users as a development function. Eventually it may be hidden and all of this may be interacted with by a separate UI. 
+import: 
+1. import range. Source data 
+Parent Lineup: 
+1. copy of source data for comparison and added fields
+Lineup: 
+1. Parent Lineup -> parsed into individual “child” events with individual start and end times 
+    1. Sometimes, for events with a single start time, a parent row will be very similar to to the child row
+    2. Need a way for Lineup to adopt existing calendar events. This would likely mostly be a read-only association with venue calendars UNLESS we are writing to the draft-season-calendar or crew calendar 
+Crew_Calendar_Log: 
+1. The crew calendar / draft season calendar sheet sync log
+2. Any events within config.start/end range on calendar will sync to/from this spreadsheet, (options permitting) 
+3. Pulls events from calls/lineup/google calendar as needed/allowed/specified
+4. Pushes events to google calendar as needed/allowed/specified
+Venue_Calendar_Log: 
+1. Venue Calendar sheets sync log
+Calls: 
+1. User edited sync sheet for Calls.
+2. Calls have a CallType 
+3. may be associated with an existing Calendar Event
+    1. Need a method (UI? but a function to make the association either way) for calls to adopt calendar events. We have a column for eventID, so when a call is associated with a calendar events, that can be tracked here. 
+    2. may sync (read, pull from, push to with crew_calendar_log depending on row options or associated calendar events
+    3. may sync (read/pull from) with venue_cal_log if associated with an event on the venue_cal_log

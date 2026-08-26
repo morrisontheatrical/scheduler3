@@ -44,13 +44,31 @@ function batchWrite(role, dataObjects, ctx) {
       venue: dataObj.Location || dataObj.Venue
     };
 
-    const identityModule = Engine.getLibraryModule("Identity");
+  const identityModule = Engine.getLibraryModule("Identity");
     if (identityModule && typeof identityModule.generate === "function") {
       return identityModule.generate(identityInput);
     }
     return null;
   };
   
+  /**
+   * Serializes a row object into a JSON string for snapshotting/auditing.
+   */
+  Engine.IO.serializeRow = function(obj) {
+    // Remove internal properties like _rowNum before serializing
+    const { _rowNum, ...serializable } = obj;
+    return JSON.stringify(serializable);
+  };
+
+  /**
+   * Deserializes a JSON string back into a row object.
+   */
+  Engine.IO.deserializeRow = function(jsonString, rowNum) { //rowNum or "identifier"
+    if (!jsonString) return null;
+    const obj = JSON.parse(jsonString);
+    return { ...obj, _rowNum: rowNum };
+  };
+
   const output = dataObjects.map(obj => {
     // 1. Generate Identity Hash when the shared library is available.
     if (map.SyncHash !== undefined) {

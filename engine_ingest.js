@@ -1495,6 +1495,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
   }
  
   const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
+  const importUpdatePolicy = ctx.mode.ImportUpdatePolicy || "MANUAL_REVIEW";
  
   const changes = [];
   sourceFields.forEach(fieldName => {
@@ -1513,8 +1514,10 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
   if (lastUpdatedCol >= 0) pSheet.getRange(sheetRowNum, lastUpdatedCol + 1).setValue(now);
   if (updateDetailsCol >= 0) pSheet.getRange(sheetRowNum, updateDetailsCol + 1).setValue(changes.join(" | ") || "No field changes (accepted as-is)");
   if (syncStatusCol >= 0) pSheet.getRange(sheetRowNum, syncStatusCol + 1).setValue("Active");
- 
-  Engine.Log.write(ctx, {
+ //fix this
+  if (importUpdatePolicy === "AUTO_UPDATE_AND_LOG" || (importUpdate...
+  );
+   Engine.Log.write(ctx, {
     stage: "INGEST",
     sheetName: "Parent Lineup",
     rowIdx: sheetRowNum,
@@ -1522,7 +1525,6 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
     type: "DRIFT_ACCEPTED",
     details: changes.length ? changes.join(" | ") : "Drift accepted with no field changes."
   });
- 
   return true;
 };
  

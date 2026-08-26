@@ -24,4 +24,9 @@ This file is the entrypoint for scheduler project documentation. The older monol
 
 ## Current Anchor
 
-The immediate implementation focus is the decision/reconciliation pipeline: normalize status and behavior vocabulary, preserve Parent IDs across legitimate import changes, make duplicate and drift decisions understandable, and apply reviewed actions safely across downstream relationships.
+The immediate implementation focus is refining the decision queue lifecycle, establishing identity lineage, and decoupling sheet lookup:
+- Abstracting all sheet access behind `SheetRole` in `Sheet_Settings`.
+- Generating universal cell hyperlinks across all `decision_log` review types.
+- Persisting pending manual reviews while automatically purging superseded items to `Audit_Log`.
+- Implementing `idLog` "Merged IDs" alias mapping with cascading `parentID` updates across child `Lineup` records.
+- Enforcing manual user action flags (`Bypassed`, `Delete Pending`, `Possible Duplicate`) during `ingest` and `verify` runs.

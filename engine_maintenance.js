@@ -623,3 +623,13 @@ function finalizeMaintenance(summary) {
   console.warn("finalizeMaintenance() is deprecated; use Engine.Maintenance.runHealthCheck() or Engine.Maintenance.resetHeaders(ctx) instead.");
   return summary || "Deprecated maintenance call";
 }
+
+function getSheetByRole(roleName) {
+  const ctx = Engine.getContext();
+  const sheetName = ctx.getRole(roleName);
+  if (!sheetName) throw new Error(`No sheet found for role "${roleName}"`);
+  const sheet = ctx.ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet "${sheetName}" (role "${roleName}") not found in spreadsheet`);
+  return sheet;
+}
+

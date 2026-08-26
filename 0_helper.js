@@ -1,10 +1,14 @@
 /*UPDATE_NOTES 8/17/26
 All helper functions or other oddball short functions should live here
+8/25/26: we should consider how the new serialize data functions might replace or work with these helpers. For example, getParentData and getChildData could be replaced by a more generic function that uses the serialized data structure.
+These get functions were intended to help pull individual rows from the Lineup or Parent Lineup sheets based on either the Event Title or the UUID (parentID/childID). They are useful for quickly accessing specific event data without having to manually search through the sheets. Even just to grab a duplicate.
+
 */
 
 
 function getParentData(identifier){
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  //This should return a full row from the Parent Lineup sheet based on either the parentID or the Event Title.
+  const ss = SpreadsheetApp.getActiveSpreadsheet(); 
   const sheet = ss.getSheetByName("Parent Lineup");
   if (!sheet) return null;
 

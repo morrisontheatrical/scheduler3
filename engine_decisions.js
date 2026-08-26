@@ -82,7 +82,22 @@ Engine.Decisions = {
     const statusCol = this._col(table.map, "ActionStatus");
     return data.slice(1)
       .map((row, index) => ({ row: row, rowNumber: index + 2 }))
-      .filter(item => statusCol < 0 || String(item.row[statusCol] || "PENDING").trim().toUpperCase() === "PENDING")
+      .filter(item => statusCol < 0 || String(item.row[status[statusCol] || "PENDING"]).trim().toUpperCase() === "PENDING")
+      .map(item => this._toObject(item.row, item.rowNumber, table.map));
+  },
+
+  reviewable: function(ctx) {
+    const table = this.ensureSchema(ctx);
+    const data = table.sheet.getDataRange().getValues();
+    const statusCol = this._col(table.map, "ActionStatus");
+    return data.slice(1)
+      .map((row, index) => ({ row: row, rowNumber: index + 2 }))
+      .filter(item => {
+        const status = statusCol < 0
+          ? "PENDING"
+          : String(item.row[statusCol] || "PENDING").trim().toUpperCase();
+        return status === "PENDING" || status === "FAILED";
+      })
       .map(item => this._toObject(item.row, item.rowNumber, table.map));
   },
 
@@ -231,9 +246,17 @@ Engine.Decisions = {
     const reviewCol = this._col(table.map, "ReviewID");
     const statusCol = this._col(table.map, "ActionStatus");
 
-    const existing = data.slice(1).some(row =>
-      String(row[reviewCol] || "") === String(values.ReviewID || "") &&
-      String(row[statusCol] || "PENDING").trim().toUpperCase() === "PENDING"
+// A live PENDING row or an unresolved FAILED row both represent an
+  // active, unresolved decision for this pair. Don't create a second
+  // row until the existing one is superseded, applied, or rejected
+  // (all of which either delete the row or change its ReviewID
+  // eligibility). SUPERSEDED rows are historical and intentionally
+  // NOT blocking here — a superseded pair may legitimately re-match
+  // on fresh evidence.
+  const blockingStatuses = ["PENDING", "FAILED"];
+  const existing = data.slice(1).some(row =>
+    String(row[reviewCol] || "") === String(values.ReviewID || "") &&
+    blockingStatuses.includes(String(row[statusCol] || "PENDING").trim().toUpperCase())
     );
     if (existing) return false;
 

@@ -1,17 +1,26 @@
 # Scheduler Roadmap and Decisions
 
 ## Immediate Priorities
-
-1. Normalize `Status`, `ref`, behavior values, decisions, and requested actions.
-2. Add before/after evidence and links to decision records.
-3. Improve import -> Parent Lineup matching so placeholder titles can become real titles without losing `parentID`.
-4. Add read-only duplicate candidate reporting and explicit keeper selection.
-5. Harden approved decision processing against exact recorded rows and IDs.
-6. Reconcile Parent Lineup -> Lineup -> Crew Calendar relationships.
-7. Correct Venue Calendar association semantics: `EventID` is the venue event; `UUID` is the associated Lineup/Crew row.
-8. Add explicit pull-only, push-only, reconcile-only, and two-way operation modes.
-9. Adapt property-level calendar patching from `gcalendarsync` for title, time, location, and description.
-10. Add confirmed Developer Overrides for resets and initialization.
+1. Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.
+2. Update `refreshLinks()` to generate universal hyperlinks for all review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`).
+3. Add `idLog` `Merged IDs` alias logging and cascading `parentID` updates in `Lineup` for "Keep New" merges.
+4. Enforce `decision_log` queue purge rule: copy superseded/applied items to `Audit_Log`, then delete from `decision_log`.
+5. Implement engine handlers for `Bypassed`, `Delete Pending`, and `Possible Duplicate` status overrides in `Parent Lineup`.
+6. Create/Revise a method to compress whole rows/events into a single "snapshot" cell, and back into "row". It should be able to easily be parsed for comparison. Check fingerprint/hashing functions first. This way a removed duplicate can have its fields saved in the audit_log or idLog before merge/deletion 
+7. Normalize `Status`, `ref`, behavior values, decisions, and requested actions.
+8. Add before/after evidence and links to decision records.
+9. Improve import -> Parent Lineup matching so placeholder titles can become real titles without losing `parentID`.
+10. Add read-only duplicate candidate reporting and explicit keeper selection.
+11. Harden approved decision processing against exact recorded rows and IDs.
+12. Reconcile Parent Lineup -> Lineup -> Crew Calendar relationships.
+13. Correct Venue Calendar association semantics: `EventID` is the venue event; `UUID` is the associated Lineup/Crew row.
+14. Add explicit pull-only, push-only, reconcile-only, and two-way operation modes.
+15. Adapt property-level calendar patching from `gcalendarsync` for title, time, location, and description.
+16. Add confirmed Developer Overrides for resets and initialization.
+17. Build automated Role Swapping promotion script based on `Sheet_Settings`.
+18. Implement "Custom Sync" capability: allow filtering sync runs by date range, venue, or specific context.
+19. Develop "Detailed Reporting" mode: a "log-only" verification pass for auditing without mutation.
+20. Implement UI-driven "Detailed Inspection" (popup/sidebar) for rapid entity review.
 
 ## Decision Vocabulary
 
@@ -104,6 +113,10 @@ Terminal/history:
 - `BYPASS` spans create no Lineup row; `MULTI_DAY` creates one row with `EndDate`; `DAY_BY_DAY` creates individual dates.
 - Calendar writes require explicit permission and should preserve event IDs.
 - External Node/React/Firebase repositories provide reference patterns only.
+- `SheetRole` in `Sheet_Settings` is the canonical reference for sheet access; scripts must never hardcode sheet names.
+- `idLog` contains a `Merged IDs` column to preserve historical identity lineage and support cascading foreign key updates.
+- `decision_log` is strictly an active task queue. Resolved and superseded decisions are recorded in `Audit_Log` and removed from `decision_log`.
+- Parent Lineup statuses (`Bypassed`, `Delete Pending`, `Possible Duplicate`) override default automated sync behavior.
 
 ## Deferred Recovery
 

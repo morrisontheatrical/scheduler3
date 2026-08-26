@@ -1,5 +1,5 @@
 /*
- * Deprecated legacy sync script.
+ * Deprecated legacy sync script. 
  * Prefer Engine.Sync.runMasterSync() and the Engine.* modules.
  */
 function syncCallsToCrewLog() {

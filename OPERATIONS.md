@@ -14,9 +14,30 @@
 - `Verification`: whole-sheet comparisons and calendar comparison.
 - `Maintenance`: registry, headers, hashes, and dropdowns.
 - `Decision Review`: pending review queue and approved decision processing.
-- `Sync Tests`: controlled sync runs with calendar writes disabled by default.
 - `Scheduler`: the short production pipeline.
 - `Developer Overrides`: reserved for destructive reset/reinitialize operations with confirmation.
+
+## Event Manager Menu Structure
+
+The primary user interface is organized under the **Event Manager** menu:
+
+### Ingest
+- `goParent`: Navigate to Parent Lineup.
+- `goLineup`: Navigate to Lineup.
+- `goCrewLog`: Navigate to Crew Calendar Log.
+
+### Sync
+- `goSync(context)`: Execute sync based on provided context.
+- `Run Custom Sync`: (Future UI Dialog) Execute sync with user-defined parameters.
+- `Report Mode`: `goSync("report")` - Perform a log-only verification pass.
+
+### Navigation
+- `Sheet options`: Access spreadsheet-specific navigation and settings.
+
+### Sheet Management
+- `Sheet Settings`: (Future UI) Edit active sheet settings.
+- `Repair (active) Sheet`: Re-verify and repair the active sheet against the source of truth.
+- `Reset (active?) Sheet`: Perform a destructive reset of the active sheet (requires confirmation).
 
 ## Header Direction
 
@@ -38,6 +59,11 @@ Verification may update status and `LastSynced` when the current behavior allows
 ## Decision Workflow
 
 `decision_log` is the editable review queue. `Audit_Log` is historical output.
+`decision_log` acts strictly as an active to-do list.
+
+* **Universal Hyperlinking:** `refreshLinks()` generates rich-text cell links for **all** review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`) into `SourceLink` and `CandidateLink`.
+* **Persistence:** Unresolved manual reviews (`PENDING`, `FAILED`) persist in `decision_log` across verification passes.
+* **Purge on Resolution / Supersede:** When a review item is applied or marked `SUPERSEDED`, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
 
 For a Parent-to-Parent duplicate, compare `ParentTitle` (the proposed keeper)
 with `CandidateTitle` (the other Parent Lineup row). The source and candidate
@@ -99,3 +125,18 @@ Development wrappers must use `allowCalendarWrites: false`. Use pull-only or rec
 ## Recovery
 
 If a destructive reset is required, use a Developer Override after confirming the target sheet, operation, and row count. Do not use ordinary sync or verification functions as reset tools.
+## Parent Lineup Manual Action Handling
+
+Users can set operational statuses in `Parent Lineup` to dictate engine behavior during `ingest` and `verify` runs:
+
+* **`Bypassed`:** The engine completely skips this row during drift and duplicate checks. No `decision_log` items will be generated.
+* **`Delete Pending`:** The `ingest` script physically deletes the row from `Parent Lineup`, writes an audit record to `Audit_Log`, and clears any pending reviews for that ID from `decision_log`.
+* **`Possible Duplicate`:** The `verify` script explicitly scans this row against `Parent Lineup` and `import`. If a match is found, it creates a `PARENT_DUPLICATE` task. If no automated match is found, it generates a `REVIEW_PARENT_ONLY` task with the note: *"Flagged as Possible Duplicate by user, but no automated match found."*
+
+## Season Promotion Protocol (Role Swapping)
+
+To promote a Draft season to Current season without copying data:
+
+1. Update `Sheet_Settings` roles for current tabs (e.g., change `IMPORTCURRENT` to `IMPORT_25_26`).
+2. Reassign draft tabs in `Sheet_Settings` to active roles (e.g., change `IMPORTDRAFT` to `IMPORTCURRENT`).
+3. Provision new blank draft tabs in Sheets, register their GIDs in `Sheet_Settings`, and assign roles `IMPORTDRAFT`, `PARENTDRAFT`, and `LINEUPDRAFT`.
