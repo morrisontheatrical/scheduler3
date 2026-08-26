@@ -186,6 +186,7 @@ var Engine = {
     const behaviorsIdx = getIdx(["allowedbehaviors", "behaviors", "allowed_behaviors"]);
     const logTypesIdx = getIdx(["allowedlogtypes", "logtypes", "log_types"]);
     const spanPolicyIdx = getIdx(["spandatepolicy", "span_date_policy"]);
+    const importUpdatePolicyIdx = getIdx(["importupdatepolicy", "import_update_policy"]);
 
 
     let activeMode = null;
@@ -208,6 +209,9 @@ var Engine = {
       const spanDatePolicy = spanPolicyIdx !== -1
         ? String(row[spanPolicyIdx] || "BYPASS").trim().toUpperCase()
         : "BYPASS";
+      const importUpdatePolicy = importUpdatePolicyIdx !== -1
+        ? String(row[importUpdatePolicyIdx] || "MANUAL_REVIEW").trim().toUpperCase()
+        : "MANUAL_REVIEW";
 
       const mode = {
         mode: modeName,
@@ -218,7 +222,8 @@ var Engine = {
         allowedBehaviors: allowedBehaviors,
         allowedLogTypes: allowedLogTypes,
         logTypes: allowedLogTypes.join(", "),
-        spanDatePolicy: spanDatePolicy
+        spanDatePolicy: spanDatePolicy,
+        importUpdatePolicy: importUpdatePolicy
       };
 
       if (isActive) {

@@ -36,11 +36,19 @@ All range access must convert through `Engine.getColumnIndex(map, fieldName)`. I
 
 The workbook operates across four distinct structural layers to maintain deterministic data flow and strict identity isolation:
 
+```mermaid
+graph TD
+    A[Raw Intake Layer: import/draft_import] -->|Fingerprint| B[Master Catalog Layer: Parent Lineup/draft_Parent]
+    B -->|parentID| C[Execution Layer: Lineup/draft_Lineup/Calls/Logs]
+    C -->|UUID/EventID| D[Governance Layer: decision_log/idLog/Audit_Log]
+    D -->|Sync/Update| E[External: Google Calendars]
+```
+
 1. **Raw Intake Layer (`IMPORTCURRENT` / `IMPORTDRAFT`):**
    - **Sheets:** `import`, `draft_import`
    - **Key:** `Fingerprint` | **Mode:** `READ_ONLY` / `SOURCE`
    - External `IMPORTRANGE` feed. Read-only and protected from manual user edits.
-   - import is read-only because it is supplied by IMPORTRANGE. Its row number is not a permanent identity.
+   - import is read-only because it is supplied by `IMPORTRANGE`. Its row number is not a permanent identity.
 
 2. **Master Catalog Layer (`PARENTCURRENT` / `PARENTDRAFT`):**
    - **Sheets:** `Parent Lineup`, `draft_Parent`
@@ -65,7 +73,7 @@ All engine functions decouple script logic from static tab names by fetching wor
 
 ## Identity Chain & `idLog` Alias Table
 
-
+```text
 import (raw IMPORTRANGE source)
   -> Parent Lineup (parentID)
   -> Lineup (UUID per performance)
@@ -73,9 +81,11 @@ import (raw IMPORTRANGE source)
   -> Draft calendar (EventID)
   -> Venue_Cal_Log (EventID + associated UUID)
   -> idLog (UniqueID registry + Merged IDs alias table)
+```
+
 `import` is read-only because it is supplied by `IMPORTRANGE`. Its row number is not a permanent identity. Parent identity matching must use content/source evidence and preserve an existing `parentID` when continuity is established.
 
-`UniqueID` remains the mixed-form idLog key. Its interpretation comes from `RecordType`, source sheet, and location.
+`UniqueID` remains the mixed-form `idLog` key. Its interpretation comes from `RecordType`, source sheet, and location.
 ## Status, Behavior, and Decisions
 
 - `SyncStatus`: current state/result of a row.

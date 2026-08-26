@@ -82,7 +82,7 @@ Engine.Decisions = {
     const statusCol = this._col(table.map, "ActionStatus");
     return data.slice(1)
       .map((row, index) => ({ row: row, rowNumber: index + 2 }))
-      .filter(item => statusCol < 0 || String(item.row[status[statusCol] || "PENDING"]).trim().toUpperCase() === "PENDING")
+      .filter(item => statusCol < 0 || String(item.row[statusCol] || "PENDING").trim().toUpperCase() === "PENDING")
       .map(item => this._toObject(item.row, item.rowNumber, table.map));
   },
 
@@ -210,30 +210,42 @@ Engine.Decisions = {
     let linked = 0;
     let cleared = 0;
 
-    this.pending(ctx).filter(decision => String(decision.ReviewType || "") === "PARENT_DUPLICATE").forEach(decision => {
-      const sourceRow = resolveParentRow(decision.SourceID);
-      const candidateRow = resolveParentRow(decision.CandidateID);
-      if (sourceRow) {
-        table.sheet.getRange(decision._rowNumber, sourceRowCol + 1).setValue(sourceRow);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, sourceIdCol, "Parent Lineup", sourceRow, decision.SourceID);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, "Parent Lineup", sourceRow, decision.ParentTitle);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, "Parent Lineup", sourceRow, decision.ExistingParentID);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, "Parent Lineup", sourceRow, decision.KeepParentID);
-        if (sourceLinkCol >= 0) table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
-        linked++;
+    this.pending(ctx).forEach(decision => {
+      const reviewType = String(decision.ReviewType || "");
+      const isParentDuplicate = reviewType === "PARENT_DUPLICATE";
+      const isParentLineupCandidate = String(decision.CandidateSheet || "") === "Parent Lineup";
+      if (!isParentDuplicate && !isParentLineupCandidate) return;
+
+      if (isParentDuplicate) {
+        const sourceRow = resolveParentRow(decision.SourceID);
+        if (sourceRow) {
+          table.sheet.getRange(decision._rowNumber, sourceRowCol + 1).setValue(sourceRow);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, sourceIdCol, "Parent Lineup", sourceRow, decision.SourceID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, "Parent Lineup", sourceRow, decision.ParentTitle);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, "Parent Lineup", sourceRow, decision.ExistingParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, "Parent Lineup", sourceRow, decision.KeepParentID);
+          if (sourceLinkCol >= 0) table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
+          linked++;
+        } else {
+          cleared++;
+        }
       }
+
+      const candidateRow = resolveParentRow(decision.CandidateID);
       if (candidateRow) {
         table.sheet.getRange(decision._rowNumber, candidateRowCol + 1).setValue(candidateRow);
         this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateIdCol, "Parent Lineup", candidateRow, decision.CandidateID);
         this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateTitleCol, "Parent Lineup", candidateRow, decision.CandidateTitle);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, duplicateParentIdCol, "Parent Lineup", candidateRow, decision.DuplicateParentID);
+        if (isParentDuplicate) {
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, duplicateParentIdCol, "Parent Lineup", candidateRow, decision.DuplicateParentID);
+        } else {
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, "Parent Lineup", candidateRow, decision.ParentTitle);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, "Parent Lineup", candidateRow, decision.ExistingParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, "Parent Lineup", candidateRow, decision.KeepParentID);
+        }
         if (candidateLinkCol >= 0) table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).clearContent();
         linked++;
-      }
-      if (!sourceRow) {
-        cleared++;
-      }
-      if (!candidateRow) {
+      } else {
         cleared++;
       }
     });
@@ -376,7 +388,7 @@ Engine.Decisions = {
           results.skipped++;
           return;
         } else if (action === "REVIEW_IMPORT_DRIFT" && ["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) {
-          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID)) {
+          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true })) {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
@@ -388,7 +400,7 @@ Engine.Decisions = {
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
           if (!decision.ExistingParentID) throw new Error("ACCEPT_IMPORT requires ExistingParentID");
-          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID)) {
+          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true })) {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;

@@ -369,7 +369,7 @@ Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
 
   let created = 0;
   let suggested = 0;
-  Engine.Decisions.pending(ctx)
+  Engine.Decisions.reviewable(ctx)
     .filter(decision => String(decision.ReviewID || "").startsWith("PARENT_ONLY_"))
     .forEach(decision => {
       const current = rows.find(row => row.parentID === decision.ExistingParentID);
@@ -430,7 +430,7 @@ Engine.Ingest.applyConfirmedParentMerges = function(ctx) {
   const table = Engine.Decisions && Engine.Decisions.ensureSchema ? Engine.Decisions.ensureSchema(ctx) : null;
   if (!decisionSheet || !table) return { applied: 0, failed: 0 };
 
-  const pending = Engine.Decisions.pending(ctx).filter(item => {
+  const pending = Engine.Decisions.reviewable(ctx).filter(item => {
     const decision = String(item.Decision || "").trim().toUpperCase();
     const action = String(item.RequestedAction || "").trim().toUpperCase();
     return ["ACCEPT", "CONFIRMED_DUPLICATE"].includes(decision) && action === "MERGE_PARENT";
@@ -1266,7 +1266,7 @@ Engine.Ingest.refreshParentOnlyDecisions = function(ctx) {
   const importRows = importSheet.getDataRange().getValues().slice(1);
 
   let superseded = 0;
-  Engine.Decisions.pending(ctx)
+  Engine.Decisions.reviewable(ctx)
     .filter(decision => String(decision.ReviewID || "").startsWith("PARENT_ONLY_"))
     .forEach(decision => {
       const parentRow = parentById[decision.ExistingParentID];
@@ -1306,7 +1306,7 @@ Engine.Ingest.refreshParentDuplicateDecisions = function(ctx) {
   });
 
   let superseded = 0;
-  Engine.Decisions.pending(ctx)
+  Engine.Decisions.reviewable(ctx)
     .filter(decision => String(decision.ReviewType || "") === "PARENT_DUPLICATE")
     .forEach(decision => {
       const keepRow = parentById[decision.KeepParentID || decision.ExistingParentID];
@@ -1452,7 +1452,8 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
 // The explicit, deliberate merge step for RENAME_CANDIDATE (and any
 // DRIFT_DETECTED) rows goParent() correctly refused to auto-apply.
 // ============================================================
-Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
+Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
+  options = options || {};
   const ss = ctx.ss;
   const iSheet = ss.getSheetByName("import");
   const pSheet = ss.getSheetByName("Parent Lineup");
@@ -1475,55 +1476,125 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID) {
   iData.shift();
  
   const pName = normalize(pRow[pCol("EventName")]);
-  let importRow = iData.find(row => normalize(row[iCol("EventName")]) === pName);
- 
-  if (!importRow) {
+  let importRowIdx = iData.findIndex(row => normalize(row[iCol("EventName")]) === pName);
+
+  if (importRowIdx === -1) {
     // Same fallback used everywhere else: Opening+Range+Venue triple match.
-    const candidates = iData.filter(row =>
-      ["Opening", "Range", "Venue"].every(field => {
-        const iIdx = iCol(field);
-        const pIdx = pCol(field);
-        return iIdx >= 0 && pIdx >= 0 && normalize(row[iIdx]) === normalize(pRow[pIdx]);
-      })
-    );
-    if (candidates.length === 1) importRow = candidates[0];
+    const candidateIdxs = iData
+      .map((row, idx) => idx)
+      .filter(idx =>
+        ["Opening", "Range", "Venue"].every(field => {
+          const iIdx = iCol(field);
+          const pIdx = pCol(field);
+          return iIdx >= 0 && pIdx >= 0 && normalize(iData[idx][iIdx]) === normalize(pRow[pIdx]);
+        })
+      );
+    if (candidateIdxs.length === 1) importRowIdx = candidateIdxs[0];
   }
- 
-  if (!importRow) {
+
+  if (importRowIdx === -1) {
     Engine.Log.write(ctx, { stage: "INGEST", type: "DRIFT_ACCEPT_FAILED", id: parentID, details: "No matching import row found to accept drift from." });
     return false;
   }
- 
+
+  const importRow = iData[importRowIdx];
+  const importSheetRow = importRowIdx + 2; // iData[0] is header, so index N is sheet row N+2
+
   const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
-  const importUpdatePolicy = ctx.mode.ImportUpdatePolicy || "MANUAL_REVIEW";
- 
+  const importUpdatePolicy = (ctx.mode.importUpdatePolicy || "MANUAL_REVIEW").toUpperCase();
+
+  // Read-only pass: compute which fields would change before deciding what to do.
   const changes = [];
   sourceFields.forEach(fieldName => {
     const oldVal = pRow[pCol(fieldName)];
     const newVal = importRow[iCol(fieldName)];
     if (!Engine.Ingest.sourceValuesEqual(ctx, fieldName, oldVal, newVal)) {
-      pSheet.getRange(sheetRowNum, pCol(fieldName) + 1).setValue(newVal);
-      changes.push(`${fieldName}: "${oldVal}" -> "${newVal}"`);
+      changes.push({ fieldName, oldVal, newVal });
     }
   });
- 
+  const changeSummary = changes.length
+    ? changes.map(c => `${c.fieldName}: "${c.oldVal}" -> "${c.newVal}"`).join(" | ")
+    : "No field changes (accepted as-is)";
+
+  // ── MANUAL_REVIEW: create a pending decision, do NOT apply ──
+  // options.force bypasses this gate for the explicit review-apply path
+  // (Engine.Decisions.applyPending and manual accept), where a human
+  // decision has already been made. Direct "quick accept" calls respect it.
+  if (importUpdatePolicy === "MANUAL_REVIEW" && !options.force) {
+    if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+      Engine.Decisions.addPending(ctx, {
+        ReviewID: `IMPORT_DRIFT_${parentID}`,
+        ReviewType: "IMPORT_DRIFT",
+        SourceSheet: "import",
+        SourceRow: importSheetRow,
+        SourceID: importRow[iCol("EventName")] || "",
+        ImportTitle: importRow[iCol("EventName")] || "",
+        CandidateSheet: "Parent Lineup",
+        CandidateRow: sheetRowNum,
+        CandidateID: parentID,
+        CandidateTitle: pRow[pCol("EventName")] || "",
+        ExistingParentID: parentID,
+        ParentTitle: pRow[pCol("EventName")] || "",
+        MatchedFields: "EventName",
+        ChangedFields: changes.map(c => c.fieldName).join(", ") || "(none)",
+        ChangedDetails: changeSummary,
+        Evidence: `import "${importRow[iCol("EventName")]}" vs Parent Lineup row ${sheetRowNum}`,
+        Confidence: "LOW",
+        SuggestedAction: "ACCEPT_IMPORT",
+        SuggestionReason: `ImportUpdatePolicy is MANUAL_REVIEW. ${changeSummary}`,
+        SuggestedKeepID: parentID,
+        CandidateIDs: parentID,
+        KeepChoice: "KEEP_EXISTING",
+        RequestedAction: "ACCEPT_IMPORT",
+        Decision: "PENDING",
+        ActionStatus: "PENDING"
+      });
+    }
+    Engine.Log.write(ctx, {
+      stage: "INGEST",
+      sheetName: "Parent Lineup",
+      rowIdx: sheetRowNum,
+      id: parentID,
+      type: "DRIFT_PENDING_REVIEW",
+      details: changeSummary
+    });
+    return false;
+  }
+
+  // ── AUTO_UPDATE / AUTO_UPDATE_AND_LOG: apply the changes ──
+  changes.forEach(c => {
+    pSheet.getRange(sheetRowNum, pCol(c.fieldName) + 1).setValue(c.newVal);
+  });
+
   const now = new Date();
   const lastUpdatedCol = pCol("LastUpdated");
   const updateDetailsCol = pCol("UpdateDetails");
   const syncStatusCol = pCol("SyncStatus");
   if (lastUpdatedCol >= 0) pSheet.getRange(sheetRowNum, lastUpdatedCol + 1).setValue(now);
-  if (updateDetailsCol >= 0) pSheet.getRange(sheetRowNum, updateDetailsCol + 1).setValue(changes.join(" | ") || "No field changes (accepted as-is)");
+  if (updateDetailsCol >= 0) pSheet.getRange(sheetRowNum, updateDetailsCol + 1).setValue(changeSummary);
   if (syncStatusCol >= 0) pSheet.getRange(sheetRowNum, syncStatusCol + 1).setValue("Active");
- //fix this
-  if (importUpdatePolicy === "AUTO_UPDATE_AND_LOG" || (importUpdate...
-  );
-   Engine.Log.write(ctx, {
+
+  // Per-field log entries for AUTO_UPDATE_AND_LOG
+  if (importUpdatePolicy === "AUTO_UPDATE_AND_LOG") {
+    changes.forEach(c => {
+      Engine.Log.write(ctx, {
+        stage: "INGEST",
+        sheetName: "Parent Lineup",
+        rowIdx: sheetRowNum,
+        id: parentID,
+        type: "DRIFT_FIELD_UPDATE",
+        details: `${c.fieldName}: "${c.oldVal}" -> "${c.newVal}"`
+      });
+    });
+  }
+
+  Engine.Log.write(ctx, {
     stage: "INGEST",
     sheetName: "Parent Lineup",
     rowIdx: sheetRowNum,
     id: parentID,
     type: "DRIFT_ACCEPTED",
-    details: changes.length ? changes.join(" | ") : "Drift accepted with no field changes."
+    details: changeSummary
   });
   return true;
 };
