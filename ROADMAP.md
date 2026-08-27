@@ -1,7 +1,7 @@
 # Scheduler Roadmap and Decisions
 
 ## Immediate Priorities
---UPDATE WHEN COMPLETE
+<!-- UPDATE WHEN COMPLETE. KEEP THIS SECTION FOR REFERENCE BUT COPY COMPLETED ITEMS TO COMPLETED GOALS !-->
 1. Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.
 2. Update `refreshLinks()` to generate universal hyperlinks for all review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`).
 3. Add `idLog` `Merged IDs` alias logging and cascading `parentID` updates in `Lineup` for "Keep New" merges.
@@ -26,11 +26,30 @@
 22. Review engine organization/topography
 23. Integrate github issues
 
+## Revised Priorities / To Do
+1. **Row/Event Snapshot Compression:** Create/revise a helper to compress whole rows/events into a single portable "snapshot" string/cell (and parse back to row). Useful for storing pre-merge/pre-deletion state in `Audit_Log` or `idLog`.
+2. **Metadata & Status Normalization:** Perform a normalization pass across `Status`, `ref`, `Mode_Config`, behavior values, decisions, and requested actions.
+3. **Decision Evidence & Context:** Add richer before/after diff evidence and direct links to decision records.
+4. **Placeholder Title Matching:** Improve import -> Parent Lineup matching so placeholder titles can evolve to real titles without losing `parentID` continuity.
+5. **Read-Only Duplicate Reporting:** Provide explicit duplicate candidate reporting with human keeper selection before applying merges.
+6. **Hardened Decision Processing:** Validate recorded row state and IDs strictly before applying queued actions.
+7. **Downstream Relationship Reconciliation:** Reconcile Parent Lineup -> Lineup -> Crew Calendar relationships.
+8. **Venue Calendar Association Semantics:** Ensure `Venue_Cal_Log` consistently maps `EventID` to the venue event and `UUID` to the associated Lineup/Crew row.
+9. **Operation Mode Enforcement:** Implement explicit pull-only, push-only, reconcile-only, and two-way sync operation modes.
+10. **Granular Calendar Property Patching:** Adapt property-level calendar patching from `gcalendarsync` for title, time, location, and description.
+11. **Developer Overrides Menu:** Finalize confirmed Developer Overrides for destructive resets and reinitializations.
+12. **Automated Role Swapping Script:** Build an automated Season Promotion script to swap roles in `Sheet_Settings`.
+13. **Custom Sync Scoping:** Allow filtering sync runs by date range, venue, or specific context (see [UI-Design.md](UI-Design.md)).
+14. **Detailed Reporting Mode:** Develop a "log-only" verification pass for auditing without mutation.
+15. **Detailed Entity Inspection UI:** Implement popup/sidebar for rapid entity attribute inspection.
+16. **Deprecation Cleanup:** Move obsolete functions to `scriptLib/Deprecated`.
+17. **Engine Topography & Organization:** Review file organization and modular boundaries.
+18. **GitHub Issues Integration:** Integrate workflow with GitHub issues.
+
 ## Decision Vocabulary
---does this belong here or in ARCHITECTURE?
+*Structural definitions are governed in [ARCHITECTURE.md](ARCHITECTURE.md); live enumerations reside in `ref` metadata sheet.*
 
 `Decision` is the user's conclusion:
- - See ref.csv for live list
 - `PENDING`
 - `ACCEPT`
 - `CONFIRMED_DUPLICATE`
@@ -39,7 +58,6 @@
 - `REJECTED`
 
 `RequestedAction` is the engine operation:
-- See ref.csv for live list
 - `ACCEPT_IMPORT`
 - `MERGE_PARENT`
 - `ADOPT_VENUE_EVENT`
@@ -52,7 +70,6 @@
 - `REFRESH_DOWNSTREAM`
 
 `ActionStatus` is execution state:
-
 - `PENDING`
 - `APPLIED`
 - `FAILED`
@@ -61,10 +78,9 @@
 Do not use `Options` or `SyncStatus` as decision commands.
 
 ## Status Vocabulary
---does this belong here or in ARCHITECTURE?
-- See status.csv for live list
-Normal:
+*Structural definitions are governed in [ARCHITECTURE.md](ARCHITECTURE.md); live lists reside in `Status` metadata sheet.*
 
+**Normal:**
 - `Active`
 - `Synced`
 - `Pushed to Calendar`
@@ -72,8 +88,7 @@ Normal:
 - `Calendar Log Updated`
 - `Field AutoUpdated`
 
-Review:
-
+**Review:**
 - `Manual Review`
 - `Possible Duplicate`
 - `Date Span - Manual Review`
@@ -83,22 +98,18 @@ Review:
 - `Ghost Event`
 - `Recovered`
 
-Blocked:
-
+**Blocked:**
 - `Bypassed`
 - `Location Conflict`
 - `To Delete on calendar`
 - `Delete Pending`
 
-Terminal/history:
-
+**Terminal / History:**
 - `Deleted by Calendar`
 - `Merged`
 - `Rejected`
 
 ## Planned Review Types
---does this belong here or in ARCHITECTURE?
-
 - `IMPORT_PARENT`
 - `PARENT_LINEUP`
 - `LINEUP_CREW`
@@ -132,7 +143,6 @@ Terminal/history:
 --UPDATE THIS WHEN WE RECOVER 
 
 Use the deprecated scriptLib sources as references to rebuild, inside `Engine.*` first:
-
 - generalized drift reconciliation;
 - fingerprint matching;
 - fuzzy time/space matching;
@@ -142,4 +152,14 @@ Use the deprecated scriptLib sources as references to rebuild, inside `Engine.*`
 Promote code into `scriptLib` only after it is stable and reused outside scheduler3.
 
 ## Completed Goals
+
+- **Role-Based Sheet Decoupling:** Implemented `getSheetByRole(role)` and `ctx.getRole()` to decouple script execution from hardcoded sheet tab names, enabling zero-copy season promotion via `Sheet_Settings`.
+- **Universal Hyperlinking:** Updated `refreshLinks()` to generate rich-text clickable links across all review categories (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`).
+- **Decision Queue Lifecycle:** Implemented immediate queue deletion for applied decisions, retention of `SUPERSEDED` rows for audit trail, and bulk archiving via `archiveSupersededDecisions()`.
+- **Parent Lineup Status Overrides:** Built engine handling for user flags in Parent Lineup:
+  - `Bypassed`: completely ignored in drift/duplicate runs.
+  - `Delete Pending`: cleanly removed during `goParent` with downstream audit records.
+  - `Possible Duplicate`: triggers targeted duplicate and drift verification.
+- **Cascading Merge Repointing:** Implemented `mergeParentDuplicate()` to cascade surviving `parentID` keys across child sheets (`Lineup`, `Crew_Calendar_Log`, etc.) and log merged aliases into `idLog`.
+- **Import Drift Policy Engine:** Integrated `ImportUpdatePolicy` (`MANUAL_REVIEW`, `AUTO_UPDATE`, `AUTO_UPDATE_AND_LOG`) to regulate automated field updates vs queuing manual review decisions.
 

@@ -17,7 +17,14 @@
 - `Scheduler`: the short production pipeline.
 - `Developer Overrides`: reserved for destructive reset/reinitialize operations with confirmation.
 
-## Event Manager Menu Structure
+### 1. `📅 Scheduler` Menu (Production Pipeline)
+- `1. Ingest Season` (`goParent`): CRUD `PARENTCURRENT` / `PARENTDRAFT` based on `IMPORTCURRENT` / `IMPORTDRAFT`.
+- `2. Explode Dates` (`goLineup`): Parse `DatesAndTimes` to split Parent Events into individual show instances in `LINEUPCURRENT` / `LINEUPDRAFT`.
+- `3. Sync Lineup to Crew Log` (`goCrewLog`): CRUD `Crew_Calendar_Log` / `Draft_Season_Log` based on Lineup.
+- `4. Sync Calendars` (`goSync`): Apply reviewed decisions, then execute calendar sync pipeline.
+- `Verify import vs Parent Lineup` (`goVerifyImportToParent`): Drift and duplicate detection between Import and Parent Lineup.
+- `Verify Parent Lineup vs Lineup` (`goVerifyParentToLineup`): Date and venue verification between Parent Lineup and Lineup.
+- `View Audit Log` (`openAuditLog`): Jump directly to the historical `Audit_Log` sheet.
 
 The primary user interface is organized under the **Event Manager** menu:
 
@@ -25,6 +32,13 @@ The primary user interface is organized under the **Event Manager** menu:
 - `goParent`: CRUD `PARENTCURRENT` / `PARENTDRAFT` based on `IMPORTCURRENT` / `IMPORTDRAFT`
 - `goLineup`: parseDatesAndTimes to split Parent Events into individual show times
 - `goCrewLog`: CRUD `Crew_Calendar_Log` / `Draft_Season_Log` based on `LINEUPCURRENT` / `LINEUPDRAFT`
+
+### Planned Event Manager UI (Future Dialog / Sidebar)
+As detailed in [UI-Design.md](UI-Design.md), a future consolidated **Event Manager** custom sidebar/dialog will provide:
+- **Custom Sync Scoping:** UI controls to select specific date ranges, venues, or sheet roles.
+- **Detailed Reporting Mode:** Log-only verification runs presented in an interactive summary modal.
+- **Detailed Entity Inspection:** One-click popup inspecting full registry attributes for any row or ID.
+- **Interactive Conflict Resolution:** Modal choices for location or timing conflicts.
 
 ### Sync
 - `goSync(context)`: Execute sync based on provided context.

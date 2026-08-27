@@ -1,3 +1,29 @@
+var Engine = Engine || {};
+Engine.IO = Engine.IO || {};
+
+/**
+ * Serializes a row object into a JSON string for snapshotting/auditing.
+ */
+Engine.IO.serializeRow = function(obj) {
+  if (!obj || typeof obj !== "object") return "";
+  // Remove internal properties like _rowNum before serializing
+  const { _rowNum, ...serializable } = obj;
+  return JSON.stringify(serializable);
+};
+
+/**
+ * Deserializes a JSON string back into a row object.
+ */
+Engine.IO.deserializeRow = function(jsonString, rowNum) {
+  if (!jsonString) return null;
+  try {
+    const obj = JSON.parse(jsonString);
+    return rowNum !== undefined ? { ...obj, _rowNum: rowNum } : obj;
+  } catch (e) {
+    return null;
+  }
+};
+
 /**
  * Converts a sheet into an array of objects based on the Map_Registry
  */
@@ -33,7 +59,6 @@ function batchWrite(role, dataObjects, ctx) {
     return;
   }
 
-  // FIX: Extract the .index property from the map objects to find the max index
   const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field));
   const lastCol = Math.max(...indices) + 1;
   const generateIdentity = (dataObj) => {
@@ -44,29 +69,11 @@ function batchWrite(role, dataObjects, ctx) {
       venue: dataObj.Location || dataObj.Venue
     };
 
-  const identityModule = Engine.getLibraryModule("Identity");
+    const identityModule = Engine.getLibraryModule("Identity");
     if (identityModule && typeof identityModule.generate === "function") {
       return identityModule.generate(identityInput);
     }
     return null;
-  };
-  
-  /**
-   * Serializes a row object into a JSON string for snapshotting/auditing.
-   */
-  Engine.IO.serializeRow = function(obj) {
-    // Remove internal properties like _rowNum before serializing
-    const { _rowNum, ...serializable } = obj;
-    return JSON.stringify(serializable);
-  };
-
-  /**
-   * Deserializes a JSON string back into a row object.
-   */
-  Engine.IO.deserializeRow = function(jsonString, rowNum) { //rowNum or "identifier"
-    if (!jsonString) return null;
-    const obj = JSON.parse(jsonString);
-    return { ...obj, _rowNum: rowNum };
   };
 
   const output = dataObjects.map(obj => {

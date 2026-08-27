@@ -105,6 +105,31 @@ var Engine = {
       return Engine.getColumnIndex(this.getMap(identifier), fieldName);
     };
 
+    /**
+     * Gets the sync behavior for a specific field on a Role/Sheet
+     * Usage: const behavior = ctx.getSyncBehavior('import', 'EventName');
+     */
+    ctx.getSyncBehavior = function(identifier, fieldName) {
+      return Engine.getSyncBehavior(this, identifier, fieldName);
+    };
+
+    /**
+     * Gets the display name for a specific field on a Role/Sheet
+     * Usage: const label = ctx.getDisplayName('Parent Lineup', 'EventName');
+     */
+    ctx.getDisplayName = function(identifier, fieldName) {
+      return Engine.getDisplayName(this, identifier, fieldName);
+    };
+
+    /**
+     * Gets the complete column definition metadata for a specific field on a Role/Sheet
+     * Usage: const colDef = ctx.getColumnDef('Parent Lineup', 'EventName');
+     */
+    ctx.getColumnDef = function(identifier, fieldName) {
+      const sheetDef = this.sheetDefs[identifier] || this.schema[identifier];
+      return (sheetDef && sheetDef.columns && sheetDef.columns[fieldName]) || null;
+    };
+
     return ctx;
   },
 
@@ -115,6 +140,70 @@ var Engine = {
     const rawIndex = typeof fieldDef === "object" ? fieldDef.index : fieldDef;
     const columnIndex = Number(rawIndex);
     return Number.isInteger(columnIndex) && columnIndex >= 0 ? columnIndex : -1;
+  },
+
+  getSyncBehavior: function(target, sheetOrField, maybeField) {
+    if (!target) return "";
+    // Form 1: Engine.getSyncBehavior(ctx, sheetNameOrRole, fieldName)
+    if (target.sheetDefs || target.schema) {
+      const sheetName = sheetOrField;
+      const fieldName = maybeField;
+      const sheetDef = target.sheetDefs?.[sheetName] || target.schema?.[sheetName];
+      if (sheetDef && sheetDef.columns && sheetDef.columns[fieldName]) {
+        return sheetDef.columns[fieldName].syncBehavior || "";
+      }
+      return "";
+    }
+    // Form 2: Engine.getSyncBehavior(sheetDef, fieldName)
+    if (target.columns) {
+      const fieldName = sheetOrField;
+      if (target.columns[fieldName]) {
+        return target.columns[fieldName].syncBehavior || "";
+      }
+      return "";
+    }
+    // Form 3: Engine.getSyncBehavior(legacyMap, fieldName)
+    if (typeof target === "object") {
+      const fieldName = sheetOrField;
+      const fieldDef = target[fieldName];
+      if (fieldDef && typeof fieldDef === "object" && fieldDef.syncBehavior) {
+        return fieldDef.syncBehavior;
+      }
+      return "";
+    }
+    return "";
+  },
+
+  getDisplayName: function(target, sheetOrField, maybeField) {
+    if (!target) return maybeField || sheetOrField || "";
+    // Form 1: Engine.getDisplayName(ctx, sheetNameOrRole, fieldName)
+    if (target.sheetDefs || target.schema) {
+      const sheetName = sheetOrField;
+      const fieldName = maybeField;
+      const sheetDef = target.sheetDefs?.[sheetName] || target.schema?.[sheetName];
+      if (sheetDef && sheetDef.columns && sheetDef.columns[fieldName]) {
+        return sheetDef.columns[fieldName].displayName || fieldName;
+      }
+      return fieldName;
+    }
+    // Form 2: Engine.getDisplayName(sheetDef, fieldName)
+    if (target.columns) {
+      const fieldName = sheetOrField;
+      if (target.columns[fieldName]) {
+        return target.columns[fieldName].displayName || fieldName;
+      }
+      return fieldName;
+    }
+    // Form 3: Engine.getDisplayName(legacyMap, fieldName)
+    if (typeof target === "object") {
+      const fieldName = sheetOrField;
+      const fieldDef = target[fieldName];
+      if (fieldDef && typeof fieldDef === "object" && fieldDef.displayName) {
+        return fieldDef.displayName;
+      }
+      return fieldName;
+    }
+    return maybeField || sheetOrField || "";
   },
 
   makeSheetRowLink: function(ctx, sheetName, rowNumber, label) {
@@ -415,47 +504,38 @@ var Engine = {
         role: role,
         sheet: actualSheet,
         settings: { idKey: row[1], behavior: row[2], syncMode: row[3], isProtected: row[4] === "Yes" },
-        map: {}
+        map: {},
+        columns: {}
       };
 
-mapData.filter(m => m[0] === sheetName).forEach(m => {
-  const fieldName = m[1];
-  const colIndex = Number(m[2]);
-  const displayName = String(m[4] || "").trim() || fieldName;
-  const syncBehavior = String(m[6] || "").trim();
-  if (fieldName && !isNaN(colIndex)) {
-    // Flatten the map: map[fieldName] is now just the index
-    sheetConfig.map[fieldName] = colIndex;
-    
-    // Store metadata in the sheetConfig object (which is used by sheetDefs/schema)
-    if (!sheetConfig.columns) sheetelseConfig.columns = {};
-    sheetConfig.columns[fieldName] = {
-      displayName: displayName,
-      syncBehavior: syncBehavior
-    };
-  }
-});
- 
-//ACCESSORS
-
-Engine.getSyncBehavior = function(ctx, sheetName, fieldName) {
-  const sheetDef = ctx.sheetDefs[sheetName] || ctx.schema[sheetName];
-  if (!sheetDef || !sheetDef.columns || !sheetDef.columns[fieldName]) return "";
-  return sheetDef.columns[fieldName].syncBehavior || "";
-};
-
-Engine.getDisplayName = function(ctx, sheetName, fieldName) {
-  const sheetDef = ctx.sheetDefs[sheetName] || ctx.schema[sheetName];
-  if (!sheetDef || !sheetDef.columns || !sheetDefDef.columns[fieldName]) return fieldName;
-  return sheetDef.columns[fieldName].displayName || fieldName;
-};
-
+      mapData.filter(m => m[0] === sheetName).forEach(m => {
+        const fieldName = String(m[1] || "").trim();
+        const colIndex = Number(m[2]);
+        const notes = String(m[3] || "").trim();
+        const displayName = String(m[4] || "").trim() || fieldName;
+        const dataType = String(m[5] || "").trim();
+        const syncBehavior = String(m[6] || "").trim();
+        if (fieldName && !isNaN(colIndex)) {
+          // Flatten the map: map[fieldName] is now just the integer index
+          sheetConfig.map[fieldName] = colIndex;
+          
+          // Store metadata in the sheetConfig object (used by sheetDefs/schema)
+          sheetConfig.columns[fieldName] = {
+            index: colIndex,
+            notes: notes,
+            displayName: displayName,
+            dataType: dataType,
+            syncBehavior: syncBehavior
+          };
+        }
+      });
 
       ctx.sheetDefs[sheetName] = sheetConfig;
       ctx.schema[sheetName] = sheetConfig;
       ctx.maps[sheetName] = sheetConfig.map;
 
       if (role) {
+        ctx.sheetDefs[role] = sheetConfig;
         ctx.schema[role] = sheetConfig;
         ctx.maps[role] = sheetConfig.map;
         if (actualSheet) ctx.sheets[role] = actualSheet;
@@ -463,9 +543,10 @@ Engine.getDisplayName = function(ctx, sheetName, fieldName) {
     });
   },
 
-  buildLegacyMapAliases: function(ctx) { //what is this for?
+  buildLegacyMapAliases: function(ctx) {
     ctx.maps = ctx.maps || {};
     ctx.schema = ctx.schema || {};
+    ctx.sheetDefs = ctx.sheetDefs || {};
 
     Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
       const sheetDef = ctx.sheetDefs[sheetName];
@@ -476,6 +557,7 @@ Engine.getDisplayName = function(ctx, sheetName, fieldName) {
       if (sheetDef && sheetDef.role) {
         ctx.maps[sheetDef.role] = map;
         ctx.schema[sheetDef.role] = sheetDef;
+        ctx.sheetDefs[sheetDef.role] = sheetDef;
       }
     });
   },

@@ -21,3 +21,8 @@ This document tracks all user interface, user experience, and interaction-relate
 
 - **Hyperlink-Driven Navigation:** Use `refreshLinks()` to ensure all reviewable items in `decision_log` are easily navigable via direct links to their source/candidate rows.
 - **Contextual Clarity:** Ensure all UI-driven decisions or actions are accompanied by enough context (e.g., "before/after" evidence) to allow for confident user interaction.
+
+## Related Documents
+- [OPERATIONS.md](OPERATIONS.md): Operational procedures, menu structures, and manual review actions.
+- [ROADMAP.md](ROADMAP.md): Active priorities, decisions made, and completed milestones.
+- [ARCHITECTURE.md](ARCHITECTURE.md): Core runtime contracts, layer models, and identity chains.

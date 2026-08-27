@@ -7,6 +7,7 @@ This file is the entrypoint for scheduler project documentation. The older monol
 - [ARCHITECTURE.md](ARCHITECTURE.md): runtime boundaries, metadata contracts, identity relationships, statuses, behaviors, decisions, and data direction.
 - [OPERATIONS.md](OPERATIONS.md): menu organization, verification workflow, header operations, decision handling, calendar controls, and recovery instructions.
 - [ROADMAP.md](ROADMAP.md): priorities, canonical vocabularies, planned review types, decisions made, and deferred recovery work.
+- [UI-Design.md](UI-Design.md): UX/UI interaction ideas, modal inspection popups, custom sync scoping, and frontend design.
 
 ## Related Documentation
 
@@ -18,6 +19,7 @@ This file is the entrypoint for scheduler project documentation. The older monol
 
 - Architecture decisions belong in `ARCHITECTURE.md`.
 - User-facing procedures belong in `OPERATIONS.md`.
+- Notes related to future User-Interface goals belong in 'UI-Design.md'.
 - Priorities, open decisions, and deferred work belong in `ROADMAP.md`.
 - Code comments should explain local implementation details, not become a second roadmap.
 - Update the relevant focused document when a behavior or schema changes.

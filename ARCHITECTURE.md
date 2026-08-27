@@ -9,7 +9,7 @@
 - **Context Object (`ctx`):** Initialized once per execution by `engine_core.buildContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
 
 ## Metadata Sources
-metadata lives in various tabs (see Sheet_data folder for current csv)
+Metadata lives in spreadsheet tabs (referenced in `scriptLib/Sheet_data/` export CSVs):
 - `ref`: controlled enumerations for roles, behaviors, actions, decisions, log types, and sheet behavior.
 - `ControlPanel`: user settings and system summary values.
 - `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, and span policy.
@@ -24,13 +24,36 @@ metadata lives in various tabs (see Sheet_data folder for current csv)
 
 Code references stable `Field Name` values. Physical headers use `Header DisplayName`. Their association is the registry row and `Column Index`.
 
-Runtime maps use:
+Runtime operational maps are flat dictionaries mapping `FieldName` directly to integer 0-based `Column Index`:
  
 ```javascript
-{ FieldName: { index: 7, displayName: "Human Label", syncBehavior: "System-Managed" } }
+// ctx.maps[sheetName] or ctx.getMap(roleOrSheet)
+{ EventName: 0, DatesAndTimes: 1, Venue: 2 }
 ```
 
-All range access must convert through `Engine.getColumnIndex(map, fieldName)`. Invalid fields return `-1`.
+Secondary metadata (display names, sync behavior, data types, notes) is maintained in `sheetConfig.columns` under `ctx.sheetDefs`:
+
+```javascript
+// ctx.sheetDefs[sheetName].columns[fieldName]
+{
+  index: 0,
+  displayName: "Event Name",
+  syncBehavior: "Source (Read-Only)",
+  dataType: "String",
+  notes: ""
+}
+```
+
+Range access and column indexing convert through:
+- `ctx.getCol(roleOrSheet, fieldName)` (preferred in engine methods)
+- `Engine.getColumnIndex(map, fieldName)`
+- Direct flat map access: `row[map.FieldName]` or `row[map[fieldName]]`
+
+Metadata access converts through:
+- `ctx.getSyncBehavior(roleOrSheet, fieldName)` / `Engine.getSyncBehavior(ctx, roleOrSheet, fieldName)`
+- `ctx.getDisplayName(roleOrSheet, fieldName)` / `Engine.getDisplayName(ctx, roleOrSheet, fieldName)`
+- `ctx.getColumnDef(roleOrSheet, fieldName)`
+
 
 ## Layered Data Architecture
 
@@ -65,14 +88,43 @@ All engine functions decouple script logic from static tab names by fetching wor
 
 ## Identity Chain & `idLog` Alias Table
 
+```mermaid
+flowchart TD
+    subgraph Intake["1. Raw Intake Layer (Read-Only)"]
+        import["import / draft_import<br/>(Key: Fingerprint)"]
+    end
 
-import (raw IMPORTRANGE source)
-  -> Parent Lineup (parentID)
-  -> Lineup (UUID per performance)
-  -> Crew_Calendar_Log (UUID + EventID)
-  -> Draft calendar (EventID)
-  -> Venue_Cal_Log (EventID + associated UUID)
-  -> idLog (UniqueID registry + Merged IDs alias table)
+    subgraph Catalog["2. Master Catalog Layer"]
+        parent["Parent Lineup / draft_Parent<br/>(Key: parentID)"]
+    end
+
+    subgraph Execution["3. Execution Layer"]
+        lineup["Lineup / draft_Lineup<br/>(Key: UUID per performance)"]
+        crew["Crew_Calendar_Log<br/>(Key: UUID + EventID)"]
+        venue["Venue_Cal_Log<br/>(Key: EventID + associated UUID)"]
+        cal["Google Calendar<br/>(Key: EventID)"]
+    end
+
+    subgraph Governance["4. Governance & Audit Layer"]
+        decisions["decision_log<br/>(Active Review Queue)"]
+        audit["Audit_Log<br/>(Historical Log)"]
+        idlog["idLog<br/>(UniqueID Registry & Merged IDs)"]
+    end
+
+    import -- "Ingest Season (goParent)" --> parent
+    parent -- "Explode Dates (goLineup)" --> lineup
+    lineup -- "Sync Lineup (goCrewLog)" --> crew
+    crew <-->|"Sync (goSync)"| cal
+    venue <-->|"Sync (goSync)"| cal
+    
+    import -. "Drift / Duplicates" .-> decisions
+    parent -. "Drift / Duplicates" .-> decisions
+    decisions -- "Approved Decisions (Apply)" --> parent
+    decisions -- "Applied / Superseded" --> audit
+    parent -. "Register / Merges" .-> idlog
+    lineup -. "Register UUIDs" .-> idlog
+```
+
 `import` is read-only because it is supplied by `IMPORTRANGE`. Its row number is not a permanent identity. Parent identity matching must use content/source evidence and preserve an existing `parentID` when continuity is established.
 
 `UniqueID` remains the mixed-form `idLog` key. Its interpretation comes from `RecordType`, source sheet, and location.

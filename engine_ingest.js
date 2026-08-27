@@ -26,18 +26,20 @@ function goParent() {
   iData.shift();
   pData.shift();
  
-  const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
-  const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
+  const iCol = fieldName => ctx.getCol("import", fieldName);
+  const pCol = fieldName => ctx.getCol("Parent Lineup", fieldName);
   const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pMap[fieldName]).filter(index => index >= 0)) + 1;
   // Source fields mirror import. System fields are maintained by this
   // operation so every successful import pass has a visible audit state.
-  const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
+  const sourceFields = Engine.Ingest.getParentSourceFields(ctx, iMap, pMap);
 
-  // ── "Delete Pending" pre-pass ──
-  // User-marked deletions are applied as part of the ingest pass (documented
-  // in OPERATIONS.md). Deleted bottom-up so row numbers stay valid, and each
-  // pending decision referencing that parentID is superseded with an audit
-  // entry before the row is removed.
+  /* ── "Delete Pending" pre-pass ──
+  * User-marked deletions are applied as part of the ingest pass (documented
+  * in OPERATIONS.md). Deleted bottom-up so row numbers stay valid, and each
+  * pending decision referencing that parentID is superseded with an audit
+  * entry before the row is removed.
+  */
+  
   let deletedPending = 0;
   if (pCol("SyncStatus") >= 0) {
     const allRows = pSheet.getDataRange().getValues();
@@ -169,14 +171,33 @@ function goParent() {
 
 Engine.Ingest = Engine.Ingest || {};
 
-Engine.Ingest.getParentSourceFields = function(iMap, pMap) {
+Engine.Ingest.getParentSourceFields = function(ctxOrIMap, maybeIMapOrPMap, maybePMap) {
+  let ctx = null;
+  let iMap = null;
+  let pMap = null;
+
+  if (maybePMap !== undefined) {
+    ctx = ctxOrIMap;
+    iMap = maybeIMapOrPMap;
+    pMap = maybePMap;
+  } else if (ctxOrIMap && (ctxOrIMap.sheetDefs || ctxOrIMap.schema)) {
+    ctx = ctxOrIMap;
+    iMap = maybeIMapOrPMap || ctx.getMap("import") || ctx.getMap("IMPORTCURRENT");
+    pMap = ctx.getMap("Parent Lineup") || ctx.getMap("PARENTCURRENT");
+  } else {
+    iMap = ctxOrIMap;
+    pMap = maybeIMapOrPMap;
+  }
+
   const canonicalFields = [
     "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit"
   ];
-  const registrySourceFields = Object.keys(iMap || {}).filter(fieldName =>
-    Engine.getSyncBehavior(ctx, "import", fieldName) === "Source (Read-Only)" &&
-    Engine.getColumnIndex(pMap, fieldName) >= 0
-  );
+  const registrySourceFields = Object.keys(iMap || {}).filter(fieldName => {
+    const behavior = ctx
+      ? Engine.getSyncBehavior(ctx, "import", fieldName)
+      : (typeof (iMap[fieldName]) === "object" ? iMap[fieldName].syncBehavior : "");
+    return behavior === "Source (Read-Only)" && Engine.getColumnIndex(pMap, fieldName) >= 0;
+  });
   if (registrySourceFields.length) return registrySourceFields;
 
   return canonicalFields.filter(fieldName =>
@@ -1537,7 +1558,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   const importRow = iData[importRowIdx];
   const importSheetRow = importRowIdx + 2; // iData[0] is header, so index N is sheet row N+2
 
-  const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
+  const sourceFields = Engine.Ingest.getParentSourceFields(ctx, iMap, pMap);
   const importUpdatePolicy = (ctx.mode.importUpdatePolicy || "MANUAL_REVIEW").toUpperCase();
 
   // Read-only pass: compute which fields would change before deciding what to do.

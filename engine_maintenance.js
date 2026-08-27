@@ -32,7 +32,7 @@ Engine.Maintenance = {
 
       Object.keys(map).forEach(fieldName => {
         const columnIndex = Engine.getColumnIndex(map, fieldName);
-        const expectedDisplay = Engine.getDisplayName(map, fieldName);
+        const expectedDisplay = Engine.getDisplayName(sheetDef, fieldName);
         displayNames.add(expectedDisplay);
         if (columnIndex < 0 || headers[columnIndex] !== expectedDisplay) {
           reports.push(`⚠️ Header Mismatch in ${sheetName}: Expected "${expectedDisplay}" (field: ${fieldName}) at index ${columnIndex}, found "${headers[columnIndex] || ""}"`);
@@ -78,7 +78,7 @@ Engine.Maintenance = {
         const headerRow = [];
         Object.keys(map).forEach(fieldName => {
           const columnIndex = Engine.getColumnIndex(map, fieldName);
-          if (columnIndex >= 0) headerRow[columnIndex] = Engine.getDisplayName(map, fieldName);
+          if (columnIndex >= 0) headerRow[columnIndex] = Engine.getDisplayName(sheetDef, fieldName);
         });
         sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
         break;
@@ -134,7 +134,7 @@ Engine.Maintenance = {
       let updated = false;
       Object.keys(map).forEach(fieldName => {
         const colIdx = Engine.getColumnIndex(map, fieldName);
-        const displayName = Engine.getDisplayName(map, fieldName);
+        const displayName = Engine.getDisplayName(sheetDef, fieldName);
         if (colIdx >= 0 && headers[colIdx] !== displayName) {
           sheet.getRange(1, colIdx + 1).setValue(displayName);
           updated = true;
@@ -243,7 +243,7 @@ Engine.Maintenance = {
       for (const fieldName of Object.keys(columnMap)) {
         const colIdx = Engine.getColumnIndex(columnMap, fieldName);
         if (colIdx < 0) continue;
-        newHeaders[colIdx] = Engine.getDisplayName(columnMap, fieldName);
+        newHeaders[colIdx] = Engine.getDisplayName(sheetDef, fieldName);
       }
 
       sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
