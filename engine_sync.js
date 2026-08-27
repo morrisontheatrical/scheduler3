@@ -33,7 +33,6 @@ Engine.Sync = {
     // This builds a map of { sourceID: { SyncHash, Location } }
     ctx.registry = {};
     const regData = ctx.sheets.ID_LOG.getDataRange().getValues();
-    const regMap = ctx.maps.ID_LOG;
     const uniqueIdCol = ctx.getCol("ID_LOG", "UniqueID");
     const syncHashCol = ctx.getCol("ID_LOG", "SyncHash");
     const sheetLocationCol = ctx.getCol("ID_LOG", "SheetLocation");

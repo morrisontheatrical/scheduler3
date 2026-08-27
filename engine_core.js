@@ -424,21 +424,30 @@ mapData.filter(m => m[0] === sheetName).forEach(m => {
   const displayName = String(m[4] || "").trim() || fieldName;
   const syncBehavior = String(m[6] || "").trim();
   if (fieldName && !isNaN(colIndex)) {
-    sheetConfig.map[fieldName] = { index: colIndex, displayName: displayName, syncBehavior: syncBehavior };
+    // Flatten the map: map[fieldName] is now just the index
+    sheetConfig.map[fieldName] = colIndex;
+    
+    // Store metadata in the sheetConfig object (which is used by sheetDefs/schema)
+    if (!sheetConfig.columns) sheetelseConfig.columns = {};
+    sheetConfig.columns[fieldName] = {
+      displayName: displayName,
+      syncBehavior: syncBehavior
+    };
   }
 });
  
 //ACCESSORS
 
-Engine.getSyncBehavior = function(map, fieldName) {
-  if (!map || !map[fieldName]) return "";
-  const fieldDef = map[fieldName];
-  return (typeof fieldDef === "object" && fieldDef.syncBehavior) || "";
+Engine.getSyncBehavior = function(ctx, sheetName, fieldName) {
+  const sheetDef = ctx.sheetDefs[sheetName] || ctx.schema[sheetName];
+  if (!sheetDef || !sheetDef.columns || !sheetDef.columns[fieldName]) return "";
+  return sheetDef.columns[fieldName].syncBehavior || "";
 };
-Engine.getDisplayName = function(map, fieldName) {
-  if (!map || !map[fieldName]) return fieldName;
-  const fieldDef = map[fieldName];
-  return (typeof fieldDef === "object" && fieldDef.displayName) || fieldName;
+
+Engine.getDisplayName = function(ctx, sheetName, fieldName) {
+  const sheetDef = ctx.sheetDefs[sheetName] || ctx.schema[sheetName];
+  if (!sheetDef || !sheetDef.columns || !sheetDefDef.columns[fieldName]) return fieldName;
+  return sheetDef.columns[fieldName].displayName || fieldName;
 };
 
 

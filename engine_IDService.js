@@ -9,9 +9,8 @@ Engine.IDService = {
    */
   upsert: function(ctx, entry) {
     const sheet = ctx.sheets.ID_LOG;
-    const map = ctx.maps.ID_LOG;
     const data = sheet.getDataRange().getValues();
-    const uniqueIdCol = Engine.getColumnIndex(map, "UniqueID");
+    const uniqueIdCol = ctx.getCol("ID_LOG", "UniqueID");
     
     // Search for existing ID
     let rowIdx = -1;
@@ -25,26 +24,26 @@ Engine.IDService = {
     const now = new Date();
     if (rowIdx === -1) {
       // Create new Record
-      const indices = Object.keys(map).map(field => Engine.getColumnIndex(map, field)).filter(index => index >= 0);
+      const indices = Object.keys(ctx.maps.ID_LOG).map(field => ctx.getCol("ID_LOG", field)).filter(index => index >= 0);
       const newRow = new Array(Math.max(...indices) + 1).fill("");
-      newRow[Engine.getColumnIndex(map, "UniqueID")] = entry.id;
-      newRow[Engine.getColumnIndex(map, "RecordType")] = entry.type;
-      newRow[Engine.getColumnIndex(map, "Title")] = entry.title;
-      newRow[Engine.getColumnIndex(map, "ParentID")] = entry.parentId || "N/A";
-      newRow[Engine.getColumnIndex(map, "SyncHash")] = entry.hash || "N/A";
-      newRow[Engine.getColumnIndex(map, "SheetLocation")] = entry.location || "N/A";
-      newRow[Engine.getColumnIndex(map, "SyncStatus")] = "Active";
-      newRow[Engine.getColumnIndex(map, "Timestamp")] = now;
-      newRow[Engine.getColumnIndex(map, "LastUpdated")] = now;
-      newRow[Engine.getColumnIndex(map, "LogDetails")] = entry.details || "Initial Registration";
+      newRow[ctx.getCol("ID_LOG", "UniqueID")] = entry.id;
+      newRow[ctx.getCol("ID_LOG", "RecordType")] = entry.type;
+      newRow[ctx.getCol("ID_LOG", "Title")] = entry.title;
+      newRow[ctx.getCol("ID_LOG", "ParentID")] = entry.parentId || "N/A";
+          newRow[ctx.getCol("ID_LOG", "SyncHash")] = entry.hash || "N/A";
+      newRow[ctx.getCol("ID_LOG", "SheetLocation")] = entry.location || "N/A";
+      newRow[ctx.getCol("ID_LOG", "SyncStatus")] = "Active";
+      newRow[ctx.getCol("ID_LOG", "Timestamp")] = now;
+      newRow[ctx.getCol("ID_LOG", "LastUpdated")] = now;
+      newRow[ctx.getCol("ID_LOG", "LogDetails")] = entry.details || "Initial Registration";
       
       sheet.appendRow(newRow);
     } else {
       // Update existing record's "current" state
-      sheet.getRange(rowIdx, Engine.getColumnIndex(map, "SheetLocation") + 1).setValue(entry.location);
-      sheet.getRange(rowIdx, Engine.getColumnIndex(map, "SyncHash") + 1).setValue(entry.hash);
-      sheet.getRange(rowIdx, Engine.getColumnIndex(map, "LastUpdated") + 1).setValue(now);
-      if (entry.details) sheet.getRange(rowIdx, Engine.getColumnIndex(map, "LogDetails") + 1).setValue(entry.details);
+      sheet.getRange(rowIdx, ctx.getCol("ID_LOG", "SheetLocation") + 1).setValue(entry.location);
+      sheet.getRange(rowIdx, ctx.getCol("ID_LOG", "SyncHash") + 1).setValue(entry.hash);
+      sheet.getRange(rowIdx, ctx.getCol("ID_LOG", "LastUpdated") + 1).setValue(now);
+      if (entry.details) sheet.getRange(rowIdx, ctx.getCol("ID_LOG", "LogDetails") + 1).setValue(entry.details);
     }
   },
   /**

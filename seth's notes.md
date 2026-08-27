@@ -14,3 +14,4 @@
 - Consistent implementation of "Row Actions" across sheets
 - Spreadsheet based metadata > JSON for code? Use Serialize Data and getColumn helpers
 - Do I need to pass ctx through function parameters or can I just call it within the functions?
+    - **Decision**: Pass `ctx` as a parameter to maintain testability and transparency (avoiding hidden global state).

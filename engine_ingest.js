@@ -28,9 +28,7 @@ function goParent() {
  
   const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
-  const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pCol(fieldName)).filter(index => index >= 0)) + 1;
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
- 
+  const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pMap[fieldName]).filter(index => index >= 0)) + 1;
   // Source fields mirror import. System fields are maintained by this
   // operation so every successful import pass has a visible audit state.
   const sourceFields = Engine.Ingest.getParentSourceFields(iMap, pMap);
@@ -176,7 +174,7 @@ Engine.Ingest.getParentSourceFields = function(iMap, pMap) {
     "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit"
   ];
   const registrySourceFields = Object.keys(iMap || {}).filter(fieldName =>
-    Engine.getSyncBehavior(iMap, fieldName) === "Source (Read-Only)" &&
+    Engine.getSyncBehavior(ctx, "import", fieldName) === "Source (Read-Only)" &&
     Engine.getColumnIndex(pMap, fieldName) >= 0
   );
   if (registrySourceFields.length) return registrySourceFields;
@@ -523,7 +521,7 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   const duplicateValues = parentData[duplicateRow];
   const sourceFields = [...new Set([
     "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit",
-    ...Object.keys(parentMap).filter(fieldName => Engine.getSyncBehavior(parentMap, fieldName) === "Source (Read-Only)")
+    ...Object.keys(parentMap).filter(fieldName => Engine.getSyncBehavior(ctx, "Parent Lineup", fieldName) === "Source (Read-Only)")
   ])].filter(fieldName => Engine.getColumnIndex(parentMap, fieldName) >= 0);
   const copiedFields = [];
   sourceFields.forEach(fieldName => {
@@ -649,7 +647,7 @@ function goLineup() {
 
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
-  const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lCol(fieldName)).filter(index => index >= 0)) + 1;
+  const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lMap[fieldName]).filter(index => index >= 0)) + 1;
   const spanOverrideCol = pCol("SpanOverride");
 
   // ...rest is unchanged — everything downstream already goes through pCol/lCol

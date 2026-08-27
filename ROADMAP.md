@@ -24,6 +24,7 @@
 20. Implement UI-driven "Detailed Inspection" (popup/sidebar) for rapid entity review.
 21. Remove totally depreciated functions to scriptLib/Depreciated for reference. 
 22. Review engine organization/topography
+23. Integrate github issues
 
 ## Decision Vocabulary
 --does this belong here or in ARCHITECTURE?
