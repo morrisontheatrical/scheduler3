@@ -78,3 +78,37 @@ function test_DiagnosticDump() {
     console.error(e.stack);
   }
 }
+
+/**
+ * Diagnostic test for Status Color Provider (Issue #22)
+ */
+function test_StatusColorProvider() {
+  console.info("--- START STATUS COLOR PROVIDER TEST ---");
+  try {
+    const ctx = Engine.getContext();
+    
+    // 1. Test Engine.Status.getAllColors
+    const allColors = Engine.Status.getAllColors(ctx);
+    console.info("Registered status colors count:", Object.keys(allColors).length);
+    console.info("Status color map preview:", JSON.stringify(allColors, null, 2));
+    
+    // 2. Test Engine.Status.getColor with known status
+    const syncedColor = Engine.Status.getColor(ctx, "Synced");
+    console.info("Color for 'Synced':", syncedColor);
+    
+    // 3. Test fallback for unknown status
+    const fallbackColor = Engine.Status.getColor(ctx, "NonExistentStatus", "#custom");
+    console.info("Fallback color for 'NonExistentStatus':", fallbackColor);
+    
+    // 4. Test SL.ColorProvider bridge
+    if (typeof SL !== "undefined" && typeof SL.ColorProvider === "function") {
+      const slSynced = SL.ColorProvider("Synced", ctx);
+      console.info("SL.ColorProvider('Synced') output:", slSynced);
+    }
+    
+    console.info("--- STATUS COLOR PROVIDER TEST COMPLETE ---");
+  } catch (e) {
+    console.error("Error during test_StatusColorProvider: " + e.message);
+    console.error(e.stack);
+  }
+}

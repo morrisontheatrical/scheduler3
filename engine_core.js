@@ -582,6 +582,25 @@ var Engine = {
   },
 
   Status: {
+    getColor: function(ctx, statusName, defaultHex = "#ffffff") {
+      if (!ctx || !ctx.status) {
+        ctx = Engine.getContext();
+      }
+      const status = ctx && ctx.status && ctx.status[statusName];
+      return (status && status.hex) ? status.hex : defaultHex;
+    },
+
+    getAllColors: function(ctx) {
+      if (!ctx || !ctx.status) {
+        ctx = Engine.getContext();
+      }
+      const colors = {};
+      Object.keys((ctx && ctx.status) || {}).forEach(name => {
+        colors[name] = ctx.status[name].hex || "#ffffff";
+      });
+      return colors;
+    },
+
     getBehavior: function(ctx, statusName) {
       const status = ctx && ctx.status && ctx.status[statusName];
       return status ? Engine.parseModeList(status.behavior) : [];
@@ -738,4 +757,12 @@ Engine.Core = {
   getContext: function() {
     return Engine.getContext();
   }
+};
+
+/**
+ * Legacy compatibility bridge for scriptLib (SL) helpers.
+ */
+var SL = SL || {};
+SL.ColorProvider = function(statusName, ctx) {
+  return Engine.Status.getColor(ctx, statusName);
 };

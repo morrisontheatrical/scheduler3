@@ -319,3 +319,19 @@ function finalizeLogAndSort() {
   postToLog("SYSTEM", "Log sorted by Date and Start Time.");
 }
 
+/**
+ * Legacy compatibility wrapper for getting status hex color.
+ */
+function getStatusColor(statusName, ctx) {
+  return Engine.Status.getColor(ctx, statusName);
+}
+
+/**
+ * Legacy compatibility wrapper for applying status and formatting.
+ */
+function applyStatus(sheet, rowIdx, statusName, options = {}) {
+  const ctx = Engine.getContext();
+  const sheetName = (typeof sheet === "string") ? sheet : (sheet && sheet.getName ? sheet.getName() : "CREWCAL");
+  Engine.Status.apply(ctx, sheetName, rowIdx, statusName, options);
+}
+
