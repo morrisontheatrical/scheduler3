@@ -12,6 +12,13 @@ Source material reviewed:
 - `Show_Staffing_SP25 - Sheet1.csv` + screenshot (role-based staffing grid)
 - `Call times.md` (a Google Doc with linked-cell tables, exported to Markdown)
 - `cell-formulas.md` (the live formulas behind search/filter sheets)
+- `Scheduling 25-26.pdf` — a full export of the live workbook (all tabs:
+  `f`, `Crew_Calendar_Log`, `Thru Next Month`, `Thru Next Q`, `linFilter`,
+  `Piano Tuning`, `Lineup`, `Lineup2`, `Condensed Lineup`, `Calls`,
+  `CallsFilter`, `Filtered Calls Only`, `Biweekly Calls Only`,
+  `Master Biweekly Call Times`, `Event Card`, `Schedule Searchv2`, `sync`).
+  This confirmed several things §1's first pass could only infer from
+  formulas alone — see the callouts marked **(confirmed by PDF)** below.
 
 No code from those formulas is reusable as-is (it's spreadsheet-native
 FILTER/REGEXMATCH/SORT, not Apps Script), but the **behavior** each formula
@@ -39,6 +46,26 @@ Google Calendar resource names like `"166-1-Black box (100)"` → friendly
 names like `"Theatre 166"`). This normalized, tagged, unioned feed is what
 every other search/filter sheet in the workbook actually queried.
 
+**(confirmed by PDF)** The live `f` tab has columns `Event Name, Date,
+Time, Type, Description, Venue, End Time, Source, Remove from Filter,
+Event ID` — and rows tagged `PerfCalendars` already carry normalized venue
+names (`Main Stage`, `Theatre 166`, `Ballroom`, ...) plus a real Google
+Calendar `Event ID`. That answers the open question from the first pass
+of this doc: **`PerformanceSpaces` is your venue calendar pull** — the
+direct ancestor of `VENUECAL` / `Venue_Cal_Log`, not a fourth,
+unaccounted-for source. `Engine.Search.buildFeed` in §2.1 can treat it as
+such with no gap to fill.
+
+The `Remove from Filter` column is the row-level exclusion flag
+referenced as `L:L<>True` in the search/report formulas. It's a *data*
+flag (hide this specific row from search), distinct from the `isHidden`
+*column*-visibility idea already in `seth's notes.md` — worth keeping
+those two concepts separate when you build them. In the current engine
+this one doesn't need new plumbing at all: it's functionally the same
+thing `Bypassed`/behavior-based status filtering already does in
+`Engine.Status.blocksWrite`, so `Engine.Search.query` can just skip rows
+whose status behavior includes `BYPASS`, the same way sync does.
+
 ### 1.2 `ScheduleSearchv2` — faceted live search
 A single `FILTER()` over `f` with independently-optional criteria:
 - date range toggle (rolling "today → next month" **or** exact date match)
@@ -56,6 +83,31 @@ filters" search — not tied to one report.
 Given an event title in a cell, pull every associated Calls row. This is
 the "click an ID, see everything about it" pattern already on your radar —
 `UI-Design.md` calls it out directly as **Detailed Inspection Popup**.
+
+**(confirmed by PDF, and bigger than I first thought)** The live `Event
+Card` tab isn't just the one `FILTER`. It has individual fields — `Title`,
+`Guests`, `Start time`, `End time`, `Location`, `Description` — plus an
+`Event Schedule` section, and **two buttons wired to real Apps Script**:
+- *"Press to recall row info from lineup"*
+- *"Press to pull the next (15 days)? from lineup (to then be able to
+  edit)"*
+
+The same two buttons/captions also appear on the `Calls` tab. So this
+wasn't a pure-formula system after all — there was already a thin script
+layer doing two things formulas can't: (1) populating the Event Card's
+individual fields from a selected row (a "load this record" action,
+distinct from `FILTER`'s live array), and (2) pulling a rolling 15-day
+window of upcoming Lineup events into an **editable** staging area —
+presumably so calls could be drafted/adjusted before being finalized,
+without those edits fighting a live formula. That second one is a real,
+previously-undocumented feature: a manual "snapshot the next N days for
+editing" action, separate from anything in my first pass of this doc.
+**I don't have the actual script source for these two buttons** — only
+their button captions, from the PDF. If you still have that script
+(check the old Apps Script project attached to this legacy sheet, or
+`Tools > Script editor` if the legacy sheet is still reachable), it's
+worth pulling — it'll tell me exactly what "row info" and "editable pull"
+meant, instead of me inferring it from a button label.
 
 ### 1.4 Windowed/flagged reports
 Several near-duplicate formulas (`Calls Filter`, `Master biweekly call
@@ -93,7 +145,34 @@ tech rider), and some rows link to a Drive folder of related documents.
 This is a **letterhead-formatted, printable schedule** — the audience is
 the venue's House Managers and outside stakeholders, not just crew.
 
-### 1.7 `Show_Staffing_SP25` — role assignment grid
+### 1.7 `sync` — the actual calendar-write staging sheet, and a data lineage note
+
+**(new from PDF)** There's a `sync` tab with generic `Column 1`...`Column
+7` headers, holding what looks like the same shape of data as `f`. Cross-
+referencing this against `Crew_Calendar_Log.Source` values — which are
+`"Sheet 8"`, `"Calls"`, or `"Lineup"` — `sync` is almost certainly the
+renamed/former `"Sheet 8"`: a staging table that got pushed to the actual
+Crew Calendar. That's useful **lineage** context even though it's not a
+feature to rebuild on its own — it confirms the three-source tagging
+pattern (`Lineup` / `Calls` / venue-or-staging) survived all the way to
+the final synced log, and your current `Crew_Calendar_Log.Source` field
+is a direct continuation of that same idea. No action needed here beyond
+noting it, in case old `Source="Sheet 8"` values ever show up during a
+historical data import and need explaining.
+
+### 1.8 `Schedule Searchv2` — the search UI was a plain sheet, not a sidebar
+
+**(confirmed by PDF)** The live tab shows the actual input layout: a row
+of labeled cells — `Select Date` / `Multiple Selection`, `Select Venue:`,
+`Select Series:`, `Select Staff:`, a `This Month` toggle, `Select Type:`,
+`Select Event:` — sitting above the `FILTER` results table. So this was a
+plain sheet with a handful of named input cells feeding one formula, not
+a custom dialog or sidebar. That's a useful data point for the "sidebar
+vs. plain sheet" decision raised in §2.1/§2.5 below — the sheet-based
+approach isn't a hypothetical fallback, it's exactly the workflow you
+already used and trusted for a season.
+
+### 1.9 `Show_Staffing_SP25` — role assignment grid
 This one has no formula equivalent in `cell-formulas.md` — it looks
 hand-maintained. One row **per show** (not per performance instance — note
 `2/28 - 3/7` as a single row), with named-role columns: `House Manager`,
@@ -164,9 +243,15 @@ Why this is better than the formula version, not just a port:
   `batchWrite`) writes results into a plain range — closer to the old
   feel, no HTML service needed, but not live/reactive like `FILTER()` was.
 
-I'd lean toward the sidebar long-term (it also becomes the home for
-`EventCard`, below), but the sheet-based version is a lower-effort first
-cut if you want something working sooner. **Flagging as a decision point.**
+The PDF export confirms `Schedule Searchv2` really was the second
+option: a row of labeled input cells (date/venue/series/staff/type/event)
+above a results table, no custom UI at all (see §1.8). That's a real
+precedent, not just a lower-effort fallback — you ran a full season on
+exactly this pattern. I'd still lean toward a sidebar as the long-term
+home (it also fits `EventCard`'s "load a record" button below more
+naturally than a sheet does), but given the precedent, **the plain-sheet
+version is a legitimate first cut, not just a stopgap.** Flagging as a
+decision point either way.
 
 ### 2.2 `Engine.Venues` — replaces the hardcoded `SWITCH()`
 
@@ -216,6 +301,32 @@ Engine.Search.getEventDetail = function(ctx, parentID) {
 This single call gives a sidebar (or a future popup) everything
 `UI-Design.md`'s "Detailed Inspection Popup" describes — including
 pending review items, which the legacy `EventCard` had no concept of.
+
+This is also the natural home for the legacy Event Card's *"Press to
+recall row info from lineup"* button (§1.3) — a button/menu item that
+calls `getEventDetail` and writes the result into the individual
+Title/Guests/Start/End/Location/Description fields, the same shape the
+old card used.
+
+The second legacy button — *"pull the next (15 days) from lineup, to
+then be able to edit"* — is a different, genuinely new-to-this-doc
+feature: a **rolling editable snapshot**, not a live query. Proposed
+equivalent:
+
+```javascript
+Engine.Reports.pullUpcomingForEdit = function(ctx, options) {
+  const days = (options && options.days) || 15;
+  const rows = Engine.Reports.byDateWindow(ctx, "LINEUPCURRENT",
+    { start: new Date(), end: /* +days */ });
+  batchWrite("STAGING_ROLE_OR_SHEET", rows, ctx); // plain cells, not a formula
+};
+```
+Writing plain values (via `batchWrite`, like everything else in
+`engine_IO.js`) rather than a live `FILTER()` is what makes the result
+editable without fighting the formula — matching what the legacy button
+was clearly for. Where the output lands (a dedicated staging sheet vs. a
+sidebar-editable list) is an open question in §4, since I don't have the
+original script to confirm intent.
 
 ### 2.4 `Engine.Reports` — replaces the windowed/flagged filter sheets
 
@@ -328,26 +439,44 @@ Roughly cheapest/most-reusable first, each one unblocking the next:
    the "Detailed Inspection Popup" from `UI-Design.md` almost for free.
 5. **`Staffing` sheet/role** — independent of the above; can be started
    any time once you're ready to define its `Map_Registry` rows.
-6. **Doc export (`Engine.Docs`, Option A or B)** — last, since it
+6. **`Engine.Reports.pullUpcomingForEdit`** — small, depends only on
+   `Engine.Reports`; worth confirming against the original button script
+   first if you can find it (§4).
+7. **Doc export (`Engine.Docs`, Option A or B)** — last, since it
    consumes #1–#3 and you'll want the underlying reports stable first.
 
 ---
 
 ## 4. Open questions for you
 
-- **`PerformanceSpaces`** (the third source stacked into `f`, alongside
-  Lineup and Calls) — I don't see an obvious current equivalent. Is this
-  the venue calendar pull (`Venue_Cal_Log` / role `VENUECAL`), or a fourth
-  thing that hasn't carried forward into the current schema at all?
+- ~~`PerformanceSpaces` mapping~~ — **resolved**: it's the venue calendar
+  pull, i.e. `VENUECAL` / `Venue_Cal_Log` (see §1.1).
+- **The two Event Card / Calls buttons' actual script** (§1.3) — I only
+  have their captions from the PDF, not the code behind them. If that
+  Apps Script project is still reachable (old sheet's `Extensions >
+  Apps Script`, or a `.gs` export), it would tell me exactly what "recall
+  row info" and "pull the next 15 days for editing" did, rather than me
+  inferring behavior from a button label. This directly affects how
+  faithfully `Engine.Search.getEventDetail` and the proposed
+  `Engine.Reports.pullUpcomingForEdit` (§2.3) should be built.
+- **Where should `pullUpcomingForEdit`'s output land?** A dedicated
+  staging sheet (closest to the legacy feel — plain cells you edit
+  directly), or a sidebar list that writes back through
+  `Engine.Ingest`/`batchWrite` on save? Depends partly on the answer
+  above.
 - **Legacy `Lineup` checkbox columns `J`/`K`/`L`** (referenced as
   "confirmed," quarter-flag, month-flag, and a hide/delete flag in
   `linFilter`/`Thru Next Month`/`Thru Next Q`) — did any of these become
   `SyncStatus` values or `Status`-sheet behaviors in the current system,
   or were they dropped? Matters for whether `Engine.Reports` needs a
-  "confirmed only" filter option.
+  "confirmed only" filter option. (The `Remove from Filter` flag on `f`
+  itself is resolved — see §1.1 — but these three on `Lineup` are still
+  open.)
 - **Search UI preference** — sidebar (`HtmlService`) vs. a plain
-  `Reports` output sheet, as discussed in §2.1/§2.5. Either is buildable;
-  picking one avoids building both halfway.
+  `Reports`/`Search Results` sheet with labeled input cells, as
+  discussed in §2.1/§1.8. Both are proven workable now (the PDF confirms
+  the sheet version is exactly what you ran before); picking one avoids
+  building both halfway.
 - **Doc export** — Option A (native linked ranges, low effort) vs.
   Option B (fully scripted `DocumentApp` generation, higher effort but
   one-click and ties run-of-show links to `Map_Registry` data) from
