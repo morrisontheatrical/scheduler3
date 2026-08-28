@@ -255,31 +255,31 @@ decision point either way.
 
 ### 2.2 `Engine.Venues` — replaces the hardcoded `SWITCH()`
 
-The venue-name normalization table shouldn't live inside a formula (or
-inside Apps Script code) — it's exactly the kind of thing your
-`ARCHITECTURE.md` principle says belongs in a sheet:
-
-```
-New sheet or Lookup columns: "Venue Aliases"
-| RawCalendarResourceName            | FriendlyVenueName |
-|-------------------------------------|--------------------|
-| Main-1-Onstage (1400)               | Main Stage         |
-| 166-1-Black box (100)               | Theatre 166        |
-| Main-2-Ballroom (80)                | Ballroom           |
-| ...                                  | ...                |
-```
+Good news here: this doesn't need a new sheet at all. `Calendars.csv`
+already has a column associating each calendar with a Friendly Venue
+Name — which is exactly the `RawCalendarResourceName → FriendlyVenueName`
+mapping the legacy `SWITCH()` hardcoded. This lines up with what
+`engine_core.js`'s `loadLookups` already does: it reads `Calendars` and
+populates `ctx.calendars` as `{ id, venueName, displayName }` per row.
+`Engine.Venues.normalize` just needs to look up against that
+already-loaded list instead of introducing anything new:
 
 ```javascript
 Engine.Venues = {
   normalize: function(ctx, rawName) {
-    const alias = (ctx.lookup.venueAliases || {})[String(rawName || "").trim()];
-    return alias || rawName;
+    if (!rawName) return rawName;
+    const match = (ctx.calendars || []).find(cal =>
+      String(cal.displayName || "").trim() === String(rawName).trim());
+    return match ? match.venueName : rawName;
   }
 };
 ```
-Loaded in `Engine.loadLookups` alongside the existing `Calendars`/`Lookup`
-processing. This also means adding a new venue alias later is a sheet
-edit, not a code deploy — consistent with how `Calendars` already works.
+No new `Map_Registry` rows, no new sheet, no `loadLookups` changes — the
+data this needs is already sitting in `ctx.calendars` by the time
+`Engine.Search.buildFeed` (§2.1) would call it. If `Calendars.csv`'s
+column names don't line up 1:1 with `displayName`/`venueName` the way
+`assembleSheetMap` currently reads them, that's a quick check against the
+live sheet rather than new design work.
 
 ### 2.3 `Engine.Search.getEventDetail()` — replaces `EventCard`
 
@@ -298,6 +298,17 @@ Engine.Search.getEventDetail = function(ctx, parentID) {
   };
 };
 ```
+
+**Naming note:** `0_helper.js` already has a global `getEventDetails(eventID,
+calendarId)` — a thin wrapper around `CalendarApp.getEventById()` that
+returns a raw Calendar `Event` object for one calendar event. That's a
+different, lower-level thing than what's proposed here (single calendar
+event vs. the full parentID → Lineup → crew-call → decision chain), but
+the names are close enough to cause real confusion side by side. Worth
+either renaming the existing helper (e.g. `getRawCalendarEvent`) when
+this lands, or naming this one something more distinct, like
+`Engine.Search.getEventChain()`.
+
 This single call gives a sidebar (or a future popup) everything
 `UI-Design.md`'s "Detailed Inspection Popup" describes — including
 pending review items, which the legacy `EventCard` had no concept of.
@@ -310,8 +321,11 @@ old card used.
 
 The second legacy button — *"pull the next (15 days) from lineup, to
 then be able to edit"* — is a different, genuinely new-to-this-doc
-feature: a **rolling editable snapshot**, not a live query. Proposed
-equivalent:
+feature: a **rolling editable snapshot**, not a live query. Confirmed:
+neither this behavior nor the button's underlying script exist anywhere
+in the current workspace — this one has to be built fresh from the
+button caption alone, there's no legacy implementation to check against
+(see §4). Proposed equivalent:
 
 ```javascript
 Engine.Reports.pullUpcomingForEdit = function(ctx, options) {
@@ -351,10 +365,11 @@ already sitting in `seth's notes.md`:
 
 The same registry-driven-boolean-field idea generalizes cleanly: any
 Yes/No column in `Map_Registry` (Piano Tuning, Needs Follow-up, whatever
-comes next) becomes reportable with zero new code, the same way adding a
-`Venue Aliases` row needs zero new code. This is a good argument for
-building `byFlag` and the `isHidden` column feature together rather than
-as two separate efforts.
+comes next) becomes reportable with zero new code, the same way
+`Engine.Venues` (§2.2) needed zero new sheets because `Calendars.csv`
+already had the data. This is a good argument for building `byFlag` and
+the `isHidden` column feature together rather than as two separate
+efforts.
 
 ### 2.5 `Engine.Docs` — replaces the linked-cell Google Doc
 
@@ -427,9 +442,9 @@ Proposed shape, consistent with your existing layers:
 
 Roughly cheapest/most-reusable first, each one unblocking the next:
 
-1. **`Engine.Venues`** — small, self-contained, and `Engine.Search`,
-   `Engine.Reports`, and the eventual Doc export all depend on
-   normalized venue names.
+1. **`Engine.Venues`** — near-free now that `Calendars.csv` already has
+   the mapping; `Engine.Search`, `Engine.Reports`, and the eventual Doc
+   export all depend on normalized venue names, so do this first anyway.
 2. **`Map_Registry.isHidden` + `Engine.Reports.byFlag`** — already on
    your TO DO list; do it alongside this since `Engine.Reports` needs it
    anyway.
@@ -440,8 +455,9 @@ Roughly cheapest/most-reusable first, each one unblocking the next:
 5. **`Staffing` sheet/role** — independent of the above; can be started
    any time once you're ready to define its `Map_Registry` rows.
 6. **`Engine.Reports.pullUpcomingForEdit`** — small, depends only on
-   `Engine.Reports`; worth confirming against the original button script
-   first if you can find it (§4).
+   `Engine.Reports`. No legacy script survives to check it against (§4
+   confirms this), so it's a from-scratch build guided by the button
+   caption alone.
 7. **Doc export (`Engine.Docs`, Option A or B)** — last, since it
    consumes #1–#3 and you'll want the underlying reports stable first.
 
@@ -451,19 +467,22 @@ Roughly cheapest/most-reusable first, each one unblocking the next:
 
 - ~~`PerformanceSpaces` mapping~~ — **resolved**: it's the venue calendar
   pull, i.e. `VENUECAL` / `Venue_Cal_Log` (see §1.1).
-- **The two Event Card / Calls buttons' actual script** (§1.3) — I only
-  have their captions from the PDF, not the code behind them. If that
-  Apps Script project is still reachable (old sheet's `Extensions >
-  Apps Script`, or a `.gs` export), it would tell me exactly what "recall
-  row info" and "pull the next 15 days for editing" did, rather than me
-  inferring behavior from a button label. This directly affects how
-  faithfully `Engine.Search.getEventDetail` and the proposed
-  `Engine.Reports.pullUpcomingForEdit` (§2.3) should be built.
+- ~~The two Event Card / Calls buttons' actual script~~ — **checked, not
+  recoverable**: the current workspace's `getEventDetails(eventID,
+  calendarId)` in `0_helper.js` is a raw `CalendarApp.getEventById()`
+  wrapper, not the legacy "recall row info from lineup" button (different
+  scope — single calendar event vs. a full record) and predates it
+  anyway. Neither that button's script nor the "pull next 15 days for
+  editing" button's script exist in the current workspace. Both will need
+  to be built from the button captions alone, with no legacy
+  implementation to check against — see the naming note in §2.3 to avoid
+  colliding with the existing `getEventDetails` helper.
 - **Where should `pullUpcomingForEdit`'s output land?** A dedicated
   staging sheet (closest to the legacy feel — plain cells you edit
   directly), or a sidebar list that writes back through
-  `Engine.Ingest`/`batchWrite` on save? Depends partly on the answer
-  above.
+  `Engine.Ingest`/`batchWrite` on save? With the original script gone,
+  this is now purely your call rather than something to verify against
+  prior behavior.
 - **Legacy `Lineup` checkbox columns `J`/`K`/`L`** (referenced as
   "confirmed," quarter-flag, month-flag, and a hide/delete flag in
   `linFilter`/`Thru Next Month`/`Thru Next Q`) — did any of these become
