@@ -282,7 +282,7 @@ Engine.Sync = {
       if (canWrite && modeAllowsCalendarWrites) {
         Engine.Calendar.updateEvent(targetCalId, crewRow.EventID, crewRow);
         if (forcedPush) crewRow.Options = "AutoSync";
-        Engine.Status.apply(ctx, role, null, "Calendar Log Updated", { targetObj: crewRow });
+        Engine.Status.apply(ctx, role, null, "Pushed to Calendar", { targetObj: crewRow });
       }
       
       if (allowedLogTypes.includes("PUSH_CAL")) {

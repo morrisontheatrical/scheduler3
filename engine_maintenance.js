@@ -633,3 +633,94 @@ function getSheetByRole(roleName) {
   return sheet;
 }
 
+/**
+ * Canonical color palette for the Status sheet. Add a row here if you
+ * introduce a new Color name; both directions of sync key off this list.
+ * Scoped to the 7 named colors the Status sheet already uses.
+ */
+Engine.ColorPalette = {
+  entries: [
+    { name: "Light Green", hex: "#d9ead3" },
+    { name: "Yellow/Tan",  hex: "#fff2cc" },
+    { name: "Pink/Red",    hex: "#f4cccc" },
+    { name: "Orange",      hex: "#f9cb9c" },
+    { name: "Red",         hex: "#ea9999" },
+    { name: "Yellow",      hex: "#ffd966" },
+    { name: "Green",       hex: "#93c47d" }
+  ],
+
+  hexForName: function(name) {
+    const match = this.entries.find(e => e.name.toLowerCase() === String(name || "").trim().toLowerCase());
+    return match ? match.hex : "";
+  },
+
+  // Exact match first; otherwise nearest palette entry by RGB distance, so a
+  // manually-typed close-but-not-exact hex still resolves to a known name.
+  nameForHex: function(hex) {
+    const clean = String(hex || "").trim().toLowerCase();
+    if (!/^#?[0-9a-f]{6}$/i.test(clean)) return "";
+    const normalized = clean.startsWith("#") ? clean : `#${clean}`;
+    const exact = this.entries.find(e => e.hex.toLowerCase() === normalized);
+    if (exact) return exact.name;
+
+    const toRgb = h => [1, 3, 5].map(i => parseInt(h.substr(i, 2), 16));
+    const targetRgb = toRgb(normalized);
+    let best = "", bestDist = Infinity;
+    this.entries.forEach(e => {
+      const rgb = toRgb(e.hex.toLowerCase());
+      const dist = rgb.reduce((sum, c, i) => sum + Math.pow(c - targetRgb[i], 2), 0);
+      if (dist < bestDist) { bestDist = dist; best = e.name; }
+    });
+    return best;
+  }
+};
+
+/**
+ * Installable edit trigger — keeps Hex and Color columns on the Status sheet
+ * in sync with each other. Must be added manually: Apps Script editor >
+ * Triggers > Add Trigger > Function: onEditStatusColorSync > Event: On edit.
+ * (Not the bare global onEdit(e), so it doesn't collide with other
+ * sheet-wide edit handling.)
+ */
+function onEditStatusColorSync(e) {
+  if (!e || !e.range) return;
+  const sheet = e.range.getSheet();
+  if (sheet.getName() !== "Status") return;
+
+  const editedRow = e.range.getRow();
+  if (editedRow === 1) return; // header row
+
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hexCol = headers.indexOf("Hex") + 1;
+  const colorCol = headers.indexOf("Color") + 1;
+  if (!hexCol || !colorCol) return;
+
+  const editedCol = e.range.getColumn();
+  if (editedCol === hexCol) {
+    const name = Engine.ColorPalette.nameForHex(sheet.getRange(editedRow, hexCol).getValue());
+    if (name) sheet.getRange(editedRow, colorCol).setValue(name);
+  } else if (editedCol === colorCol) {
+    const hex = Engine.ColorPalette.hexForName(sheet.getRange(editedRow, colorCol).getValue());
+    if (hex) sheet.getRange(editedRow, hexCol).setValue(hex);
+  }
+}
+
+/**
+ * Bulk resync — run once after installing the trigger, or any time the
+ * Status sheet is edited outside the trigger (e.g. pasted values).
+ */
+function resyncStatusColors() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Status");
+  if (!sheet) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const hexCol = headers.indexOf("Hex") + 1;
+  const colorCol = headers.indexOf("Color") + 1;
+  if (!hexCol || !colorCol) return;
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const hexValues = sheet.getRange(2, hexCol, lastRow - 1, 1).getValues();
+  const colorValues = hexValues.map(([hex]) => [Engine.ColorPalette.nameForHex(hex) || ""]);
+  sheet.getRange(2, colorCol, colorValues.length, 1).setValues(colorValues);
+}
+

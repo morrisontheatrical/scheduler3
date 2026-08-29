@@ -70,12 +70,13 @@ function goParent() {
     });
   }
 
+  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
   const pByName = {};
   pData.forEach((row, idx) => {
     const name = normalize(row[pCol("EventName")]);
     if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
   });
- 
+
   let created = 0, updated = 0, flaggedForReview = 0;
  
   iData.forEach(iRow => {
@@ -1223,11 +1224,15 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         KeepChoice: isRenameCandidate ? "KEEP_EXISTING" : "",
         RequestedAction: wantedAction
       };
+      // Rename candidates are a drift/rename situation (import is the source
+      // of truth), NOT a duplicate — import and Parent rows matching on
+      // Opening/Range/Venue is expected. "Possible Duplicate" is reserved for
+      // Parent Lineup rows that look like *each other*.
       applyReviewStatus(
         match.rowIdx,
         match.row[pCol("parentID")],
-        isRenameCandidate ? "Possible Duplicate" : "Manual Review",
-        isRenameCandidate ? `Possible duplicate from import: ${name}` : "Parent Lineup no longer matches import.",
+        "Manual Review",
+        isRenameCandidate ? `Possible renamed event: import "${name}" vs Parent "${match.row[pCol("EventName")]}"` : "Parent Lineup no longer matches import.",
         decisionValues
       );
       Engine.Log.write(ctx, {

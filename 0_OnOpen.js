@@ -18,6 +18,7 @@ function onOpen() {
       .addItem('Write Headers from Registry', 'writeHeadersFromRegistryMenu')
       .addItem('Repair Blank Hashes', 'repairBlankHashes')
       .addItem('Refresh Dropdowns', 'test_RefreshDropdowns')
+      .addItem('Resync Status Colors', 'resyncStatusColors')
       .addItem('Reset Headers', 'resetHeadersMenu'))
     .addSubMenu(ui.createMenu('Decision Review')
       .addItem('Open Decision Log', 'openDecisionLog')
