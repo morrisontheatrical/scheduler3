@@ -19,6 +19,17 @@ Source material reviewed:
   `Master Biweekly Call Times`, `Event Card`, `Schedule Searchv2`, `sync`).
   This confirmed several things §1's first pass could only infer from
   formulas alone — see the callouts marked **(confirmed by PDF)** below.
+- `paperwork-broker-spec.md` — a separately-drafted technical spec for a
+  `Engine.Broker` module covering the same ground as §2.1/§2.5 below
+  (in-memory unification + search + paperwork generation). Its good ideas
+  — especially a concrete day-block layout algorithm for the printable
+  paperwork sheets — are folded into §2.1 and the new §2.5, with several
+  corrections noted inline: it referenced legacy-only column names that
+  don't exist in the current `Lineup` schema, hardcoded a venue map that
+  duplicates data already in `Calendars.csv`, and its code template
+  rebuilt `ctx` from scratch inside the loop instead of threading the
+  passed-in one through (which would silently break draft/current mode
+  awareness). Those are fixed in what follows.
 
 No code from those formulas is reusable as-is (it's spreadsheet-native
 FILTER/REGEXMATCH/SORT, not Apps Script), but the **behavior** each formula
@@ -168,7 +179,7 @@ of labeled cells — `Select Date` / `Multiple Selection`, `Select Venue:`,
 `Select Event:` — sitting above the `FILTER` results table. So this was a
 plain sheet with a handful of named input cells feeding one formula, not
 a custom dialog or sidebar. That's a useful data point for the "sidebar
-vs. plain sheet" decision raised in §2.1/§2.5 below — the sheet-based
+vs. plain sheet" decision raised in §2.1/§2.6 below — the sheet-based
 approach isn't a hypothetical fallback, it's exactly the workflow you
 already used and trusted for a season.
 
@@ -200,9 +211,9 @@ module per feature, using your existing naming conventions.
 Engine.Search = {
   // Builds the unified, tagged, venue-normalized feed on demand.
   // Sources come from SheetRole, not hardcoded sheet names:
-  // LINEUPCURRENT/LINEUPDRAFT, CREWCAL, VENUECAL.
+  // LINEUPCURRENT/LINEUPDRAFT, CALLS, VENUECAL.
   buildFeed: function(ctx, options) {
-    const roles = options.roles || ["LINEUPCURRENT", "CREWCAL", "VENUECAL"];
+    const roles = options.roles || ["LINEUPCURRENT", "CALLS", "VENUECAL"];
     let feed = [];
     roles.forEach(role => {
       scanSheet(role, ctx).forEach(row => {
@@ -223,17 +234,68 @@ Engine.Search = {
 };
 ```
 
+**Prerequisite — `CALLS` isn't a `SheetRole` yet.** Unlike `LINEUPCURRENT`
+and `VENUECAL`, the `Calls` sheet isn't currently registered in
+`Sheet_Settings`/`Map_Registry` at all — it's a plain sheet name, not a
+role, and `scanSheet`/`ctx.getMap` can't resolve it until it has rows in
+both. This is real setup work, not a detail: add a `Sheet_Settings` row
+(role `CALLS`, or `CALLSCURRENT`/`CALLSDRAFT` if it needs the same
+draft/current split as everything else) and `Map_Registry` rows for its
+columns (`Event Name`, `Rehearsal/Setup Date`, `Call Time`, `Type`,
+`Description`, `Staff`, `Series`, `Venue`, `Event ID`) before
+`Engine.Search` can include it.
+
+**Unified feed schema.** Each row gets normalized into one shape
+regardless of source. The field *names* below intentionally match what's
+already in each sheet's `Map_Registry` — no separate "Parsed Date" /
+"Parsed Time" concept: those only ever existed in the old formula-driven
+`Lineup2` sheet and were superseded by `goLineup()` writing real `Date`
+values directly into `Lineup.Date`.
+
+| Field | From `LINEUPCURRENT`/`LINEUPDRAFT` | From `CALLS` | From `VENUECAL` |
+| :--- | :--- | :--- | :--- |
+| `EventName` | `EventName` | `Event Name` | `Title` |
+| `Date` | `Date` (real Date object, already parsed by `goLineup`) | `Rehearsal/Setup Date` + `Call Time` combined | `Start` |
+| `EndTime` | `EndDate` if a `MULTI_DAY` span, else blank | derived from `Call Time` + default duration | `End` |
+| `Type` | — (not applicable; every Lineup row is a performance) | `Type` | — |
+| `Description` | — | `Description` | `Description` |
+| `Staff` | — (Lineup doesn't carry staff; comes from `CALLS`/`CREWCAL`) | `Staff` (comma-split into an array) | — |
+| `Series` | — (lives on `Parent Lineup`, join via `parentID`) | `Series` | — |
+| `Venue` | `Venue`, normalized via `Engine.Venues.normalize` (§2.2) | `Venue`, normalized | `Location`, normalized |
+| `_source` | `"LINEUPCURRENT"` (or the resolved role name) | `"CALLS"` | `"VENUECAL"` |
+| `EventID` | `UUID` (the Lineup identity key) | `Event ID` (the Google Calendar event ID, matches `Crew_Calendar_Log.EventID`) | `EventID` |
+
+Note that `Series` isn't on `Lineup` itself — it lives on `Parent Lineup`
+and would need a join through `parentID` to appear on a Lineup-sourced
+row. Worth deciding whether `buildFeed` does that join automatically or
+leaves it to the caller.
+
 Why this is better than the formula version, not just a port:
 - Column positions never leak into filter logic — everything goes through
   `Engine.getColumnIndex`/`scanSheet`, so it survives header moves.
 - It's mode-aware for free: pass `roles: ["LINEUPDRAFT", ...]` to search
-  the draft season instead of duplicating every formula sheet.
+  the draft season instead of duplicating every formula sheet — but only
+  if `buildFeed` actually threads the `ctx` it's given through to
+  `scanSheet`/`ctx.getMap` rather than rebuilding a fresh context inside
+  the loop. (Worth flagging because an earlier draft of this idea did
+  exactly that — called a global context-rebuilding helper per source
+  instead of using the passed-in `ctx` — which would silently ignore
+  whatever mode/runtime options the caller set.)
 - `Engine.Status.blocksWrite`/behavior checks can filter out
   `Bypassed`/`Delete Pending` rows the same way sync already does, instead
   of one hardcoded `L:L<>True` checkbox.
 - Regex-per-field logic (staff, venue, type) becomes a small, testable JS
   function instead of five near-identical nested `IF(...,REGEXMATCH(...))`
   clauses that have to be copy-pasted into every new report sheet.
+
+**Performance at scale, if it's ever needed.** If a full season's worth
+of rows makes `buildFeed` noticeably slow to recompute on every search,
+`CacheService` can hold the compiled feed between calls — but it has a
+~100KB-per-key limit and doesn't serialize `Date` objects for free (you'd
+store ISO strings and re-hydrate on read). Fine for a lean feed; risky if
+full HTML descriptions get cached too. Not worth building until/unless
+it's actually slow — `scanSheet` over three sheets a season's size is
+unlikely to be the bottleneck the old cell-formula version was.
 
 **Where does the UI live?** Two options, not mutually exclusive:
 - A sidebar (`HtmlService`) calling `Engine.Search.query` via
@@ -371,7 +433,72 @@ already had the data. This is a good argument for building `byFlag` and
 the `isHidden` column feature together rather than as two separate
 efforts.
 
-### 2.5 `Engine.Docs` — replaces the linked-cell Google Doc
+### 2.5 Sheet-based paperwork layouts — replaces `Biweekly Calls Only` / `Master Biweekly Call Times` / `Filtered Calls Only`
+
+These three legacy tabs (§1.6, feeding `Call times.md`) share one shape:
+filter the unified feed to a date window, group by day, print. Rather
+than three near-duplicate write functions, one generator parametrized by
+layout:
+
+```javascript
+Engine.Reports.writePaperworkLayout = function(ctx, options) {
+  // options: { targetRole, firstDay, days, columns, groupByWeekStartingTuesday }
+  const sheet = ctx.sheets[options.targetRole] || ctx.ss.getSheetByName(ctx.getRole(options.targetRole));
+  const windowEnd = new Date(options.firstDay);
+  windowEnd.setDate(windowEnd.getDate() + (options.days - 1));
+
+  const events = Engine.Search.query(ctx, { dateFrom: options.firstDay, dateTo: windowEnd });
+  const byDay = Engine.Reports._groupByDay(events, options.firstDay, options.days);
+
+  // Clear old content below the header row only — never touch row 1/2 formatting.
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 2) sheet.getRange(3, 1, lastRow - 2, sheet.getLastColumn()).clearContent();
+
+  let row = 3;
+  byDay.forEach(day => {
+    sheet.getRange(row, 1).setValue(`${day.dayName} | ${Utilities.formatDate(day.date, ctx.timeZone, "M/d/yyyy")}`);
+    // ...apply the existing bold/accent format to this row, don't invent new formatting
+    row++;
+    day.events.forEach(event => {
+      const values = options.columns.map(fieldName => event[fieldName] || "");
+      sheet.getRange(row, 1, 1, values.length).setValues([values]);
+      row++;
+    });
+    row++; // spacer row between day blocks, even for empty days
+  });
+};
+```
+
+Each of the three legacy sheets becomes one call with different
+`options`, instead of three separate scripts:
+
+| Legacy sheet | `targetRole` | `columns` | Notes |
+| :--- | :--- | :--- | :--- |
+| `Biweekly Calls Only` | new role, e.g. `PAPERWORK_BIWEEKLY_CREW` | `Time, Type, Description, Staff` | crew-facing, 14-day window, Tuesday-start |
+| `Master Biweekly Call Times` | new role, e.g. `PAPERWORK_BIWEEKLY_MANAGER` | `Time, Type, Staff, EventName, Venue` | manager-facing, same window, adds Venue |
+| `Filtered Calls Only` | new role, e.g. `PAPERWORK_FILTERED` | `Time, Type, Description, Staff` | single-date, no day grouping needed |
+
+Two corrections worth calling out explicitly, since they're the kind of
+thing that would otherwise slip back in:
+- **These three target sheets need their own `SheetRole` entries**, the
+  same as every other sheet the engine writes to. Referencing them by
+  literal tab name (`"Biweekly Calls Only"`) would be exactly the kind of
+  hardcoding `ARCHITECTURE.md` rules out elsewhere — a fresh instance of
+  the same problem `Sheet_Settings`/`SheetRole` already exists to solve.
+- **Preserve formatting, don't reset it.** `clearContent()` (not `clear()`)
+  on the data range, and never touch the header/accent-row formatting
+  that's already on the sheet — matches
+  `Engine.Maintenance.resetHeaders`'s existing "never blow away formatting
+  the user set" posture, and avoids the `resetHeaders` bug already on
+  file (`known issue` in your memory: it unconditionally forces
+  bold/gray formatting) from recurring here in a new form.
+
+The day-block grouping (Tuesday-start week, blank spacer row between
+days, empty days shown rather than hidden) is a good concrete spec worth
+keeping as-is — it's the one piece of `paperwork-broker-spec.md` that
+wasn't already covered by anything in this document.
+
+### 2.6 `Engine.Docs` — replaces the linked-cell Google Doc
 
 Two real options here, genuinely different trade-offs — **this is the
 biggest open decision in this whole doc**, so I'm laying out both rather
@@ -410,7 +537,7 @@ trust, and `Engine.Reports` is useful either way), with Option B as a
 later upgrade once `Engine.Reports` is stable — same "finish fixes in the
 current project first" philosophy you're already applying elsewhere.
 
-### 2.6 New sheet/role: `Staffing` (or similar) — replaces `Show_Staffing`
+### 2.7 New sheet/role: `Staffing` (or similar) — replaces `Show_Staffing`
 
 This is the one legacy feature with **no current equivalent at all** —
 worth being explicit about that rather than folding it into
@@ -442,24 +569,31 @@ Proposed shape, consistent with your existing layers:
 
 Roughly cheapest/most-reusable first, each one unblocking the next:
 
-1. **`Engine.Venues`** — near-free now that `Calendars.csv` already has
+1. **Register `CALLS` as a `SheetRole`** — a `Sheet_Settings` row plus
+   `Map_Registry` rows for `Calls`'s columns. Not glamorous, but
+   `Engine.Search` can't include Calls data until this exists (§2.1).
+2. **`Engine.Venues`** — near-free now that `Calendars.csv` already has
    the mapping; `Engine.Search`, `Engine.Reports`, and the eventual Doc
    export all depend on normalized venue names, so do this first anyway.
-2. **`Map_Registry.isHidden` + `Engine.Reports.byFlag`** — already on
+3. **`Map_Registry.isHidden` + `Engine.Reports.byFlag`** — already on
    your TO DO list; do it alongside this since `Engine.Reports` needs it
    anyway.
-3. **`Engine.Search` (query + feed-building)** — the load-bearing piece;
+4. **`Engine.Search` (query + feed-building)** — the load-bearing piece;
    ship it as a `Reports` sheet output first, sidebar later.
-4. **`Engine.Search.getEventDetail`** — small once #3 exists; delivers
+5. **`Engine.Search.getEventDetail`** — small once #4 exists; delivers
    the "Detailed Inspection Popup" from `UI-Design.md` almost for free.
-5. **`Staffing` sheet/role** — independent of the above; can be started
+6. **`Staffing` sheet/role** — independent of the above; can be started
    any time once you're ready to define its `Map_Registry` rows.
-6. **`Engine.Reports.pullUpcomingForEdit`** — small, depends only on
+7. **`Engine.Reports.pullUpcomingForEdit`** — small, depends only on
    `Engine.Reports`. No legacy script survives to check it against (§4
    confirms this), so it's a from-scratch build guided by the button
    caption alone.
-7. **Doc export (`Engine.Docs`, Option A or B)** — last, since it
-   consumes #1–#3 and you'll want the underlying reports stable first.
+8. **`Engine.Reports.writePaperworkLayout` + the three paperwork
+   `SheetRole`s** (§2.5) — depends on `Engine.Search`/`Engine.Venues`
+   being stable; this is where the day-block layout algorithm lands.
+9. **Doc export (`Engine.Docs`, Option A or B)** — last, since it
+   consumes #2, #4, and #8, and you'll want the underlying reports
+   stable first.
 
 ---
 
@@ -499,7 +633,7 @@ Roughly cheapest/most-reusable first, each one unblocking the next:
 - **Doc export** — Option A (native linked ranges, low effort) vs.
   Option B (fully scripted `DocumentApp` generation, higher effort but
   one-click and ties run-of-show links to `Map_Registry` data) from
-  §2.5. Also: do you still want the per-show hyperlinks to individual
+  §2.6. Also: do you still want the per-show hyperlinks to individual
   run-of-show Docs, and if so, should `RunOfShowDocURL` become a real
   `Parent Lineup` field?
 - **Staffing sheet timing** — is this urgent enough to build alongside

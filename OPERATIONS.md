@@ -62,6 +62,19 @@ As detailed in [UI-Design.md](UI-Design.md), a future consolidated **Event Manag
 
 Protected sheets are skipped unless an explicit confirmation path is used.
 
+## Map_Registry Maintenance
+
+`Repair Map Registry` (`Engine.Maintenance.repairMapRegistry()`) reconciles physical sheet headers against `Map_Registry`, but by design it is **non-destructive**:
+
+- It will add new rows for unmapped physical columns, reunite a row with a moved column by matching `Field Name`, and update `Header DisplayName` to match reality.
+- It will only **flag** a registry row as `[STALE: no matching column]` when the physical column is gone — it never deletes the row itself. If a physical column was intentionally removed (e.g. a temporary xlookup/helper column), deleting the now-stale registry row is a manual step. Until the auto-delete option described in `ROADMAP.md` exists, check the Audit_Log entry `MAP_REPAIR` after every repair pass for `Stale registry entry` lines and clean those up by hand.
+- It **intentionally skips any sheet marked `Sheet_Settings.isProtected = Yes`** (`import`, `Lookup`, `Status`, `ref`). If those sheets accumulate duplicate or orphaned registry rows (e.g. a field that moved from `Lookup` to `ref`), that cleanup has to be done manually — it is not something a repair pass will ever touch.
+- A `Field Name` must be unique within a sheet. Two rows with the same `Field Name` on the same sheet will silently collide in `assembleSheetMap()` — whichever row comes later in the registry wins, with no warning at runtime. This is easy to introduce by accident (e.g. copy-pasting a row for a temporary helper column) and easy to miss, since nothing errors; it just silently redirects every `ctx.getCol()`/`pCol()`/`lCol()` call for that field. Treat any duplicate `Field Name` within a sheet as a bug to fix immediately, not a cosmetic issue.
+
+## decision_log Dropdown Validation
+
+`decision_log`'s `Decision`, `RequestedAction`, `KeepChoice`, `ActionStatus`, `Confidence`, `SuggestedAction`, and `ReviewType` columns are dropdown-validated on the sheet, and their valid values are meant to track the vocabularies documented in `ROADMAP.md` (Decision Vocabulary / Status Vocabulary) and ultimately sourced from `ref.csv`. Since `decision_log` is a newer sheet, its `Map_Registry` `Data Type` entries for these fields were blank for a while, which made it easy for the sheet's actual dropdown lists to drift out of sync with the documented vocabulary without anything catching it. Periodically re-check the live dropdown validation rules on `decision_log` against `ref.csv` and `ROADMAP.md`, and correct whichever one is out of date.
+
 ## Verification
 
 `Verify Import vs Parent Lineup` compares raw import data to Parent Lineup and may create pending decisions. It must not treat every Parent-only row as a duplicate.

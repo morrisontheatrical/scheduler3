@@ -24,32 +24,20 @@
 20. Implement UI-driven "Detailed Inspection" (popup/sidebar) for rapid entity review.
 21. Remove totally depreciated functions to scriptLib/Depreciated for reference. 
 22. Review engine organization/topography
-23. Integrate github issues
-
-## Revised Priorities / To Do
-1. **Row/Event Snapshot Compression:** Create/revise a helper to compress whole rows/events into a single portable "snapshot" string/cell (and parse back to row). Useful for storing pre-merge/pre-deletion state in `Audit_Log` or `idLog`.
-2. **Metadata & Status Normalization:** Perform a normalization pass across `Status`, `ref`, `Mode_Config`, behavior values, decisions, and requested actions.
-3. **Decision Evidence & Context:** Add richer before/after diff evidence and direct links to decision records.
-4. **Placeholder Title Matching:** Improve import -> Parent Lineup matching so placeholder titles can evolve to real titles without losing `parentID` continuity.
-5. **Read-Only Duplicate Reporting:** Provide explicit duplicate candidate reporting with human keeper selection before applying merges.
-6. **Hardened Decision Processing:** Validate recorded row state and IDs strictly before applying queued actions.
-7. **Downstream Relationship Reconciliation:** Reconcile Parent Lineup -> Lineup -> Crew Calendar relationships.
-8. **Venue Calendar Association Semantics:** Ensure `Venue_Cal_Log` consistently maps `EventID` to the venue event and `UUID` to the associated Lineup/Crew row.
-9. **Operation Mode Enforcement:** Implement explicit pull-only, push-only, reconcile-only, and two-way sync operation modes.
-10. **Granular Calendar Property Patching:** Adapt property-level calendar patching from `gcalendarsync` for title, time, location, and description.
-11. **Developer Overrides Menu:** Finalize confirmed Developer Overrides for destructive resets and reinitializations.
-12. **Automated Role Swapping Script:** Build an automated Season Promotion script to swap roles in `Sheet_Settings`.
-13. **Custom Sync Scoping:** Allow filtering sync runs by date range, venue, or specific context (see [UI-Design.md](UI-Design.md)).
-14. **Detailed Reporting Mode:** Develop a "log-only" verification pass for auditing without mutation.
-15. **Detailed Entity Inspection UI:** Implement popup/sidebar for rapid entity attribute inspection.
-16. **Deprecation Cleanup:** Move obsolete functions to `scriptLib/Deprecated`.
-17. **Engine Topography & Organization:** Review file organization and modular boundaries.
-18. **GitHub Issues Integration:** Integrate workflow with GitHub issues.
+23. Add an optional auto-delete-stale-row mode to `Engine.Maintenance.repairMapRegistry()`. Today it only ever flags stale rows (`[STALE: no matching column]`) and never deletes them, by design — but that leaves a manual cleanup step every time a physical column is removed (see `Decisions Made` below for the bug this caused).
+24. Evaluate case-insensitive `Field Name` matching in `Engine.getColumnIndex`/`ctx.getMap`, so that things like `parentID` vs. `ParentID` can't silently diverge into two different keys again. Touches every `pCol`/`lCol`/`getCol`/`ctx.getMap` call site — needs a deliberate pass, not a quick patch.
+25. Wire `idLog.Fingerprint` to `Engine.IO.serializeRow()` as the intended full-row JSON snapshot mechanism (item 6 above), and reconcile it against the existing `SyncHash` hash-based drift detection — decide whether these stay as two distinct mechanisms or get unified.
+26. Add a `Dept` column to `Calls` to match the existing `Lookup.Dept` dropdown list (Lights, Sound, Props, Scenic, Costumes, Video, etc.) — the list currently has no destination field to populate.
+27. Draft/confirm an `IDTypes` reference list enumerating every ID-shaped field in the system (`parentID`, `UUID`, `callID`, `eventID`, `ReviewID`, `VenueEventID`, `VenueUUID`, `SourceID`, `CandidateID`, `UniqueID`, `KeepParentID`, `ExistingParentID`, `DuplicateParentID`, `SuggestedKeepID`) — may have existed in an earlier hardcoded version of the registry.
+28. Reconcile `decision_log`'s live dropdown data-validation rules against the Decision/Status vocabularies below — several have drifted since the sheet was new (`Decision`, `RequestedAction`, `KeepChoice`, `ActionStatus`, `Confidence`, `SuggestedAction`, `ReviewType` all had blank `Data Type` in `Map_Registry` until this pass, which is likely part of why the sheet's validation rules drifted unnoticed).
+29. Confirm and finish wiring `draft_Lineup`/`draft_Parent`/`Draft_Season_Log` into `Sheet_Settings` roles (`LINEUPDRAFT`/`PARENTDRAFT`/etc.) now that their `Map_Registry` rows exist and are fully typed — needed before `Engine.Roles.resolve()` can be built.
+30. Confirm the still-unverified `Map_Registry` fields added by `repairMapRegistry()`'s auto-detection: `Calendars.CalendarRole`, `Calendars.allowCalendarWrites`, `Sheet_Settings.GID`, `Sheet_Settings.Source`. Their Data Type/Sync Behavior were filled with best guesses during the 2026-08-28 registry cleanup and need a real definition.
 
 ## Decision Vocabulary
 *Structural definitions are governed in [ARCHITECTURE.md](ARCHITECTURE.md); live enumerations reside in `ref` metadata sheet.*
 
 `Decision` is the user's conclusion:
+ - See ref.csv for live list
 - `PENDING`
 - `ACCEPT`
 - `CONFIRMED_DUPLICATE`
@@ -58,6 +46,7 @@
 - `REJECTED`
 
 `RequestedAction` is the engine operation:
+- See ref.csv for live list
 - `ACCEPT_IMPORT`
 - `MERGE_PARENT`
 - `ADOPT_VENUE_EVENT`
@@ -70,6 +59,7 @@
 - `REFRESH_DOWNSTREAM`
 
 `ActionStatus` is execution state:
+
 - `PENDING`
 - `APPLIED`
 - `FAILED`
@@ -109,7 +99,13 @@ Do not use `Options` or `SyncStatus` as decision commands.
 - `Merged`
 - `Rejected`
 
+Reference-only (not part of the `SyncStatus` state machine above — see `ARCHITECTURE.md`'s Field Name Conventions):
+
+- `TechStatus`: technical/production status, `Lookup`/`ref`-backed, no engine behavior attached.
+
 ## Planned Review Types
+--does this belong here or in ARCHITECTURE?
+
 - `IMPORT_PARENT`
 - `PARENT_LINEUP`
 - `LINEUP_CREW`
@@ -138,11 +134,18 @@ Do not use `Options` or `SyncStatus` as decision commands.
 - `REVIEW_PARENT_ONLY` is a non-mutating review: `ACCEPT` / `NOT_DUPLICATE` / `REJECTED` close the decision with no data change (there is no import row to copy from).
 - Import→Parent drift acceptance is governed by the active mode's `ImportUpdatePolicy` (`MANUAL_REVIEW` queues a decision; `AUTO_UPDATE` applies + summary log; `AUTO_UPDATE_AND_LOG` applies + per-field logs). The decision-apply path always bypasses the gate via `force: true`.
 - `Verify Import vs Parent Lineup` writes one semantic audit entry per flagged row (e.g. `PARENT_ONLY`, `DRIFT_DETECTED`); the status paint no longer logs a duplicate row.
+- **(2026-08-28 registry review)** `Map_Registry.Field Name` must be unique within a sheet. Two leftover "xlookup helper" rows (`Parent Lineup` and `draft_Parent`, both duplicating `EventName`/`DatesAndTimes` at columns 19/20) were silently shadowing the real column mappings since `assembleSheetMap()` indexes by Field Name and a later duplicate row wins. Physical columns were deleted by Seth; the stale registry rows were removed manually since `repairMapRegistry()` never auto-deletes.
+- **(2026-08-28)** `SyncStatus` and `TechStatus` are distinct field names, not interchangeable — `Draft_Season_Log`'s field was previously misnamed `Row.Status` from header/field-name confusion and has been corrected to `SyncStatus`.
+- **(2026-08-28)** `Field Name` casing must match exactly across sheets for the same concept (`parentID`, not `ParentID`) since lookups are exact-string today; `Draft_Season_Log.ParentID` was corrected to `parentID`.
+- **(2026-08-28)** `repairMapRegistry()` intentionally skips any `Sheet_Settings.isProtected` sheet (`import`, `Lookup`, `Status`, `ref`) — cleanup of stale/duplicate rows on those sheets requires a manual pass, this is not a bug.
+- **(2026-08-28)** `draft_Lineup`, `draft_Parent`, and `Draft_Season_Log` `Map_Registry` rows now exist (added to make `Sheet_Settings` operational) and are fully typed. They still need `Sheet_Settings` role assignment (`LINEUPDRAFT`/`PARENTDRAFT`) before `Engine.Roles.resolve()` can rely on them.
+- **(2026-08-28)** `idLog.Fingerprint` is intended to become a full-row JSON snapshot via `Engine.IO.serializeRow()` (distinct from `SyncHash`'s hash-based approach) — not yet implemented; its physical header was reverted from an auto-drifted "SyncHash" back to "Fingerprint" to avoid confusing the two mechanisms.
 
 ## Deferred Recovery
 --UPDATE THIS WHEN WE RECOVER 
 
 Use the deprecated scriptLib sources as references to rebuild, inside `Engine.*` first:
+
 - generalized drift reconciliation;
 - fingerprint matching;
 - fuzzy time/space matching;

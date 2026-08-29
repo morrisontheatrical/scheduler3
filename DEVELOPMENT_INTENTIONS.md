@@ -8,7 +8,6 @@ This file is the entrypoint for scheduler project documentation. The older monol
 - [OPERATIONS.md](OPERATIONS.md): menu organization, verification workflow, header operations, decision handling, calendar controls, and recovery instructions.
 - [ROADMAP.md](ROADMAP.md): priorities, canonical vocabularies, planned review types, decisions made, and deferred recovery work.
 - [UI-Design.md](UI-Design.md): UX/UI interaction ideas, modal inspection popups, custom sync scoping, and frontend design.
-
 ## Related Documentation
 
 - [scriptLib/DEVELOPMENT_INTENTIONS.md](../scriptLib/DEVELOPMENT_INTENTIONS.md): shared-library contract, promotion policy, and library-specific open work.
@@ -19,6 +18,7 @@ This file is the entrypoint for scheduler project documentation. The older monol
 
 - Architecture decisions belong in `ARCHITECTURE.md`.
 - User-facing procedures belong in `OPERATIONS.md`.
+
 - Notes related to future User-Interface goals belong in 'UI-Design.md'.
 - Priorities, open decisions, and deferred work belong in `ROADMAP.md`.
 - Code comments should explain local implementation details, not become a second roadmap.
@@ -32,3 +32,5 @@ The immediate implementation focus is refining the decision queue lifecycle, est
 - Persisting pending manual reviews while automatically purging superseded items to `Audit_Log`.
 - Implementing `idLog` "Merged IDs" alias mapping with cascading `parentID` updates across child `Lineup` records.
 - Enforcing manual user action flags (`Bypassed`, `Delete Pending`, `Possible Duplicate`) during `ingest` and `verify` runs.
+
+A parallel, recently-started workstream is a `Map_Registry` / `Field_Names.csv` integrity pass: filling in blank `Data Type`/`Sync Behavior` cells, resolving duplicate/colliding `Field Name` rows (which silently break `assembleSheetMap()`'s column resolution), and reconciling `Field_Names.csv` back into sync with the live registry. See `ROADMAP.md`'s 2026-08-28 entries in Immediate Priorities and Decisions Made for the specifics found so far.

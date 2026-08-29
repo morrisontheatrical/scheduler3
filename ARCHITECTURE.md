@@ -9,10 +9,15 @@
 - **Context Object (`ctx`):** Initialized once per execution by `engine_core.buildContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
 
 ## Metadata Sources
-Metadata lives in spreadsheet tabs (referenced in `scriptLib/Sheet_data/` export CSVs):
-- `ref`: controlled enumerations for roles, behaviors, actions, decisions, log types, and sheet behavior.
+metadata lives in various tabs (see Sheets_data folder for current csv)
+- `ref`: controlled enumerations for roles, behaviors, actions, decisions, log types, and sheet behavior. **This is the single source of truth for every dropdown/Enum field's valid values** (`Decision`, `RequestedAction`, `KeepChoice`, `ActionStatus`, `Confidence`, `SuggestedAction`, `ReviewType`, `TechStatus`, etc.). Do not duplicate value lists in `Map_Registry`, `Field_Names.csv`, or code comments — reference `ref.csv` instead so there is one place to update.
 - `ControlPanel`: user settings and system summary values.
-- `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, and span policy.
+- `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, span policy, and `ImportUpdatePolicy`.
+  - `ImportUpdatePolicy` (per active mode) controls how `Engine.Ingest.acceptImportDrift()` handles import→Parent drift:
+    - `MANUAL_REVIEW`: does not auto-apply; queues an `IMPORT_DRIFT` decision and returns `false` (direct callers only — the decision-apply path passes `force: true` to bypass this gate).
+    - `AUTO_UPDATE`: applies the changed source fields and writes one summary audit entry.
+    - `AUTO_UPDATE_AND_LOG`: applies the changed source fields and writes a per-field audit entry for each change plus a summary.
+  - Exposed at runtime as `ctx.mode.importUpdatePolicy` (default `MANUAL_REVIEW`).
 - `Sheet_Settings`: sheet names, roles, ID keys, sync behavior, sync mode, and protection flags.
 - `Map_Registry`: field-to-column mappings plus display names, data types, and sync behavior.
 - `Status`: the canonical list of row states, colors, and exception/behavior rules.
@@ -24,36 +29,22 @@ Metadata lives in spreadsheet tabs (referenced in `scriptLib/Sheet_data/` export
 
 Code references stable `Field Name` values. Physical headers use `Header DisplayName`. Their association is the registry row and `Column Index`.
 
-Runtime operational maps are flat dictionaries mapping `FieldName` directly to integer 0-based `Column Index`:
+Runtime maps use:
  
 ```javascript
-// ctx.maps[sheetName] or ctx.getMap(roleOrSheet)
-{ EventName: 0, DatesAndTimes: 1, Venue: 2 }
+{ FieldName: { index: 7, displayName: "Human Label", syncBehavior: "System-Managed" } }
 ```
 
-Secondary metadata (display names, sync behavior, data types, notes) is maintained in `sheetConfig.columns` under `ctx.sheetDefs`:
+All range access must convert through `Engine.getColumnIndex(map, fieldName)`. Invalid fields return `-1`.
 
-```javascript
-// ctx.sheetDefs[sheetName].columns[fieldName]
-{
-  index: 0,
-  displayName: "Event Name",
-  syncBehavior: "Source (Read-Only)",
-  dataType: "String",
-  notes: ""
-}
-```
+### Field Name Conventions
 
-Range access and column indexing convert through:
-- `ctx.getCol(roleOrSheet, fieldName)` (preferred in engine methods)
-- `Engine.getColumnIndex(map, fieldName)`
-- Direct flat map access: `row[map.FieldName]` or `row[map[fieldName]]`
-
-Metadata access converts through:
-- `ctx.getSyncBehavior(roleOrSheet, fieldName)` / `Engine.getSyncBehavior(ctx, roleOrSheet, fieldName)`
-- `ctx.getDisplayName(roleOrSheet, fieldName)` / `Engine.getDisplayName(ctx, roleOrSheet, fieldName)`
-- `ctx.getColumnDef(roleOrSheet, fieldName)`
-
+- **`Field Name` must be unique within a sheet.** `assembleSheetMap()` builds `sheetConfig.map[fieldName] = {...}` keyed by `Field Name`, iterating registry rows in order — a later duplicate row for the same sheet+field silently overwrites the earlier column mapping with no error. This is not just a documentation nicety: it was found to be an active bug (2026-08-28) where leftover "xlookup helper" columns in `Parent Lineup` and `draft_Parent` were shadowing the real `EventName`/`DatesAndTimes` columns. `Engine.Maintenance.repairMapRegistry()` will only *flag* this condition (`[STALE: no matching column]`) once the physical column is removed — it never deletes registry rows automatically. Deleting the stale row is a manual step after a repair pass, until an auto-delete option is added (see ROADMAP.md).
+- **`Field Name` casing must be consistent for the same concept across sheets.** Nothing should be differentiated by case alone — e.g. `parentID` (not `ParentID`), `SyncStatus` (not `Row.Status`). `Header DisplayName` may vary in capitalization/spacing for display purposes; `Field Name` may not, because `Engine.getColumnIndex`/`ctx.getMap` do an exact-string lookup today. (Case-insensitive lookup is an open discussion — see ROADMAP.md.)
+- **`SyncStatus` vs. `TechStatus` are different concepts.** `SyncStatus` is the operational field that drives engine behavior (Status-sheet color + behavior rules, `Engine.Status.apply`). `TechStatus` is a reference-only production/technical status field (`Lookup`/`ref`) with no engine behavior attached — don't conflate the two when reading or writing registry rows.
+- **`Map_Registry.isHidden`**: marks a field's column as intended to be hidden on the physical sheet. Planned feature — **not yet enforced by any code** (no `hideColumn()`/`showColumn()` helper exists yet; see ROADMAP.md).
+- **`Map_Registry.Derivation`**: optional column documenting the exception cases where a field's value is *not* a simple same-name passthrough from the layer above (see Layered Data Architecture below) — e.g. computed fields (`EventOfTotal`, `RawDateStr` parsed from `DatesAndTimes`), generated identity fields (`UUID` via `Utilities.getUuid()`), or externally-sourced fields (`eventID` from the Google Calendar API, not a sheet at all). Ordinary passthrough fields (same `Field Name`, one layer up) leave this blank by convention — the layered architecture below is the implicit rule, `Derivation` documents the exceptions to it.
+- **Identity/change-detection has two overlapping mechanisms, not yet unified:** `SyncHash` (a SHA-256 of normalized `Title|StartTime|EndTime|Location`, used today across `Lineup`/`Parent Lineup`/`Crew_Calendar_Log`/`Venue_Cal_Log`/draft equivalents for drift detection) and `idLog.Fingerprint` (planned — a full-row JSON snapshot via `Engine.IO.serializeRow()`, intended to make post-merge/post-delete recovery and comparison easier). `Fingerprint` is not yet wired to `serializeRow()`; treat it as reserved/aspirational until that lands.
 
 ## Layered Data Architecture
 
@@ -69,15 +60,34 @@ The workbook operates across four distinct structural layers to maintain determi
    - **Sheets:** `Parent Lineup`, `draft_Parent`
    - **Key:** `parentID` | **Mode:** `OVERWRITE_ALLOWED` / `MIRROR`
    - Canonical entity identity layer. Maintains event identity across title and date drifts.
+   - Helps detect changes to `IMPORTCURRENT` / `IMPORTDRAFT`
 
 3. **Execution Layer (`LINEUPCURRENT` / `LINEUPDRAFT` & Calendars):**
    - **Sheets:** `Lineup`, `draft_Lineup`, `Calls`, `Crew_Calendar_Log`, `Venue_Cal_Log`, `Draft_Season_Log`
    - **Key:** `UUID` | **Mode:** `OVERWRITE_ALLOWED` / `SOURCE` / `SYNC` / `PULL`
+   - **Calendar Log Key:** 'eventID' once populated. If not populated, depending on options/mode/sheetBehavior, a calendar event should be created and the eventID populated. 
    - Granular event instance layer parsed into individual performance dates/times for calendar sync.
+   - parseDatesAndTimes performs the complex parsing of the DatesAndTimes field into individual evnts
 
 4. **Governance Layer:**
+   - See Metadata sources
    - **Sheets:** `decision_log`, `idLog`, `Audit_Log`, `Sheet_Settings`
    - Intercepts drift, tracks active review tasks, records historical audit logs, and maintains identity aliases.
+
+### Call/Itinerary Layer (`Calls`)
+
+`Calls` sits alongside the Execution Layer but is conceptually distinct from a `Lineup` row: a `Lineup`/`Parent Lineup` row represents *the event* (e.g. an 7:30pm performance), while a `Calls` row represents *a scheduled call time* for staff/crew relative to that event (load-in at 8:00am, a 12:00pm rehearsal, etc.) — the itinerary around the event, not the event itself. A single event can have many calls at different times of day, and a call is not required to share the event's own start time.
+
+`Calls` carries four distinct ID columns, each meaning something different:
+
+| Field | Meaning |
+|---|---|
+| `parentID` | Which show/event (`Parent Lineup` row) this call belongs to. |
+| `UUID` | Legacy field name was `childID`; renamed for consistency with the rest of the identity chain. Associates the call with a specific `Lineup` (or, potentially, `Venue_Cal_Log`/`Crew_Calendar_Log`) instance. |
+| `callID` | The call row's own identity, independent of the event it's attached to. |
+| `eventID` | Populated once this call is pushed to a Google Calendar (via `Crew_Calendar_Log`); the calendar event ID for the call itself. |
+
+`Calls` → `Crew_Calendar_Log` sync (`syncCallsToCrewLog()` in `0_sync calls and crew log.js`) currently exists only as a **deprecated legacy path** — full re-integration of Calls into the `Engine.*` sync pipeline is open work (see `LEGACY_FEATURES.md` / ROADMAP.md).
 
 ## Role-Based Sheet Access (`SheetRole`)
 
@@ -88,66 +98,50 @@ All engine functions decouple script logic from static tab names by fetching wor
 
 ## Identity Chain & `idLog` Alias Table
 
-```mermaid
-flowchart TD
-    subgraph Intake["1. Raw Intake Layer (Read-Only)"]
-        import["import / draft_import<br/>(Key: Fingerprint)"]
-    end
 
-    subgraph Catalog["2. Master Catalog Layer"]
-        parent["Parent Lineup / draft_Parent<br/>(Key: parentID)"]
-    end
+`IMPORTCURRENT` / `IMPORTDRAFT` (raw IMPORTRANGE source)
+  -> `PARENTCURRENT` / `PARENTDRAFT` (parentID)
+  -> `LINEUPCURRENT` / `LINEUPDRAFT` (UUID per performance)
+  -> `Crew_Calendar_Log` / `Draft_Season_Log` (UUID + EventID)
+  -> `Venue_Cal_Log` (EventID + associated UUID) 
+  -> 'idLog' (UniqueID registry + Merged IDs alias table)
 
-    subgraph Execution["3. Execution Layer"]
-        lineup["Lineup / draft_Lineup<br/>(Key: UUID per performance)"]
-        crew["Crew_Calendar_Log<br/>(Key: UUID + EventID)"]
-        venue["Venue_Cal_Log<br/>(Key: EventID + associated UUID)"]
-        cal["Google Calendar<br/>(Key: EventID)"]
-    end
-
-    subgraph Governance["4. Governance & Audit Layer"]
-        decisions["decision_log<br/>(Active Review Queue)"]
-        audit["Audit_Log<br/>(Historical Log)"]
-        idlog["idLog<br/>(UniqueID Registry & Merged IDs)"]
-    end
-
-    import -- "Ingest Season (goParent)" --> parent
-    parent -- "Explode Dates (goLineup)" --> lineup
-    lineup -- "Sync Lineup (goCrewLog)" --> crew
-    crew <-->|"Sync (goSync)"| cal
-    venue <-->|"Sync (goSync)"| cal
-    
-    import -. "Drift / Duplicates" .-> decisions
-    parent -. "Drift / Duplicates" .-> decisions
-    decisions -- "Approved Decisions (Apply)" --> parent
-    decisions -- "Applied / Superseded" --> audit
-    parent -. "Register / Merges" .-> idlog
-    lineup -. "Register UUIDs" .-> idlog
-```
+`Calls` attaches to this chain via `parentID` (which show) and `UUID` (which Lineup/calendar-log instance), but is not itself part of the linear identity chain above — see "Call/Itinerary Layer" above.
 
 `import` is read-only because it is supplied by `IMPORTRANGE`. Its row number is not a permanent identity. Parent identity matching must use content/source evidence and preserve an existing `parentID` when continuity is established.
 
 `UniqueID` remains the mixed-form `idLog` key. Its interpretation comes from `RecordType`, source sheet, and location.
+
 ## Status, Behavior, and Decisions
 
+SEE METADATA SOURCES FOR LIVE DATA
+
+Below notes are incomplete
+
+**'Status.csv'** 
 - `SyncStatus`: current state/result of a row.
-- `Row.Exception` / `Behavior`: whether automatic mutation is allowed.
+   `Possible Duplicate` is a review status, not an automatic command. It should trigger a decision
+   'Delete Pending' was originally a way for the user to request deletion. this may need reconsidered. 
+- `Row.Exception` / `Behavior`: whether automatic mutation is allowed, based on applied status.
+
+**'ref.csv**
+- `Behavior`: whether automatic mutation is allowed
+   `LOCKED` and `BYPASS` prevent mutation. Detected differences may still be logged and may create a pending decision.
 - `Options`: row-level operational override such as `Bypass`, `Push to Calendar`, or `Prefer Venue Event`.
-- `decision_log.Decision`: user conclusion.
-- `decision_log.RequestedAction`: requested engine operation.
-    - REVIEW_*: create or retain a review item; no automatic data mutation.
-    - ACCEPT_*: apply an approved source update.
-    - MERGE_*: combine identities and repoint relationships.
-    - ADOPT_*: create an explicit cross-sheet association.
-    - MARK_*: change an operational state.
-    - REFRESH_*: propagate an already-approved upstream change.
-- `decision_log.ActionStatus`: processing result.
-- `decision_log.ParentTitle` and `CandidateTitle`: the visible pair to compare
-  for a Parent-to-Parent duplicate; IDs and row links retain the row identity.
 
-`LOCKED` and `BYPASS` prevent mutation. Detected differences may still be logged and may create a pending decision.
+- Decisions
+   - `decision_log.Decision`: user conclusion.
+   - `decision_log.RequestedAction`: requested engine operation.
+      - REVIEW_*: create or retain a review item; no automatic data mutation.
+      - ACCEPT_*: apply an approved source update.
+      - MERGE_*: combine identities and repoint relationships.
+      - ADOPT_*: create an explicit cross-sheet association.
+      - MARK_*: change an operational state.
+      - REFRESH_*: propagate an already-approved upstream change.
+   - `decision_log.ActionStatus`: processing result.
+   - `decision_log.ParentTitle` and `CandidateTitle`: the visible pair to compare
+   for a Parent-to-Parent duplicate; IDs and row links retain the row identity.
 
-`Possible Duplicate` is a review status, not an automatic command.
 
 ## Data Direction
 
@@ -159,6 +153,7 @@ The engine must support explicit modes for:
 - two-way: compare and apply policy-controlled changes.
 - **Source-Preference Policy:** Ensure engine prefers source data when destination fields are null/blank.
 Calendar event IDs must be preserved during property updates. Initial property patching covers title, start/end, location, and description. Use `ctx.timeZone` for date conversions.
+
 ## Developer Overrides
 
 Destructive operations remain available for recovery and initialization, but belong under a confirmed Developer Overrides menu. Examples include resetting Parent Lineup, initializing a log, clearing sync-managed fields, rebuilding headers, repairing hashes, and deleting selected rows.
