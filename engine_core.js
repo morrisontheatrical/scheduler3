@@ -619,7 +619,11 @@ var Engine = {
         return;
       }
 
-      const theme = ctx.status[statusName] || { hex: "#ffffff", behavior: "DEFAULT" };
+      const theme = ctx.status[statusName];
+      if (!theme) {
+        Engine.Log.error(ctx, "STATUS", `No Status sheet entry for "${statusName}" — row was updated but not repainted.`);
+      }
+      const resolvedTheme = theme || { hex: "", behavior: "DEFAULT" };
       const now = new Date();
       const targetObj = logContext.targetObj;
 
@@ -632,8 +636,8 @@ var Engine = {
         if (lastSyncedCol >= 0) targetObj.LastSynced = now;
         if (logContext.details && updateDetailsCol >= 0) targetObj.UpdateDetails = logContext.details;
         // patchRows() only writes cell values, not formatting — paint the row directly here.
-        if (targetObj._rowNum && theme.hex) {
-          sheet.getRange(targetObj._rowNum, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
+        if (targetObj._rowNum && resolvedTheme.hex) {
+          sheet.getRange(targetObj._rowNum, 1, 1, sheet.getLastColumn()).setBackground(resolvedTheme.hex);
         }
       } else if (rowIdx) {
         if (syncStatusCol >= 0) sheet.getRange(rowIdx, syncStatusCol + 1).setValue(statusName);
@@ -641,7 +645,7 @@ var Engine = {
         if (logContext.details && updateDetailsCol >= 0) {
           sheet.getRange(rowIdx, updateDetailsCol + 1).setValue(logContext.details);
         }
-        if (theme.hex) sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
+        if (resolvedTheme.hex) sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(resolvedTheme.hex);
       } else {
         Engine.Log.error(ctx, "STATUS", `Status.apply called for "${statusName}" with neither rowIdx nor targetObj.`);
         return;
@@ -656,6 +660,24 @@ var Engine = {
           type: statusName,
           details: logContext.details || `Status changed to ${statusName}`
         });
+      }
+    },
+
+    /**
+     * Minimal paint-only helper for call sites that manage their own
+     * SyncStatus/LastSynced writes and just need the row color applied
+     * without re-routing through the full apply() write/log logic.
+     */
+    paint: function(ctx, roleOrSheetName, rowIdx, statusName) {
+      const sheet = ctx.sheets[roleOrSheetName] || ctx.ss.getSheetByName(ctx.getRole(roleOrSheetName) || roleOrSheetName);
+      if (!sheet || !rowIdx) return;
+      const theme = ctx.status[statusName];
+      if (!theme) {
+        Engine.Log.error(ctx, "STATUS", `Status.paint: no Status sheet entry for "${statusName}" on ${roleOrSheetName} row ${rowIdx}.`);
+        return;
+      }
+      if (theme.hex) {
+        sheet.getRange(rowIdx, 1, 1, sheet.getLastColumn()).setBackground(theme.hex);
       }
     }
   },

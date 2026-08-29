@@ -10,3 +10,4 @@ Provide project context and coding guidelines that AI should follow when generat
 # Instructions
 - Always review the provided context and related information before generating code or answers.
 - When generating code, follow the coding style and conventions used in the project.
+- When an issue is resolved, offer a closing comment for the issue, summarizing the changes made and any relevant information for future reference.

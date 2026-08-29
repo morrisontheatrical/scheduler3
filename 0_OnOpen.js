@@ -5,6 +5,7 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Diagnostics')
       .addItem('Diagnostic Dump', 'test_DiagnosticDump')
       .addItem('Run Health Check', 'goHealthCheck')
+      .addItem('Test Status Color Provider', 'test_StatusColorProvider')
       .addItem('Open Audit Log', 'openAuditLog'))
     .addSubMenu(ui.createMenu('Verification')
       .addItem('Verify import vs Parent Lineup', 'goVerifyImportToParent')

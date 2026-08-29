@@ -127,6 +127,7 @@ function goParent() {
       // are left completely alone otherwise.
       const statusCol = pCol("SyncStatus");
       if (statusCol >= 0) pSheet.getRange(match.rowIdx, statusCol + 1).setValue("Manual Review");
+      Engine.Status.paint(ctx, "Parent Lineup", match.rowIdx, "Manual Review");
       flaggedForReview++;
       Engine.Log.write(ctx, {
         stage: "INGEST",
@@ -156,6 +157,7 @@ function goParent() {
     if (pCol("LastSynced") >= 0) pSheet.getRange(match.rowIdx, pCol("LastSynced") + 1).setValue(now);
     if (changed && pCol("LastUpdated") >= 0) pSheet.getRange(match.rowIdx, pCol("LastUpdated") + 1).setValue(now);
     if (pCol("SyncStatus") >= 0) pSheet.getRange(match.rowIdx, pCol("SyncStatus") + 1).setValue("Active");
+    Engine.Status.paint(ctx, "Parent Lineup", match.rowIdx, "Active");
     if (changed) updated++;
   });
  
@@ -264,6 +266,7 @@ Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
       if (options.merge === true) {
         const statusCol = col("SyncStatus");
         if (statusCol >= 0) sheet.getRange(item.rowNumber, statusCol + 1).setValue("Manual Review");
+        Engine.Status.paint(ctx, "Parent Lineup", item.rowNumber, "Manual Review");
         merged++;
       }
     });
@@ -593,6 +596,7 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   const updateDetailsCol = Engine.getColumnIndex(parentMap, "UpdateDetails");
   const now = new Date();
   if (syncStatusCol >= 0) parentSheet.getRange(keepRow + 1, syncStatusCol + 1).setValue("Active");
+  Engine.Status.paint(ctx, "Parent Lineup", keepRow + 1, "Active");
   if (lastSyncedCol >= 0) parentSheet.getRange(keepRow + 1, lastSyncedCol + 1).setValue(now);
   if (lastUpdatedCol >= 0) parentSheet.getRange(keepRow + 1, lastUpdatedCol + 1).setValue(now);
   if (updateDetailsCol >= 0) {
@@ -745,10 +749,12 @@ function goLineup() {
       if (record) {
         rowArray[lCol("UUID")] = record.uuid;
         lSheet.getRange(record.rowIdx, 1, 1, rowArray.length).setValues([rowArray]);
+        Engine.Status.paint(ctx, lRole, record.rowIdx, rowArray[lCol("SyncStatus")] || "Draft");
       } else {
         rowArray[lCol("UUID")] = Utilities.getUuid();
         rowArray[lCol("SyncStatus")] = "Draft";
         lSheet.appendRow(rowArray);
+        Engine.Status.paint(ctx, lRole, lSheet.getLastRow(), "Draft");
       }
     });
   });
@@ -947,6 +953,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
         rowArray[idx] = obj[field];
       }
       logSheet.appendRow(rowArray);
+      Engine.Status.paint(ctx, targetRole, logSheet.getLastRow(), obj.SyncStatus || "Manual Review");
     });
   }
 
@@ -1484,6 +1491,7 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
         const lastSyncedCol = lCol("LastSynced");
         if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Manual Review");
         if (lastSyncedCol >= 0) lSheet.getRange(child.rowIdx, lastSyncedCol + 1).setValue(new Date());
+        Engine.Status.paint(ctx, "Lineup", child.rowIdx, "Manual Review");
         Engine.Log.write(ctx, {
           stage: "VERIFY_PARENT",
           sheetName: "Lineup",
@@ -1631,6 +1639,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   if (lastUpdatedCol >= 0) pSheet.getRange(sheetRowNum, lastUpdatedCol + 1).setValue(now);
   if (updateDetailsCol >= 0) pSheet.getRange(sheetRowNum, updateDetailsCol + 1).setValue(changeSummary);
   if (syncStatusCol >= 0) pSheet.getRange(sheetRowNum, syncStatusCol + 1).setValue("Active");
+  Engine.Status.paint(ctx, "Parent Lineup", sheetRowNum, "Active");
 
   // Per-field log entries for AUTO_UPDATE_AND_LOG
   if (importUpdatePolicy === "AUTO_UPDATE_AND_LOG") {
