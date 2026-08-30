@@ -783,6 +783,7 @@ Engine.Core = {
 
 /**
  * Legacy compatibility bridge for scriptLib (SL) helpers.
+ * I don't know that I ever had an SL.ColorProvider, but this is what I would call it if it moves to ScriptLib.
  */
 var SL = SL || {};
 SL.ColorProvider = function(statusName, ctx) {
