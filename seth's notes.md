@@ -8,7 +8,7 @@
     - hideColumn(sheet, indentifier)
     - showColumn(sheet, identifier)
 - legacy-plan.md
-
+- merge DEVELOPMENT_INTENTIONS.md with agent instructions
 
 
 ## TO DO
