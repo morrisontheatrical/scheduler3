@@ -7,6 +7,8 @@
 - Add isHidden option to Map_Registry
     - hideColumn(sheet, indentifier)
     - showColumn(sheet, identifier)
+- legacy-plan.md
+
 
 
 ## TO DO
