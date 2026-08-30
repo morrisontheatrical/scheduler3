@@ -13,11 +13,15 @@ metadata lives in various tabs (see Sheets_data folder for current csv)
 - `ref`: controlled enumerations for roles, behaviors, actions, decisions, log types, and sheet behavior. **This is the single source of truth for every dropdown/Enum field's valid values** (`Decision`, `RequestedAction`, `KeepChoice`, `ActionStatus`, `Confidence`, `SuggestedAction`, `ReviewType`, `TechStatus`, etc.). Do not duplicate value lists in `Map_Registry`, `Field_Names.csv`, or code comments — reference `ref.csv` instead so there is one place to update.
 - `ControlPanel`: user settings and system summary values.
 - `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, span policy, and `ImportUpdatePolicy`.
-  - `ImportUpdatePolicy` (per active mode) controls how `Engine.Ingest.acceptImportDrift()` handles import→Parent drift:
-    - `MANUAL_REVIEW`: does not auto-apply; queues an `IMPORT_DRIFT` decision and returns `false` (direct callers only — the decision-apply path passes `force: true` to bypass this gate).
-    - `AUTO_UPDATE`: applies the changed source fields and writes one summary audit entry.
-    - `AUTO_UPDATE_AND_LOG`: applies the changed source fields and writes a per-field audit entry for each change plus a summary.
-  - Exposed at runtime as `ctx.mode.importUpdatePolicy` (default `MANUAL_REVIEW`).
+  - `ImportUpdatePolicy` (per active mode) governs the **apply/accept** step — how `Engine.Ingest.acceptImportDrift()` handles import→Parent drift **when a change is actually applied**. It does NOT change what `Verify import vs Parent Lineup` (`verifyImportToParent`) does: verify is always read-only — it detects drift, flags the row, and queues an `IMPORT_DRIFT` decision. Whether those flagged changes then apply automatically or wait for a human is decided here:
+    - `MANUAL_REVIEW`: `acceptImportDrift()` (called directly, i.e. **not** via the Apply-Decisions path) does not apply; it re-queues an `IMPORT_DRIFT` decision and returns `false`. The Apply-Reviewed-Decisions path passes `force: true`, bypassing this gate — a human acceptance *is* the manual review.
+    - `AUTO_UPDATE`: `acceptImportDrift()` applies the changed source fields and writes one summary audit entry.
+    - `AUTO_UPDATE_AND_LOG`: `acceptImportDrift()` applies the changed source fields and writes a per-field audit entry for each change plus a summary.
+  - Exposed at runtime as `ctx.mode.importUpdatePolicy` (default `MANUAL_REVIEW`, read only from the **active** `Mode_Config` row).
+  - **Intended per-mode behavior (owner intent, 2026-08-29):**
+    - **Draft mode** — the company is actively editing the import sheet, so changes are expected and events are unconfirmed. Target: `draft_import → AUTO_UPDATE → draft_parent → (policy TBD) → draft_lineup → (policy TBD) → draft_season_log → sync to draft calendar`. A summary log is sufficient; per-field logging is not wanted. *Open:* the parent→lineup and lineup→log hops have no per-layer policy yet — today only the import→parent hop is governed by `ImportUpdatePolicy`.
+    - **Live / current season** — events are confirmed; a change is more notable. Target: `import → MANUAL_REVIEW → decision_log → Apply (accept) → Lineup → Crew_Calendar_Log`.
+  - **Known gap (see ROADMAP.md):** the policy does not yet short-circuit verify — in draft/AUTO mode the user still has to run Apply Reviewed Decisions to realize an auto-update, and re-running verify can re-queue decisions that were already accepted. This is a separate modes-normalization issue.
 - `Sheet_Settings`: sheet names, roles, ID keys, sync behavior, sync mode, and protection flags.
 - `Map_Registry`: field-to-column mappings plus display names, data types, and sync behavior.
 - `Status`: the canonical list of row states, colors, and exception/behavior rules.
@@ -61,6 +65,7 @@ The workbook operates across four distinct structural layers to maintain determi
    - **Key:** `parentID` | **Mode:** `OVERWRITE_ALLOWED` / `MIRROR`
    - Canonical entity identity layer. Maintains event identity across title and date drifts.
    - Helps detect changes to `IMPORTCURRENT` / `IMPORTDRAFT`
+   - **Two distinct import→parent paths, do not conflate them:** `Ingest Season` (`goParent`) **adds and updates** Parent rows directly from import (governed by `SheetBehavior`/`Source` fields). `Verify import vs Parent` (`verifyImportToParent`) only **detects and logs** drift and queues decisions — it never applies changes; realizing those changes is the separate Apply/accept step governed by `ImportUpdatePolicy`.
 
 3. **Execution Layer (`LINEUPCURRENT` / `LINEUPDRAFT` & Calendars):**
    - **Sheets:** `Lineup`, `draft_Lineup`, `Calls`, `Crew_Calendar_Log`, `Venue_Cal_Log`, `Draft_Season_Log`

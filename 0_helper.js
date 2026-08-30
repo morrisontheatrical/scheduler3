@@ -331,7 +331,7 @@ function getStatusColor(statusName, ctx) {
  */
 function applyStatus(sheet, rowIdx, statusName, options = {}) {
   const ctx = Engine.getContext();
-  const sheetName = (typeof sheet === "string") ? sheet : (sheet && sheet.getName ? sheet.getName() : "CREWCAL");
+  const sheetName = (typeof sheet === "string") ? sheet : (sheet && sheet.getName ? sheet.getName() : "Crew_Calendar_Log");
   Engine.Status.apply(ctx, sheetName, rowIdx, statusName, options);
 }
 

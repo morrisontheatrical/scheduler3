@@ -112,3 +112,34 @@ function test_StatusColorProvider() {
     console.error(e.stack);
   }
 }
+
+function previewMapRegistryRepair(sheetName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const registrySheet = ss.getSheetByName("Map_Registry");
+  const data = registrySheet.getDataRange().getValues();
+  const headers = data[0];
+  const colSheetName = headers.indexOf("Sheet Name");
+  const colFieldName = headers.indexOf("Field Name");
+  const colIndex = headers.indexOf("Column Index");
+  const colDisplayName = headers.indexOf("Header DisplayName");
+  const colNotes = headers.indexOf("Notes");
+
+  const registryEntries = data.slice(1)
+    .filter(row => row[colSheetName] === sheetName)
+    .map(row => ({
+      fieldName: String(row[colFieldName] || "").trim(),
+      displayName: String(row[colDisplayName] || "").trim(),
+      notes: String(row[colNotes] || ""),
+      index: Number(row[colIndex])
+    }));
+
+  const targetSheet = ss.getSheetByName(sheetName);
+  const physicalHeaders = targetSheet.getRange(1, 1, 1, targetSheet.getLastColumn()).getValues()[0];
+
+  const diff = Engine.Maintenance._diffHeaders(physicalHeaders, registryEntries);
+  console.log(`Would add ${diff.newPhysical.length} new row(s):`, JSON.stringify(diff.newPhysical));
+  console.log(`Would flag ${diff.staleRegistry.length} stale row(s):`, JSON.stringify(diff.staleRegistry.map(e => e.fieldName)));
+  console.log(`${diff.duplicateEntries.length} duplicate entries found:`, JSON.stringify(diff.duplicateEntries.map(d => d.entry.fieldName)));
+  return diff;
+}
+

@@ -47,6 +47,29 @@ Engine.Maintenance = {
       });
     });
 
+    // Status coverage check — derived entirely from the sheets (no hardcoded
+    // status list): every SyncStatus value actually present on any data sheet
+    // must resolve to a row on the Status sheet, otherwise that row paints
+    // nothing. The Status sheet remains the single source of truth.
+    const statusesInData = {};
+    Object.keys(ctx.sheetDefs || ctx.schema || {}).forEach(sheetName => {
+      const sheetDef = (ctx.sheetDefs && ctx.sheetDefs[sheetName]) || ctx.schema[sheetName];
+      if (!sheetDef || !sheetDef.map) return;
+      const syncIdx = Engine.getColumnIndex(sheetDef.map, "SyncStatus");
+      if (syncIdx < 0) return;
+      const sheet = ctx.ss.getSheetByName(sheetName);
+      if (!sheet || sheet.getLastRow() < 2) return;
+      sheet.getRange(2, syncIdx + 1, sheet.getLastRow() - 1, 1).getValues().forEach(([v]) => {
+        const name = String(v || "").trim();
+        if (name) statusesInData[name] = true;
+      });
+    });
+    Object.keys(statusesInData).forEach(statusName => {
+      if (!ctx.status || !ctx.status[statusName]) {
+        reports.push(`❌ Status sheet is missing a row for status found in data: "${statusName}"`);
+      }
+    });
+
     return reports.length > 0 ? reports : ["✅ System Healthy"];
   },
 
