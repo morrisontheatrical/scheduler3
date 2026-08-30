@@ -9,6 +9,7 @@
     - showColumn(sheet, identifier)
 - legacy-plan.md
 - merge DEVELOPMENT_INTENTIONS.md with agent instructions
+- review normalize0829.md and compare with scriptLib normalize utility
 
 
 ## TO DO
