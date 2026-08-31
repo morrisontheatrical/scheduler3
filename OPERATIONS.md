@@ -79,6 +79,10 @@ Protected sheets are skipped unless an explicit confirmation path is used.
 
 `Verify Import vs Parent Lineup` compares raw import data to Parent Lineup and may create pending decisions. It must not treat every Parent-only row as a duplicate.
 
+**Matching uses a shared normalization tier** (`SL.Utils.normalize` with `collapse` + `fold` — see `scriptLib/README_scriptLib_changes.md`, 2026-08-30 entry), so titles that look identical but differ by smart quotes, en/em dashes, or zero-width characters from the `IMPORTRANGE` round trip still match directly instead of falling through to the rename-candidate path. A row that is genuinely renamed (same Opening/Range/Venue, title still different after folding) is still flagged `Manual Review` with an `ACCEPT_IMPORT` decision — that is the intended path for placeholder→real-title changes (ROADMAP #9).
+
+**Known open gap (issue #7):** a clean match today does nothing — a review status left by a prior run (e.g. `Data Drift Detected`) is not cleared, and the matching `IMPORT_PARENT` decision is not superseded, so a stale flag persists until a human resolves it. The heal-to-`Synced` + `markSuperseded` design is drafted for issue #7; do not treat "row stayed orange" as evidence of live drift until that lands.
+
 `Verify Parent Lineup vs Lineup` compares parsed Parent Lineup dates and venues to Lineup rows.
 
 Verification may update status and `LastSynced` when the current behavior allows it. `LOCKED` and `BYPASS` rows are not mutated, but detected differences are logged.

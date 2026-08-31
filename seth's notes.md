@@ -7,10 +7,10 @@
 - Add isHidden option to Map_Registry
     - hideColumn(sheet, indentifier)
     - showColumn(sheet, identifier)
-- legacy-plan.md
+- agent-notes/legacy-plan.md
 - merge DEVELOPMENT_INTENTIONS.md with agent instructions
-- review normalize0829.md and compare with scriptLib normalize utility
-
+- agent-notes/review normalize0829.md and compare with scriptLib normalize utility
+- agent-notes/COPILOT_AGENT_INSTRUCTIONS_RoleSweep.md
 
 ## TO DO
 - create diagram to represnt data flow

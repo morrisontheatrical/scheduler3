@@ -1,5 +1,10 @@
 # Normalize and Normalize Title
 
+> **STATUS (2026-08-30):**
+> - **Change 1 + Change 2: SUPERSEDED, do not apply as written.** The folding now lives in one place — `scriptLib`'s `SL.Utils.normalize(val, { collapse, fold })` (see `scriptLib/README_scriptLib_changes.md`, 2026-08-30 entry). All `engine_ingest.js`/`engine_sync.js` lookups, including `verifyImportToParent`'s `pByName`, already delegate to it. A separate local `normalizeTitle` and the `titleReallyMatches` re-check were both rejected as redundant (see ARCHITECTURE.md "Runtime" and the session plan in `/memories/session/plan.md`).
+> - **Change 3 (heal a stale status on clean match): NOT implemented — deliberately deferred to issue #7** (decision_log queue purge and decision history), per the 8/30 discussion: heal only engine-set diagnostic statuses (`Data Drift Detected` → `Synced`), never user-intent statuses (`Manual Review` etc.), plus `markSuperseded` on the matching `IMPORT_PARENT` decision.
+> - "Before you run this broadly" charCode check: still worth doing once, to confirm the 8/29 divergence was typographic rather than real placeholder-vs-title text.
+
 **These may have already been partially addressed**
 **There is a normalize function in scriptLib.Utils**
 

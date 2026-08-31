@@ -328,7 +328,10 @@ Engine.Sync = {
 
     const crewEvents = scanSheet(role, ctx);
     const matchedIds = {};
-    const normalizeTitle = title => String(title || "").trim().toLowerCase().replace(/\s+/g, " ");
+    // Shared normalize (scriptLib SL.Utils) — collapse + fold so titles that
+    // drifted via smart punctuation still group with their calendar events.
+    const utils = Engine.getLibraryModule("Utils");
+    const normalizeTitle = title => utils.normalize(title, { collapse: true, fold: true });
     const crewByTitleStart = {};
     crewEvents.forEach(row => {
       const start = row.Start ? new Date(row.Start) : null;

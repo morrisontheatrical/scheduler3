@@ -70,7 +70,10 @@ function goParent() {
     });
   }
 
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils); see sourceValuesEqual above for the
+  // canonical tier used across ingest lookups: collapse + typographic fold.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const pByName = {};
   pData.forEach((row, idx) => {
     const name = normalize(row[pCol("EventName")]);
@@ -209,16 +212,15 @@ Engine.Ingest.getParentSourceFields = function(ctxOrIMap, maybeIMapOrPMap, maybe
 };
 
 Engine.Ingest.sourceValuesEqual = function(ctx, fieldName, left, right) {
+  // Canonical string normalization now lives in scriptLib (SL.Utils.normalize);
+  // the only part that stays here is Date formatting, which needs ctx.timeZone.
+  const utils = Engine.getLibraryModule("Utils");
   const normalize = value => {
     if (value instanceof Date && !isNaN(value.getTime())) {
       const pattern = fieldName === "Opening" ? "M/d/yyyy" : "M/d";
       return Utilities.formatDate(value, ctx.timeZone, pattern);
     }
-    return String(value === null || value === undefined ? "" : value)
-      .trim()
-      .toLowerCase()
-      .replace(/[–—]/g, "-")
-      .replace(/\s+/g, " ");
+    return utils.normalize(value, { collapse: true, fold: true });
   };
   return normalize(left) === normalize(right);
 };
@@ -245,7 +247,9 @@ Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
   const map = ctx.getMap("Parent Lineup");
   if (!sheet || !map) return { groups: [], merged: 0 };
   const col = field => Engine.getColumnIndex(map, field);
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const data = sheet.getDataRange().getValues();
   const rows = data.slice(1).map((row, index) => ({ row: row, rowNumber: index + 2 }));
   const groups = {};
@@ -282,7 +286,11 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
   if (!sheet || !map) return { created: 0, suggested: 0 };
 
   const col = field => Engine.getColumnIndex(map, field);
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
+  // (compact stays local: it strips all non-alphanumerics — a different tier
+  // used for similarity scoring, not equality.)
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const compact = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   const similarity = (a, b) => {
     const left = compact(a);
@@ -408,7 +416,9 @@ Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
   if (!parentSheet || !parentMap || !Engine.Decisions) return { created: 0, suggested: 0 };
 
   const col = field => Engine.getColumnIndex(parentMap, field);
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const dateValue = value => {
     if (value instanceof Date && !isNaN(value.getTime())) return value.getTime();
     const parsed = new Date(value);
@@ -1025,7 +1035,10 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   const pData = pSheet.getDataRange().getValues();
   pData.shift();
 
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils) — collapse + fold so titles that
+  // picked up smart punctuation via IMPORTRANGE still match their Parent row.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const pByName = {};
   pData.forEach((row, idx) => {
     const name = normalize(row[pCol("EventName")]);
@@ -1328,7 +1341,9 @@ Engine.Ingest.refreshParentOnlyDecisions = function(ctx) {
 
   const pCol = field => Engine.getColumnIndex(parentMap, field);
   const iCol = field => Engine.getColumnIndex(importMap, field);
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const parentById = {};
   parentSheet.getDataRange().getValues().slice(1).forEach(row => {
     parentById[row[pCol("parentID")]] = row;
@@ -1369,7 +1384,9 @@ Engine.Ingest.refreshParentDuplicateDecisions = function(ctx) {
   if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map is missing");
 
   const pCol = field => Engine.getColumnIndex(parentMap, field);
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
   const parentById = {};
   parentSheet.getDataRange().getValues().slice(1).forEach(row => {
     parentById[row[pCol("parentID")]] = row;
@@ -1532,8 +1549,10 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   const pMap = ctx.getMap("Parent Lineup");
   const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
-  const normalize = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
- 
+  // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
+
   const pData = pSheet.getDataRange().getValues(); // includes header at index 0
   const pRowIdx = pData.findIndex(row => row[pCol("parentID")] === parentID);
   if (pRowIdx === -1) {

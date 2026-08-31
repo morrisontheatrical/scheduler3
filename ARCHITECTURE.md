@@ -6,6 +6,7 @@
 - `Engine.getContext()` is the canonical runtime entrypoint.
 - The engine owns workbook configuration, sync state, sheet maps, modes, status rules, audit logging, and identity relationships.
 - `scriptLib` contains stable project-agnostic primitives. Scheduler-specific policy remains in `Engine.*`.
+- **String comparison has one canonical implementation: `scriptLib`'s `SL.Utils.normalize(val, opts)`** (see `scriptLib/README_scriptLib_changes.md`, 2026-08-30 entry). Tiers: strict (default — trim + lowercase), `collapse` (squeeze whitespace), `fold` (typographic: smart quotes → straight, en/em dash/minus → hyphen, zero-width removal). Cross-sheet title/name equality and the `verify`/`ingest` lookups use `{ collapse: true, fold: true }` so titles that picked up smart punctuation via `IMPORTRANGE` still match. Date-aware comparison stays engine-side (`Engine.Ingest.sourceValuesEqual` needs `ctx.timeZone` for `Opening` vs other date fields, but delegates the string tier to `SL.Utils`). Deliberately distinct tiers that stay local: `compact`/`normalizeForCompare` (strip all non-alphanumerics — similarity scoring, not equality) and `normalizeHeader` in `engine_core.js` (Mode_Config header matching). Do not add a fourth inline `trim().toLowerCase().replace(...)` variant.
 - **Context Object (`ctx`):** Initialized once per execution by `engine_core.buildContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
 
 ## Metadata Sources
