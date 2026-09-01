@@ -25,7 +25,7 @@ Engine.Decisions = {
   },
 
   ensureComparisonColumns: function(ctx) {
-    const sheet = ctx.ss.getSheetByName("decision_log");
+    const sheet = Engine.getSheetByRole(ctx, "DECISIONS");
     const registry = ctx.ss.getSheetByName("Map_Registry");
     if (!sheet || !registry) throw new Error("decision_log or Map_Registry sheet is missing");
 
@@ -64,7 +64,7 @@ Engine.Decisions = {
   },
 
   ensureSchema: function(ctx) {
-    const sheet = ctx.ss.getSheetByName("decision_log");
+    const sheet = Engine.getSheetByRole(ctx, "DECISIONS");
     this.ensureComparisonColumns(ctx);
     const map = this._getMap(ctx);
     if (!sheet || !map) throw new Error("decision_log sheet or Map_Registry definition is missing");
@@ -187,8 +187,9 @@ Engine.Decisions = {
   refreshLinks: function(ctx) {
     const table = this.ensureSchema(ctx);
     const resolveParentRow = parentID => {
-      const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
-      const parentMap = ctx.getMap("Parent Lineup");
+      const pRole = Engine.Roles.resolve(ctx, "PARENT");
+      const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+      const parentMap = ctx.getMap(pRole);
       const idColumn = Engine.getColumnIndex(parentMap, "parentID");
       if (!parentSheet || idColumn < 0 || !parentID) return null;
       const data = parentSheet.getDataRange().getValues();

@@ -182,8 +182,8 @@ Engine.Maintenance = {
    */
   applyDropdowns: function(ctx) {
     const ss = ctx.ss;
-    const lookupSheet = ss.getSheetByName("Lookup");
-    const lMap = ctx.maps["Lookup"];
+    const lookupSheet = Engine.getSheetByRole(ctx, "LOOKUP");
+    const lMap = ctx.getMap("LOOKUP");
     if (!lookupSheet || !lMap) return;
 
     const lData = lookupSheet.getDataRange().getValues().slice(1);
@@ -199,19 +199,17 @@ Engine.Maintenance = {
     const callTypeList = getList(Engine.getColumnIndex(lMap, "CallType"));
     const optionsList = getList(Engine.getColumnIndex(lMap, "Options"));
 
-    const targets = {
-      "Lineup": {
-        "Venue": venueList
-      },
-      "Crew_Calendar_Log": {
-        "Location": venueList,
-        "Options": optionsList
-      }
-    };
+    const lineupRole = Engine.Roles.resolve(ctx, "LINEUP");
+    const isDraftSeason = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+    const logRole = isDraftSeason ? "DRAFTCAL" : "CREWCAL";
 
-    for (const [sheetName, config] of Object.entries(targets)) {
-      const targetSheet = ss.getSheetByName(sheetName);
-      const targetMap = ctx.maps[sheetName];
+    const targets = {};
+    if (lineupRole) targets[lineupRole] = { "Venue": venueList };
+    targets[logRole] = { "Location": venueList, "Options": optionsList };
+
+    for (const [role, config] of Object.entries(targets)) {
+      const targetSheet = Engine.getSheetByRole(ctx, role);
+      const targetMap = ctx.getMap(role);
       if (!targetSheet || !targetMap) continue;
 
       for (const [colName, list] of Object.entries(config)) {
@@ -657,10 +655,8 @@ function finalizeMaintenance(summary) {
 
 function getSheetByRole(roleName) {
   const ctx = Engine.getContext();
-  const sheetName = ctx.getRole(roleName);
-  if (!sheetName) throw new Error(`No sheet found for role "${roleName}"`);
-  const sheet = ctx.ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet "${sheetName}" (role "${roleName}") not found in spreadsheet`);
+  const sheet = Engine.getSheetByRole(ctx, roleName);
+  if (!sheet) throw new Error(`No sheet found for role "${roleName}"`);
   return sheet;
 }
 

@@ -9,25 +9,27 @@ function goParent() {
   const ctx = Engine.getContext();
   Engine.Log.command(ctx, "Ingest Season");
   const ss = ctx.ss;
-  const iSheet = ss.getSheetByName("import");
-  const pSheet = ss.getSheetByName("Parent Lineup");
+  const iRole = Engine.Roles.resolve(ctx, "IMPORT");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const iSheet = iRole && Engine.getSheetByRole(ctx, iRole);
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
  
   if (!iSheet || !pSheet) {
     const utils = Engine.getLibraryModule("Utils");
-    if (utils && typeof utils.notify === "function") utils.notify("Import or Parent Lineup sheet not found.", "Error");
+    if (utils && typeof utils.notify === "function") utils.notify("Import or Parent Lineup sheet not found for the active mode's target season.", "Error");
     return;
   }
  
-  const iMap = ctx.getMap("import");
-  const pMap = ctx.getMap("Parent Lineup");
+  const iMap = ctx.getMap(iRole);
+  const pMap = ctx.getMap(pRole);
   const iData = iSheet.getDataRange().getValues();
   const pData = pSheet.getDataRange().getValues();
  
   iData.shift();
   pData.shift();
  
-  const iCol = fieldName => ctx.getCol("import", fieldName);
-  const pCol = fieldName => ctx.getCol("Parent Lineup", fieldName);
+  const iCol = fieldName => ctx.getCol(iRole, fieldName);
+  const pCol = fieldName => ctx.getCol(pRole, fieldName);
   const pWidth = Math.max(...Object.keys(pMap).map(fieldName => pMap[fieldName]).filter(index => index >= 0)) + 1;
   // Source fields mirror import. System fields are maintained by this
   // operation so every successful import pass has a visible audit state.
@@ -131,7 +133,7 @@ function goParent() {
       // are left completely alone otherwise.
       const statusCol = pCol("SyncStatus");
       if (statusCol >= 0) pSheet.getRange(match.rowIdx, statusCol + 1).setValue("Manual Review");
-      Engine.Status.paint(ctx, "Parent Lineup", match.rowIdx, "Manual Review");
+      Engine.Status.paint(ctx, pRole, match.rowIdx, "Manual Review");
       flaggedForReview++;
       Engine.Log.write(ctx, {
         stage: "INGEST",
@@ -161,7 +163,7 @@ function goParent() {
     if (pCol("LastSynced") >= 0) pSheet.getRange(match.rowIdx, pCol("LastSynced") + 1).setValue(now);
     if (changed && pCol("LastUpdated") >= 0) pSheet.getRange(match.rowIdx, pCol("LastUpdated") + 1).setValue(now);
     if (pCol("SyncStatus") >= 0) pSheet.getRange(match.rowIdx, pCol("SyncStatus") + 1).setValue("Active");
-    Engine.Status.paint(ctx, "Parent Lineup", match.rowIdx, "Active");
+    Engine.Status.paint(ctx, pRole, match.rowIdx, "Active");
     if (changed) updated++;
   });
  
@@ -238,13 +240,15 @@ Engine.Ingest._writeParentIdentity = function(ctx, rowNumber, rowArray, pMap) {
     time: "",
     venue: venueCol >= 0 ? rowArray[venueCol] : ""
   });
-  if (generated && generated.hash) ctx.ss.getSheetByName("Parent Lineup").getRange(rowNumber, hashCol + 1).setValue(generated.hash);
+  const pSheet = Engine.getSeasonSheet(ctx, "PARENT");
+  if (generated && generated.hash && pSheet) pSheet.getRange(rowNumber, hashCol + 1).setValue(generated.hash);
 };
 
 Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
   options = options || {};
-  const sheet = ctx.ss.getSheetByName("Parent Lineup");
-  const map = ctx.getMap("Parent Lineup");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const sheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const map = ctx.getMap(pRole);
   if (!sheet || !map) return { groups: [], merged: 0 };
   const col = field => Engine.getColumnIndex(map, field);
   // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
@@ -271,7 +275,7 @@ Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
       if (options.merge === true) {
         const statusCol = col("SyncStatus");
         if (statusCol >= 0) sheet.getRange(item.rowNumber, statusCol + 1).setValue("Manual Review");
-        Engine.Status.paint(ctx, "Parent Lineup", item.rowNumber, "Manual Review");
+        Engine.Status.paint(ctx, pRole, item.rowNumber, "Manual Review");
         merged++;
       }
     });
@@ -281,8 +285,9 @@ Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
 
 Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
   options = options || {};
-  const sheet = ctx.ss.getSheetByName("Parent Lineup");
-  const map = ctx.getMap("Parent Lineup");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const sheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const map = ctx.getMap(pRole);
   if (!sheet || !map) return { created: 0, suggested: 0 };
 
   const col = field => Engine.getColumnIndex(map, field);
@@ -411,8 +416,9 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
 };
 
 Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
-  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const parentMap = ctx.getMap("Parent Lineup");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const parentMap = ctx.getMap(pRole);
   if (!parentSheet || !parentMap || !Engine.Decisions) return { created: 0, suggested: 0 };
 
   const col = field => Engine.getColumnIndex(parentMap, field);
@@ -494,7 +500,7 @@ Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
 };
 
 Engine.Ingest.applyConfirmedParentMerges = function(ctx) {
-  const decisionSheet = ctx.ss.getSheetByName("decision_log");
+  const decisionSheet = Engine.getSheetByRole(ctx, "DECISIONS");
   const table = Engine.Decisions && Engine.Decisions.ensureSchema ? Engine.Decisions.ensureSchema(ctx) : null;
   if (!decisionSheet || !table) return { applied: 0, failed: 0 };
 
@@ -542,9 +548,10 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
     throw new Error("mergeParentDuplicate requires two different parent IDs");
   }
 
-  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const parentMap = ctx.getMap("Parent Lineup");
-  if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map not found");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const parentMap = ctx.getMap(pRole);
+  if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map not found for the active mode's target season");
   const parentIdCol = Engine.getColumnIndex(parentMap, "parentID");
   const parentData = parentSheet.getDataRange().getValues();
   const duplicateRow = parentData.findIndex((row, index) => index > 0 && row[parentIdCol] === duplicateParentID);
@@ -556,7 +563,7 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   const duplicateValues = parentData[duplicateRow];
   const sourceFields = [...new Set([
     "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit",
-    ...Object.keys(parentMap).filter(fieldName => Engine.getSyncBehavior(ctx, "Parent Lineup", fieldName) === "Source (Read-Only)")
+    ...Object.keys(parentMap).filter(fieldName => Engine.getSyncBehavior(ctx, pRole, fieldName) === "Source (Read-Only)")
   ])].filter(fieldName => Engine.getColumnIndex(parentMap, fieldName) >= 0);
   const copiedFields = [];
   sourceFields.forEach(fieldName => {
@@ -577,7 +584,7 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
     const map = ctx.getMap(sheetName);
     const sheet = ctx.ss.getSheetByName(sheetName);
     const col = Engine.getColumnIndex(map, "parentID");
-    if (!sheet || col < 0 || sheetName === "Parent Lineup") return;
+    if (!sheet || col < 0 || sheet === parentSheet) return;
     const values = sheet.getDataRange().getValues();
     for (let i = 1; i < values.length; i++) {
       if (values[i][col] === duplicateParentID) {
@@ -607,7 +614,7 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   const updateDetailsCol = Engine.getColumnIndex(parentMap, "UpdateDetails");
   const now = new Date();
   if (syncStatusCol >= 0) parentSheet.getRange(keepRow + 1, syncStatusCol + 1).setValue("Active");
-  Engine.Status.paint(ctx, "Parent Lineup", keepRow + 1, "Active");
+  Engine.Status.paint(ctx, pRole, keepRow + 1, "Active");
   if (lastSyncedCol >= 0) parentSheet.getRange(keepRow + 1, lastSyncedCol + 1).setValue(now);
   if (lastUpdatedCol >= 0) parentSheet.getRange(keepRow + 1, lastUpdatedCol + 1).setValue(now);
   if (updateDetailsCol >= 0) {
@@ -846,11 +853,13 @@ Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
 
 Engine.Ingest.syncLineupToLog = function(ctx, options) {
   options = options || {};
-  const targetRole = options.targetRole || "CREWCAL"; // <-- swap default here once Draft Season sheet/role exists
+  const isDraftSeason = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+  const targetRole = options.targetRole || (isDraftSeason ? "DRAFTCAL" : "CREWCAL");
 
-  const lSheet = ctx.ss.getSheetByName("Lineup");
-  const lMap = ctx.maps["Lineup"];
-  const logSheet = ctx.sheets[targetRole] || ctx.ss.getSheetByName(ctx.getRole(targetRole));
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+  const lMap = ctx.getMap(lRole);
+  const logSheet = Engine.getSheetByRole(ctx, targetRole);
   const logMap = ctx.getMap(targetRole);
 
   if (!lSheet || !lMap) {
@@ -994,8 +1003,9 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
  */
 Engine.Ingest._reparseDateFromParent = function(ctx, parentID, eventOfTotal) {
   if (!parentID || !eventOfTotal) return null;
-  const pSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const pMap = ctx.maps["Parent Lineup"];
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const pMap = ctx.getMap(pRole);
   if (!pSheet || !pMap) return null;
 
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
@@ -1026,10 +1036,12 @@ function goVerifyImportToParent() {
 }
 
 Engine.Ingest.verifyImportToParent = function(ctx) {
-  const iSheet = ctx.ss.getSheetByName("import");
-  const pSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const iMap = ctx.maps["import"];
-  const pMap = ctx.maps["Parent Lineup"];
+  const iRole = Engine.Roles.resolve(ctx, "IMPORT");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const iSheet = iRole && Engine.getSheetByRole(ctx, iRole);
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const iMap = ctx.getMap(iRole);
+  const pMap = ctx.getMap(pRole);
   if (!iSheet || !pSheet || !iMap || !pMap) {
     Engine.Log.error(ctx, "VERIFY_IMPORT", "import or Parent Lineup sheet/map not found.");
     return;
@@ -1158,7 +1170,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     // suppressLog: the caller immediately after this writes the semantic audit
     // entry (PARENT_ONLY / DRIFT_DETECTED / RENAME_CANDIDATE). Logging here too
     // produced two near-identical rows per event in Audit_Log.
-    Engine.Status.apply(ctx, "Parent Lineup", rowIdx, statusName, {
+    Engine.Status.apply(ctx, pRole, rowIdx, statusName, {
       stage: "VERIFY_IMPORT",
       id: parentID,
       details: details,
@@ -1341,10 +1353,12 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
 };
 
 Engine.Ingest.refreshParentOnlyDecisions = function(ctx) {
-  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const importSheet = ctx.ss.getSheetByName("import");
-  const parentMap = ctx.getMap("Parent Lineup");
-  const importMap = ctx.getMap("import");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const iRole = Engine.Roles.resolve(ctx, "IMPORT");
+  const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const importSheet = iRole && Engine.getSheetByRole(ctx, iRole);
+  const parentMap = ctx.getMap(pRole);
+  const importMap = ctx.getMap(iRole);
   if (!parentSheet || !importSheet || !parentMap || !importMap) {
     throw new Error("Parent Lineup, import, or their maps are missing");
   }
@@ -1389,9 +1403,10 @@ function refreshParentOnlyDecisions() {
 }
 
 Engine.Ingest.refreshParentDuplicateDecisions = function(ctx) {
-  const parentSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const parentMap = ctx.getMap("Parent Lineup");
-  if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map is missing");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const parentMap = ctx.getMap(pRole);
+  if (!parentSheet || !parentMap) throw new Error("Parent Lineup sheet or map is missing for the active mode's target season");
 
   const pCol = field => Engine.getColumnIndex(parentMap, field);
   // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
@@ -1446,8 +1461,8 @@ function goVerifyParentToLineup() {
 Engine.Ingest.verifyParentToLineup = function(ctx) {
   const pRole = Engine.Roles.resolve(ctx, "PARENT");
   const lRole = Engine.Roles.resolve(ctx, "LINEUP");
-  const pSheet = ctx.sheets[pRole] || ctx.ss.getSheetByName(ctx.getRole(pRole));
-  const lSheet = ctx.sheets[lRole] || ctx.ss.getSheetByName(ctx.getRole(lRole));
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
   const pMap = ctx.getMap(pRole);
   const lMap = ctx.getMap(lRole);
   if (!pSheet || !lSheet || !pMap || !lMap) {
@@ -1559,11 +1574,12 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
 // ============================================================
 Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   options = options || {};
-  const ss = ctx.ss;
-  const iSheet = ss.getSheetByName("import");
-  const pSheet = ss.getSheetByName("Parent Lineup");
-  const iMap = ctx.getMap("import");
-  const pMap = ctx.getMap("Parent Lineup");
+  const iRole = Engine.Roles.resolve(ctx, "IMPORT");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const iSheet = iRole && Engine.getSheetByRole(ctx, iRole);
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const iMap = ctx.getMap(iRole);
+  const pMap = ctx.getMap(pRole);
   const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
@@ -1680,7 +1696,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   if (lastUpdatedCol >= 0) pSheet.getRange(sheetRowNum, lastUpdatedCol + 1).setValue(now);
   if (updateDetailsCol >= 0) pSheet.getRange(sheetRowNum, updateDetailsCol + 1).setValue(changeSummary);
   if (syncStatusCol >= 0) pSheet.getRange(sheetRowNum, syncStatusCol + 1).setValue("Active");
-  Engine.Status.paint(ctx, "Parent Lineup", sheetRowNum, "Active");
+  Engine.Status.paint(ctx, pRole, sheetRowNum, "Active");
 
   // Per-field log entries for AUTO_UPDATE_AND_LOG
   if (importUpdatePolicy === "AUTO_UPDATE_AND_LOG") {
@@ -1719,9 +1735,9 @@ function acceptDriftForParentID(parentID) {
 // separate from the single-row version rather than the default behavior.
 function acceptAllFlaggedDrift() {
   const ctx = Engine.getContext();
-  const ss = ctx.ss;
-  const pSheet = ss.getSheetByName("Parent Lineup");
-  const pMap = ctx.getMap("Parent Lineup");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const pMap = ctx.getMap(pRole);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   const pData = pSheet.getDataRange().getValues();
   pData.shift();

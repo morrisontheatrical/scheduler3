@@ -264,10 +264,9 @@ var Engine = {
       return -1;
     };
 
-    // 11-column schema: Mode Name, Description, IsActive, SyncMode, ConflictPolicy, PreferredTruth,
-    // WriteToCalendar, WriteToSheet, UseLiveVenueMirroring, AllowedBehaviors, AllowedLogTypes
     const modeNameIdx = getIdx(["mode name", "mode", "mode_name"]);
     const isActiveIdx = getIdx(["isactive", "active", "is active"]);
+    const targetSeasonIdx = getIdx(["targetseason", "target_season", "target season"]);
     const syncModeIdx = getIdx(["syncmode", "sync_mode"]);
     const writeCalIdx = getIdx(["writetocalendar", "write_to_calendar"]);
     const writeSheetIdx = getIdx(["writetosheet", "write_to_sheet"]);
@@ -304,6 +303,7 @@ var Engine = {
 
       const mode = {
         mode: modeName,
+        targetSeason: targetSeasonIdx !== -1 ? String(row[targetSeasonIdx] || "Current").trim() : "Current",
         syncMode: syncMode,
         writeToCalendar: writeToCalendar,
         writeToSheet: writeToSheet,
@@ -329,6 +329,7 @@ var Engine = {
   getDefaultMode: function() {
     return {
       mode: "Draft 26-27",
+      targetSeason: "Draft",
       syncMode: "",
       writeToCalendar: false,
       writeToSheet: false,
@@ -768,11 +769,32 @@ var Engine = {
 
 };
 Engine.Roles = {
-  resolve: function(ctx, base) { 
-  // base: "PARENT" | "LINEUP" | "IMPORT"
-  const isDraft = /draft/i.test(ctx.mode.mode || "");
-  return Engine.Roles[base] + (isDraft ? "DRAFT" : "CURRENT");
+  resolve: function(ctx, base) {
+    const season = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase();
+    const suffix = season === "DRAFT" ? "DRAFT" : "CURRENT";
+    const role = base + suffix;
+    if (!ctx.roles[role]) {
+      console.error(`Engine.Roles.resolve("${base}") produced unknown role "${role}" (TargetSeason="${season}") - check Sheet_Settings.`);
+      return null;
+    }
+    return role;
   }
+};
+
+Engine.getSheetByRole = function(ctx, role) {
+  const sheetName = ctx.getRole(role);
+  if (!sheetName) return null;
+  const sheet = ctx.ss.getSheetByName(sheetName);
+  if (!sheet) {
+    console.error(`Sheet "${sheetName}" (role "${role}") not found in spreadsheet.`);
+    return null;
+  }
+  return sheet;
+};
+
+Engine.getSeasonSheet = function(ctx, base) {
+  const role = Engine.Roles.resolve(ctx, base);
+  return role ? Engine.getSheetByRole(ctx, role) : null;
 };
 
 Engine.Core = {
