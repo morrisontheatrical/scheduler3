@@ -2,8 +2,9 @@
 
 ## Immediate Priorities
 <!-- UPDATE WHEN COMPLETE. KEEP THIS SECTION FOR REFERENCE BUT COPY COMPLETED ITEMS TO COMPLETED GOALS !-->
-1. Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.
-  - in progress https://github.com/morrisontheatrical/scheduler3/issues/1
+1. ~~Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.~~
+  - implemented for active engine flows in [#1](https://github.com/morrisontheatrical/scheduler3/issues/1): `TargetSeason` now routes Import/Parent/Lineup roles; `CREWCAL`/`DRAFTCAL` routing is explicit; decisions and audit links use resolved active-season tabs.
+  - manual Draft/Live verification remains in progress; bootstrap, registry-repair, UI-jump, and legacy helper exceptions remain intentionally out of scope.
 
 2. Cross-Sheet Hyperlinking (Issues #23, #26, #27): Scope expanded beyond refreshLinks() to require universal linking across Calls, idLog, Audit_Log, Venue_Cal_Log, and Crew_Calendar_Log.
   - see parent [#27](https://github.com/morrisontheatrical/scheduler3/issues/27)
@@ -125,6 +126,11 @@
 35. Complex Date Parser (Issue #24): Restoring parseComplexDateTime from Depreciated/scriptLib.LookupSYNC.js 
   - see [#24](https://github.com/morrisontheatrical/scheduler3/issues/24)
   - see parent [#13](https://github.com/morrisontheatrical/scheduler3/issues/13)
+
+36. Load `ref`-owned enum lists into `ctx.lookup.lists` and prevent empty data-validation writes.
+  - `Lookup` supplies venue and operational lists; `ref` is the source of truth for `Options`, behaviors, decisions, and other enum lists.
+  - until this is implemented, do not run `Refresh Dropdowns` when an enum source list is empty.
+  - see [#9](https://github.com/morrisontheatrical/scheduler3/issues/9)
 
 
 ## Decision Vocabulary
@@ -251,6 +257,7 @@ Promote code into `scriptLib` only after it is stable and reused outside schedul
 ## Completed Goals
 
 - **Role-Based Sheet Decoupling:** Implemented `getSheetByRole(role)` and `ctx.getRole()` to decouple script execution from hardcoded sheet tab names, enabling zero-copy season promotion via `Sheet_Settings`.
+- **Season-Aware Role Routing:** `Mode_Config.TargetSeason` now drives `IMPORT`/`PARENT`/`LINEUP` role resolution, and active ingest, verification, decision, calendar, IO, identity, and sync paths use role-based sheet/map access. Draft decision metadata and links use `draft_import` / `draft_Parent`; manual mode-by-mode validation remains required before closing #1.
 - **Universal Hyperlinking:** Updated `refreshLinks()` to generate rich-text clickable links across all review categories (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`).
 - **Decision Queue Lifecycle:** Implemented immediate queue deletion for applied decisions, retention of `SUPERSEDED` rows for audit trail, and bulk archiving via `archiveSupersededDecisions()`.
 - **Parent Lineup Status Overrides:** Built engine handling for user flags in Parent Lineup:

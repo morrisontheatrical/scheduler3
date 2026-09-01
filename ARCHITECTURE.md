@@ -7,13 +7,14 @@
 - The engine owns workbook configuration, sync state, sheet maps, modes, status rules, audit logging, and identity relationships.
 - `scriptLib` contains stable project-agnostic primitives. Scheduler-specific policy remains in `Engine.*`.
 - **Universal comparison:** `Engine.IO.compare(ctx, params)` is the sole row-to-row drift primitive for ingest, verification, and calendar comparison. It uses `scriptLib`'s `SL.Utils.normalize(val, { collapse: true, fold: true })` for text equality; folding happens before collapsing whitespace, so zero-width characters beside spaces cannot leave a false mismatch. `sourceRole` and `destinationRole` let the comparator use `Map_Registry.Data Type`: `Date` compares the calendar date in `ctx.timeZone`, `Time` compares time-of-day, and `DateTime` compares the complete timestamp. Callers use `comparisonModes` only when the operational meaning differs from the stored type, such as calendar `Start`, which must compare as a complete timestamp. Without type metadata, valid Dates default to full timestamp equality and therefore never lose a year. `fieldAliases` maps equivalent names such as `EventName` to `Title`. Deliberately distinct tiers that stay local: `compact`/`normalizeForCompare` (strip all non-alphanumerics — similarity scoring, not equality) and `normalizeHeader` in `engine_core.js` (Mode_Config header matching). Do not add inline normalization variants or direct drift comparisons.
-- **Context Object (`ctx`):** Initialized once per execution by `engine_core.buildContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
+- **Context Object (`ctx`):** Initialized once per execution by `Engine.getContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
 
 ## Metadata Sources
 metadata lives in various tabs (see Sheets_data folder for current csv)
 - `ref`: controlled enumerations for roles, behaviors, actions, decisions, log types, and sheet behavior. **This is the single source of truth for every dropdown/Enum field's valid values** (`Decision`, `RequestedAction`, `KeepChoice`, `ActionStatus`, `Confidence`, `SuggestedAction`, `ReviewType`, `TechStatus`, etc.). Do not duplicate value lists in `Map_Registry`, `Field_Names.csv`, or code comments — reference `ref.csv` instead so there is one place to update.
 - `ControlPanel`: user settings and system summary values.
-- `Mode_Config`: mode policy, write permissions, conflict policy, allowed behaviors/log types, span policy, and `ImportUpdatePolicy`.
+- `Mode_Config`: mode policy, `TargetSeason`, write permissions, allowed behaviors/log types, span policy, and `ImportUpdatePolicy`.
+   - `TargetSeason` is the explicit Draft/Current routing source. It is independent of the mode display name and resolves season-paired Import, Parent, and Lineup roles.
   - `ImportUpdatePolicy` (per active mode) governs the **apply/accept** step — how `Engine.Ingest.acceptImportDrift()` handles import→Parent drift **when a change is actually applied**. It does NOT change what `Verify import vs Parent Lineup` (`verifyImportToParent`) does: verify is always read-only — it detects drift, flags the row, and queues an `IMPORT_DRIFT` decision. Whether those flagged changes then apply automatically or wait for a human is decided here:
     - `MANUAL_REVIEW`: `acceptImportDrift()` (called directly, i.e. **not** via the Apply-Decisions path) does not apply; it re-queues an `IMPORT_DRIFT` decision and returns `false`. The Apply-Reviewed-Decisions path passes `force: true`, bypassing this gate — a human acceptance *is* the manual review.
     - `AUTO_UPDATE`: `acceptImportDrift()` applies the changed source fields and writes one summary audit entry.
@@ -100,10 +101,15 @@ The workbook operates across four distinct structural layers to maintain determi
 
 ## Role-Based Sheet Access (`SheetRole`)
 
-All engine functions decouple script logic from static tab names by fetching worksheets via `SheetRole` defined in `Sheet_Settings` (e.g., `getSheetByRole('IMPORTCURRENT')`). 
+Active engine flows resolve managed sheets through `SheetRole` values defined in `Sheet_Settings`. Bootstrap, setup, and registry-repair code may use physical names because it runs before the role map exists or repairs that map.
 
-- Tab name renames inside Google Sheets will never break script execution.
-- Enables zero-copy season promotion by swapping `SheetRole` tags in `Sheet_Settings`.
+- `Engine.getSheetByRole(ctx, role)` resolves any registered role to a Sheet, returning `null` and logging when the role or sheet is missing.
+- `Engine.Roles.resolve(ctx, base)` maps the season-paired bases `IMPORT`, `PARENT`, and `LINEUP` to `...DRAFT` or `...CURRENT` using `ctx.mode.targetSeason` and validates that role against `ctx.roles`.
+- `Engine.getSeasonSheet(ctx, base)` is the direct Sheet wrapper for those three season-paired layers.
+- `ctx.getMap(role)` resolves the matching map. `ctx.getCol(role, fieldName)` is the standard column lookup and returns a zero-based index or `-1`.
+- `CREWCAL`, `DRAFTCAL`, and `VENUECAL` are purpose-distinct destinations, not season-paired base roles. Code selects `CREWCAL` or `DRAFTCAL` explicitly from `TargetSeason` where appropriate.
+- Season-aware decisions and audit links record the resolved physical sheet name, so Draft records point to draft tabs.
+- This enables zero-copy season promotion by changing SheetRole assignments in `Sheet_Settings`, subject to the required manual verification in `OPERATIONS.md`.
 
 ## Identity Chain & `idLog` Alias Table
 

@@ -8,6 +8,18 @@
 4. Apply only reviewed decisions.
 5. Run the downstream stage only after its source is stable.
 
+## Role-Based Routing Verification
+
+`Mode_Config.TargetSeason` controls the active Import, Parent, and Lineup roles. The active mode name is not used to infer season routing.
+
+1. Run `Diagnostic Dump` and confirm `Target Season` and the required `IMPORT*`, `PARENT*`, `LINEUP*`, `CREWCAL`, and `DRAFTCAL` roles are registered.
+2. In `Draft 26-27`, run `Ingest Season`, `Explode Dates`, and `Sync Lineup to Crew Log`. Confirm the target tabs are `draft_import`, `draft_Parent`, `draft_Lineup`, and `Draft_Season_Log`.
+3. In `Live 26-27`, repeat and confirm the target tabs are `import`, `Parent Lineup`, `Lineup`, and `Crew_Calendar_Log`.
+4. Run both verification commands in each mode. Confirm newly created decision rows and `Audit_Log` links point to the active mode's physical Import or Parent tab.
+5. Before applying a `MERGE_PARENT` decision, run `Refresh Decision Row Links`; confirm both links open the intended active-season Parent rows, then verify the selected keeper and duplicate IDs.
+
+`Run Health Check` validates each physical sheet once even though the context stores both physical-name and SheetRole aliases. Remaining header findings should be reviewed against `Map_Registry` before any repair operation. `Repair Map Registry` modifies registry metadata; use `previewMapRegistryRepair(sheetName)` first when a finding is not already understood.
+
 ## Menu Organization
 
 - `Diagnostics`: context and health checks.
@@ -61,6 +73,8 @@ As detailed in [UI-Design.md](UI-Design.md), a future consolidated **Event Manag
 - `Reset Headers`: broader registry -> physical-sheet rewrite.
 
 Protected sheets are skipped unless an explicit confirmation path is used.
+
+Do not run `Refresh Dropdowns` until the `ref`-backed enum lookup work is complete. `Options` and other enum values are owned by `ref`, while the current dropdown loader reads `Lookup`; an empty source list could install an empty validation rule.
 
 ## Map_Registry Maintenance
 

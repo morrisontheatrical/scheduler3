@@ -26,11 +26,14 @@ This file is the entrypoint for scheduler project documentation. The older monol
 
 ## Current Anchor
 
-The immediate implementation focus is refining the decision queue lifecycle, establishing identity lineage, and decoupling sheet lookup:
-- Abstracting all sheet access behind `SheetRole` in `Sheet_Settings`.
+The immediate implementation focus is refining the decision queue lifecycle, establishing identity lineage, and validating role-based sheet access:
+- Active engine sheet access is now abstracted behind `SheetRole` in `Sheet_Settings`; `Mode_Config.TargetSeason` selects Draft or Current Import/Parent/Lineup roles.
+- Complete the manual Draft/Live routing checks in `OPERATIONS.md` before closing issue #1. Bootstrap, registry repair, UI navigation, and legacy helpers remain intentional exceptions.
 - Generating universal cell hyperlinks across all `decision_log` review types.
 - Persisting pending manual reviews while automatically purging superseded items to `Audit_Log`.
 - Implementing `idLog` "Merged IDs" alias mapping with cascading `parentID` updates across child `Lineup` records.
 - Enforcing manual user action flags (`Bypassed`, `Delete Pending`, `Possible Duplicate`) during `ingest` and `verify` runs.
 
 A parallel, recently-started workstream is a `Map_Registry` / `Field_Names.csv` integrity pass: filling in blank `Data Type`/`Sync Behavior` cells, resolving duplicate/colliding `Field Name` rows (which silently break `assembleSheetMap()`'s column resolution), and reconciling `Field_Names.csv` back into sync with the live registry. See `ROADMAP.md`'s 2026-08-28 entries in Immediate Priorities and Decisions Made for the specifics found so far.
+
+The reference-data follow-up belongs with issue #9: `ref` owns enum values, but the current lookup loader reads `Lookup`. Until that loader merges the appropriate `ref` lists and rejects empty validation sources, do not run the `Refresh Dropdowns` maintenance action.
