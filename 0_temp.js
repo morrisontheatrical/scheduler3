@@ -30,15 +30,18 @@ function test_DiagnosticDump() {
     const ctx = Engine.getContext();
     
     console.log("--- CONFIG CHECK ---");
-    console.log("Current Mode: " + ctx.config.mode);
-    console.log("Sync Window: " + ctx.config.syncWindow.startDays + " to " + ctx.config.syncWindow.endDays);
+    console.log("Current Mode: " + ctx.mode.mode);
+    console.log("Target Season: " + (ctx.mode.targetSeason || "Current"));
+    console.log("Sync Window: " + ctx.config.syncWindow.start + " to " + ctx.config.syncWindow.end);
 
     console.log("--- SHEET MAPPING CHECK ---");
     const testSheet = "Lineup";
-    if (ctx.sheets[testSheet]) {
+    const sheetDef = ctx.sheetDefs[testSheet];
+    const venueCol = Engine.getColumnIndex(ctx.getMap(testSheet), "Venue");
+    if (ctx.sheets[testSheet] && sheetDef) {
       console.log(`Sheet: ${testSheet}`);
-      console.log(`ID Key: ${ctx.sheets[testSheet].settings.idKey}`);
-      console.log(`Venue Col Index: ${ctx.sheets[testSheet].map.Venue.index}`);
+      console.log(`ID Key: ${sheetDef.settings.idKey}`);
+      console.log(`Venue Col Index: ${venueCol}`);
     } else {
       console.error("Lineup sheet not found in settings!");
     }
