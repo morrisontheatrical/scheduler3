@@ -5,6 +5,7 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Diagnostics')
       .addItem('Diagnostic Dump', 'test_DiagnosticDump')
       .addItem('Test Normalization and Compare', 'test_NormalizationAndCompare')
+      .addItem('Test Theatrical Date Parsing', 'test_TheatricalDateParsing')
       .addItem('Run Health Check', 'goHealthCheck')
       .addItem('Test Status Color Provider', 'test_StatusColorProvider')
       .addItem('Open Audit Log', 'openAuditLog'))

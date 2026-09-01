@@ -807,8 +807,7 @@ Engine.Ingest = Engine.Ingest || {};
 Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
   const result = { dates: [], spans: [], errors: [] };
   const parserModule = Engine.getLibraryModule("TheatricalParser");
-  const parser = parserModule && parserModule.parse;
-  if (!parser || !rawDates) {
+  if (!parserModule || typeof parserModule.parse !== "function" || !rawDates) {
     if (rawDates) result.errors.push("Theatrical parser unavailable");
     return result;
   }
@@ -846,7 +845,7 @@ Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
       return;
     }
 
-    const parsed = parser(content);
+    const parsed = parserModule.parse(content);
     if (parsed && parsed.startDate && !isNaN(parsed.startDate.getTime())) {
       result.dates.push(parsed.startDate);
     } else if (!(parsed && parsed.isTBD)) {

@@ -156,6 +156,40 @@ function test_NormalizationAndCompare() {
   return { folded: folded, aliasComparison: aliasComparison, arrayComparison: arrayComparison };
 }
 
+/**
+ * Non-mutating regression check for issue #24's DatesAndTimes parsing pipeline.
+ */
+function test_TheatricalDateParsing() {
+  const assert = function(condition, message) {
+    if (!condition) throw new Error(message);
+  };
+  const parser = Engine.getLibraryModule("TheatricalParser");
+  assert(parser && typeof parser.parse === "function", "Theatrical parser is unavailable");
+
+  const parsed = Engine.Ingest.parseParentDatesAndTimes(
+    "Friday, June 5, 2026 at 7:30pm\nSaturday, June 6, 2026 at 7:30pm\nTBA"
+  );
+  assert(parsed.dates.length === 2, `Expected 2 dated performances, found ${parsed.dates.length}`);
+  assert(parsed.errors.length === 0, `Unexpected parsing errors: ${parsed.errors.join(" | ")}`);
+  assert(parsed.dates[0].getDate() === 5 && parsed.dates[0].getHours() === 19 && parsed.dates[0].getMinutes() === 30, "First performance did not parse as June 5, 2026 at 7:30pm");
+  assert(parsed.dates[0].getTime() < parsed.dates[1].getTime(), "Performances must remain sorted by start time");
+
+  const schoolPerformance = Engine.Ingest.parseParentDatesAndTimes("School Performance: Friday, December 4, 2026 at 9:15am");
+  assert(schoolPerformance.dates.length === 1 && schoolPerformance.dates[0].getHours() === 9, "School Performance prefix did not parse");
+
+  const rangedTime = parser.parse("Monday, June 22, 2026 at 8:30am–2:30pm");
+  assert(rangedTime.status === "Success" && rangedTime.endDate && rangedTime.startDate.getHours() === 8 && rangedTime.endDate.getHours() === 14, "Time range did not preserve start and end times");
+
+  const tba = parser.parse("TBA");
+  assert(tba.isTBD && tba.status === "TBD_Identified", "TBA must remain intentionally unscheduled");
+
+  const span = Engine.Ingest.parseParentDatesAndTimes("Wednesday, February 17, 2027 at 4:00pm through Wednesday, April 7, 2027 at 4:00pm");
+  assert(span.dates.length === 0 && span.spans.length === 1, "Cross-date through range did not remain a span");
+
+  console.info("Theatrical date parsing diagnostics passed.");
+  return { dates: parsed.dates.length, spans: span.spans.length, tbaStatus: tba.status };
+}
+
 function previewMapRegistryRepair(sheetName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const registrySheet = ss.getSheetByName("Map_Registry");
