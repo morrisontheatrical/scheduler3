@@ -113,6 +113,45 @@ function test_StatusColorProvider() {
   }
 }
 
+/**
+ * Non-mutating contract check for shared normalization and Engine.IO.compare.
+ */
+function test_NormalizationAndCompare() {
+  const ctx = Engine.getContext();
+  const utils = Engine.getLibraryModule("Utils");
+  const assert = function(condition, message) {
+    if (!condition) throw new Error(message);
+  };
+
+  const folded = utils.normalize("  The\u2014Show \u200B Tonight  ", { collapse: true, fold: true });
+  assert(folded === "the-show tonight", `Unexpected folded value: "${folded}"`);
+  assert(utils.normalize("  The  Show  ") === "the  show", "Default normalization changed");
+
+  const aliasComparison = Engine.IO.compare(ctx, {
+    source: { EventName: "The\u2014Show \u200B Tonight" },
+    destination: { Title: "the-show tonight" },
+    fields: ["EventName"],
+    fieldAliases: { EventName: "Title" },
+    identifier: "NORMALIZE_ALIAS"
+  });
+  assert(aliasComparison.equal, "Folded alias comparison should be equal");
+
+  const arrayComparison = Engine.IO.compare(ctx, {
+    source: ["The Show", new Date("2025-08-01T12:00:00Z")],
+    destination: ["the show", new Date("2026-08-01T12:00:00Z")],
+    sourceMap: { EventName: 0, Opening: 1 },
+    destMap: { Title: 0, Opening: 1 },
+    fields: ["EventName", "Opening"],
+    fieldAliases: { EventName: "Title" },
+    comparisonModes: { Opening: "date" },
+    identifier: "ARRAY_DATE_YEAR"
+  });
+  assert(!arrayComparison.equal && arrayComparison.changed.length === 1 && arrayComparison.changed[0].field === "Opening", "Different years must be detected");
+
+  console.info("Normalization and compare diagnostics passed.");
+  return { folded: folded, aliasComparison: aliasComparison, arrayComparison: arrayComparison };
+}
+
 function previewMapRegistryRepair(sheetName) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const registrySheet = ss.getSheetByName("Map_Registry");

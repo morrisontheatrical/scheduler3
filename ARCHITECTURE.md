@@ -6,7 +6,7 @@
 - `Engine.getContext()` is the canonical runtime entrypoint.
 - The engine owns workbook configuration, sync state, sheet maps, modes, status rules, audit logging, and identity relationships.
 - `scriptLib` contains stable project-agnostic primitives. Scheduler-specific policy remains in `Engine.*`.
-- **String comparison has one canonical implementation: `scriptLib`'s `SL.Utils.normalize(val, opts)`** (see `scriptLib/README_scriptLib_changes.md`, 2026-08-30 entry). Tiers: strict (default — trim + lowercase), `collapse` (squeeze whitespace), `fold` (typographic: smart quotes → straight, en/em dash/minus → hyphen, zero-width removal). Cross-sheet title/name equality and the `verify`/`ingest` lookups use `{ collapse: true, fold: true }` so titles that picked up smart punctuation via `IMPORTRANGE` still match. Date-aware comparison stays engine-side (`Engine.Ingest.sourceValuesEqual` needs `ctx.timeZone` for `Opening` vs other date fields, but delegates the string tier to `SL.Utils`). Deliberately distinct tiers that stay local: `compact`/`normalizeForCompare` (strip all non-alphanumerics — similarity scoring, not equality) and `normalizeHeader` in `engine_core.js` (Mode_Config header matching). Do not add a fourth inline `trim().toLowerCase().replace(...)` variant.
+- **Universal comparison:** `Engine.IO.compare(ctx, params)` is the sole row-to-row drift primitive for ingest, verification, and calendar comparison. It uses `scriptLib`'s `SL.Utils.normalize(val, { collapse: true, fold: true })` for text equality; folding happens before collapsing whitespace, so zero-width characters beside spaces cannot leave a false mismatch. `sourceRole` and `destinationRole` let the comparator use `Map_Registry.Data Type`: `Date` compares the calendar date in `ctx.timeZone`, `Time` compares time-of-day, and `DateTime` compares the complete timestamp. Callers use `comparisonModes` only when the operational meaning differs from the stored type, such as calendar `Start`, which must compare as a complete timestamp. Without type metadata, valid Dates default to full timestamp equality and therefore never lose a year. `fieldAliases` maps equivalent names such as `EventName` to `Title`. Deliberately distinct tiers that stay local: `compact`/`normalizeForCompare` (strip all non-alphanumerics — similarity scoring, not equality) and `normalizeHeader` in `engine_core.js` (Mode_Config header matching). Do not add inline normalization variants or direct drift comparisons.
 - **Context Object (`ctx`):** Initialized once per execution by `engine_core.buildContext()`. It translates spreadsheet-based settings into a machine-readable format to ensure consistent decision-making.
 
 ## Metadata Sources
@@ -34,10 +34,13 @@ metadata lives in various tabs (see Sheets_data folder for current csv)
 
 Code references stable `Field Name` values. Physical headers use `Header DisplayName`. Their association is the registry row and `Column Index`.
 
-Runtime maps use:
+Runtime maps hold index values, with field metadata retained in `ctx.sheetDefs[roleOrSheet].columns`:
  
 ```javascript
-{ FieldName: { index: 7, displayName: "Human Label", syncBehavior: "System-Managed" } }
+{
+   map: { FieldName: 7 },
+   columns: { FieldName: { index: 7, dataType: "Date", displayName: "Human Label" } }
+}
 ```
 
 All range access must convert through `Engine.getColumnIndex(map, fieldName)`. Invalid fields return `-1`.
@@ -125,9 +128,10 @@ SEE METADATA SOURCES FOR LIVE DATA
 Below notes are incomplete
 
 **'Status.csv'** 
+- merge status notes from ROADMAP.md
 - `SyncStatus`: current state/result of a row.
    `Possible Duplicate` is a review status, not an automatic command. It should trigger a decision
-   'Delete Pending' was originally a way for the user to request deletion. this may need reconsidered. 
+   `Delete Pending` was originally a way for the user to request deletion. this may need reconsidered. 
 - `Row.Exception` / `Behavior`: whether automatic mutation is allowed, based on applied status.
 
 **'ref.csv**

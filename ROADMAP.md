@@ -3,36 +3,129 @@
 ## Immediate Priorities
 <!-- UPDATE WHEN COMPLETE. KEEP THIS SECTION FOR REFERENCE BUT COPY COMPLETED ITEMS TO COMPLETED GOALS !-->
 1. Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.
-2. Update `refreshLinks()` to generate universal hyperlinks for all review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`).
+  - in progress https://github.com/morrisontheatrical/scheduler3/issues/1
+
+2. Cross-Sheet Hyperlinking (Issues #23, #26, #27): Scope expanded beyond refreshLinks() to require universal linking across Calls, idLog, Audit_Log, Venue_Cal_Log, and Crew_Calendar_Log.
+  - see parent [#27](https://github.com/morrisontheatrical/scheduler3/issues/27)
+  - Update `refreshLinks()` to generate universal hyperlinks for all review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`).
+  - pending https://github.com/morrisontheatrical/scheduler3/issues/6
+  - see also [#23](https://github.com/morrisontheatrical/scheduler3/issues/23)
+  - see also [#26](https://github.com/morrisontheatrical/scheduler3/issues/26)
+
+
 3. Add `idLog` `Merged IDs` alias logging and cascading `parentID` updates in `Lineup` for "Keep New" merges.
+  - pending https://github.com/morrisontheatrical/scheduler3/issues/4
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/7
+
 4. Enforce `decision_log` queue purge rule: applied items are deleted immediately; `SUPERSEDED` rows are retained for reference and removed via `Archive Superseded Decisions`.
-5. ~~Implement engine handlers for `Bypassed`, `Delete Pending`, and `Possible Duplicate` status overrides in `Parent Lineup`.~~ — done: `Bypassed` blocks via status behavior; `Delete Pending` is applied in `goParent`; `Possible Duplicate` is handled by verify.
+  - pending https://github.com/morrisontheatrical/scheduler3/issues/7
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/4
+
+5. ~~Implement engine handlers for `Bypassed`, `Delete Pending`, and `Possible Duplicate` status overrides in `Parent Lineup`.~~ 
+  — done: `Bypassed` blocks via status behavior; `Delete Pending` is applied in `goParent`; `Possible Duplicate` is handled by verify.
+  - see parent https://github.com/morrisontheatrical/scheduler3/issues/9
+
 6. Create/Revise a method to compress whole rows/events into a single "snapshot" cell, and back into "row". It should be able to easily be parsed for comparison. Check fingerprint/hashing functions first. This way a removed duplicate can have its fields saved in the audit_log or idLog before merge/deletion 
+  - in progress https://github.com/morrisontheatrical/scheduler3/issues/8
+
 7. Normalize `Status`, `ref`, behavior values, decisions, and requested actions. --done? Status and Mode_Config could likely use another pass
+  - see parent https://github.com/morrisontheatrical/scheduler3/issues/9
+
 8. Add before/after evidence and links to decision records.
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/7
+
 9. Improve import -> Parent Lineup matching so placeholder titles can become real titles without losing `parentID`.
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/10
+
 10. Add read-only duplicate candidate reporting and explicit keeper selection.
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/7
+
 11. Harden approved decision processing against exact recorded rows and IDs.
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/7
+
 12. Reconcile Parent Lineup -> Lineup -> Crew Calendar relationships.
+  - see parent https://github.com/morrisontheatrical/scheduler3/issues/13
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/25
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/24
+
 13. Correct Venue Calendar association semantics: `EventID` is the venue event; `UUID` is the associated Lineup/Crew row.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/12
+
 14. Add explicit pull-only, push-only, reconcile-only, and two-way operation modes.
+  - see parent https://github.com/morrisontheatrical/scheduler3/issues/11
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/17
+  - see also https://github.com/morrisontheatrical/scheduler3/issues/19
+
 15. Adapt property-level calendar patching from `gcalendarsync` for title, time, location, and description.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/14
+
 16. Add confirmed Developer Overrides for resets and initialization.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/15
+
 17. Build automated Role Swapping promotion script based on `Sheet_Settings`.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/16
+
 18. Implement "Custom Sync" capability: allow filtering sync runs by date range, venue, or specific context.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/17
+
 19. Develop "Detailed Reporting" mode: a "log-only" verification pass for auditing without mutation.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/19
+
 20. Implement UI-driven "Detailed Inspection" (popup/sidebar) for rapid entity review.
+  - see UI-Design.md
+
 21. Remove totally depreciated functions to scriptLib/Depreciated for reference. 
+  - see [#20](https://github.com/morrisontheatrical/scheduler3/issues/20)
+  - added to agent instructions / confirm added to DEVELOPMENT_INTENTIONS.md
+
 22. Review engine organization/topography
+  - see 
+
 23. Add an optional auto-delete-stale-row mode to `Engine.Maintenance.repairMapRegistry()`. Today it only ever flags stale rows (`[STALE: no matching column]`) and never deletes them, by design — but that leaves a manual cleanup step every time a physical column is removed (see `Decisions Made` below for the bug this caused).
+  - see 
+
 24. Evaluate case-insensitive `Field Name` matching in `Engine.getColumnIndex`/`ctx.getMap`, so that things like `parentID` vs. `ParentID` can't silently diverge into two different keys again. Touches every `pCol`/`lCol`/`getCol`/`ctx.getMap` call site — needs a deliberate pass, not a quick patch.
+  - in progress https://github.com/morrisontheatrical/scheduler3/issues/2
+  - Normalize Branch
+  - see agent-notes/normalizeTitle-0829.md
+
 25. Wire `idLog.Fingerprint` to `Engine.IO.serializeRow()` as the intended full-row JSON snapshot mechanism (item 6 above), and reconcile it against the existing `SyncHash` hash-based drift detection — decide whether these stay as two distinct mechanisms or get unified.
+  - see https://github.com/morrisontheatrical/scheduler3/issues/18
+  - see https://github.com/morrisontheatrical/scheduler3/issues/8
+
+
 26. Add a `Dept` column to `Calls` to match the existing `Lookup.Dept` dropdown list (Lights, Sound, Props, Scenic, Costumes, Video, etc.) — the list currently has no destination field to populate.
+  - pending Spreadsheet-Revision 
+
 27. Draft/confirm an `IDTypes` reference list enumerating every ID-shaped field in the system (`parentID`, `UUID`, `callID`, `eventID`, `ReviewID`, `VenueEventID`, `VenueUUID`, `SourceID`, `CandidateID`, `UniqueID`, `KeepParentID`, `ExistingParentID`, `DuplicateParentID`, `SuggestedKeepID`) — may have existed in an earlier hardcoded version of the registry.
+  - see 
+
 28. Reconcile `decision_log`'s live dropdown data-validation rules against the Decision/Status vocabularies below — several have drifted since the sheet was new (`Decision`, `RequestedAction`, `KeepChoice`, `ActionStatus`, `Confidence`, `SuggestedAction`, `ReviewType` all had blank `Data Type` in `Map_Registry` until this pass, which is likely part of why the sheet's validation rules drifted unnoticed).
+  - see https://github.com/morrisontheatrical/scheduler3/issues/7
+
 29. Confirm and finish wiring `draft_Lineup`/`draft_Parent`/`Draft_Season_Log` into `Sheet_Settings` roles (`LINEUPDRAFT`/`PARENTDRAFT`/etc.) now that their `Map_Registry` rows exist and are fully typed — needed before `Engine.Roles.resolve()` can be built.
+  - in progress [#1](https://github.com/morrisontheatrical/scheduler3/issues/1) 
+  - see Immediate Priority 1
+
 30. Confirm the still-unverified `Map_Registry` fields added by `repairMapRegistry()`'s auto-detection: `Calendars.CalendarRole`, `Calendars.allowCalendarWrites`, `Sheet_Settings.GID`, `Sheet_Settings.Source`. Their Data Type/Sync Behavior were filled with best guesses during the 2026-08-28 registry cleanup and need a real definition.
+  - see 
+
 31. **Import drift policy enforcement (modes-normalization issue):** `ImportUpdatePolicy` currently gates only the accept step (`acceptImportDrift`), not verify — so in draft/AUTO mode the user still has to run Apply Reviewed Decisions, and re-running verify re-queues decisions that were already accepted (repeated decisions). Desired: (a) AUTO policies short-circuit the queue/accept round-trip at detect time; (b) already-accepted `IMPORT_DRIFT` decisions are not re-queued by a subsequent verify pass (dedupe on `ExistingParentID`/`ReviewID`); (c) per-layer policies for the downstream hops (parent→lineup, lineup→log) — today only import→parent has a policy. Related to the separate modes revision issue (additional preconfigured modes likely).
+  - see 
+
+32. make sure runHealthCheck logs the health check results.
+  - see 
+
+33. Sync ID Registry Error (Issue #28): Open range exception bug (starting column of the range is too small) is missing from the roadmap.
+  - see [#28](https://github.com/morrisontheatrical/scheduler3/issues/28)
+
+34. Unpopulated Lineup Fields (Issue #25): Bug tracking missing values in LINEUPCURRENT / LINEUPDRAFT (EventOfTotal, AfterToday, SyncStatus, LastUpdated, etc.) is untracked.
+  - see [#25](https://github.com/morrisontheatrical/scheduler3/issues/25)
+
+35. Complex Date Parser (Issue #24): Restoring parseComplexDateTime from Depreciated/scriptLib.LookupSYNC.js 
+  - see [#24](https://github.com/morrisontheatrical/scheduler3/issues/24)
+  - see parent [#13](https://github.com/morrisontheatrical/scheduler3/issues/13)
+
 
 ## Decision Vocabulary
 *Structural definitions are governed in [ARCHITECTURE.md](ARCHITECTURE.md); live enumerations reside in `ref` metadata sheet.*

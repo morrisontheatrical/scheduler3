@@ -212,17 +212,17 @@ Engine.Ingest.getParentSourceFields = function(ctxOrIMap, maybeIMapOrPMap, maybe
 };
 
 Engine.Ingest.sourceValuesEqual = function(ctx, fieldName, left, right) {
-  // Canonical string normalization now lives in scriptLib (SL.Utils.normalize);
-  // the only part that stays here is Date formatting, which needs ctx.timeZone.
-  const utils = Engine.getLibraryModule("Utils");
-  const normalize = value => {
-    if (value instanceof Date && !isNaN(value.getTime())) {
-      const pattern = fieldName === "Opening" ? "M/d/yyyy" : "M/d";
-      return Utilities.formatDate(value, ctx.timeZone, pattern);
-    }
-    return utils.normalize(value, { collapse: true, fold: true });
-  };
-  return normalize(left) === normalize(right);
+  // Single-field case of the generic row comparer (Engine.IO.compare) — kept
+  // as a wrapper so the existing call sites stay unchanged. All normalization
+  // (string tier + Date formatting) now happens in one place, Engine.IO.
+  return Engine.IO.compare(ctx, {
+    source: { [fieldName]: left },
+    destination: { [fieldName]: right },
+    sourceRole: Engine.Roles.resolve(ctx, "IMPORT"),
+    destinationRole: Engine.Roles.resolve(ctx, "PARENT"),
+    fields: [fieldName],
+    identifier: fieldName
+  }).equal;
 };
 
 Engine.Ingest._writeParentIdentity = function(ctx, rowNumber, rowArray, pMap) {
@@ -936,11 +936,18 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
       return;
     }
 
-    const titleDrift = String(existing.Title || "").trim() !== String(title || "").trim();
-    const startDrift = !existing.Start || new Date(existing.Start).getTime() !== start.getTime();
-    const locationDrift = String(existing.Location || "").trim() !== String(location || "").trim();
+    const comparison = Engine.IO.compare(ctx, {
+      source: { EventName: title, Start: start, Venue: location },
+      destination: existing,
+      sourceRole: Engine.Roles.resolve(ctx, "LINEUP"),
+      destinationRole: targetRole,
+      fields: ["EventName", "Start", "Venue"],
+      fieldAliases: { EventName: "Title", Venue: "Location" },
+      comparisonModes: { Start: "timestamp" },
+      identifier: uuid
+    });
 
-    if (titleDrift || startDrift || locationDrift) {
+    if (!comparison.equal) {
       existing.Title = title;
       existing.Date = start;
       existing.Start = start;
@@ -1195,25 +1202,28 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
 
     matchedParentRows[match.rowIdx] = true;
 
-    const drifted = fieldsToCompare.some(field => {
-      const iIdx = iCol(field);
-      const pIdx = pCol(field);
-      if (iIdx < 0 || pIdx < 0) return false;
-      return !Engine.Ingest.sourceValuesEqual(ctx, field, iRow[iIdx], match.row[pIdx]);
+    // One shared comparison per matched pair (Engine.IO.compare) — drives
+    // drift detection, the changed-field list, the readable comparison
+    // string, and the decision evidence. Only fields present in BOTH maps
+    // are compared (a missing column is not drift, matching the old behavior).
+    const compareFields = fieldsToCompare.filter(field => iCol(field) >= 0 && pCol(field) >= 0);
+    const comparison = Engine.IO.compare(ctx, {
+      source: iRow,
+      destination: match.row,
+      sourceMap: iMap,
+      destMap: pMap,
+      fields: compareFields,
+      identifier: match.row[pCol("parentID")] || "NO_PARENT_ID"
     });
+    const drifted = !comparison.equal;
+    const fieldComparison = comparison.changed.map(entry =>
+      `${entry.field}: import="${entry.source}" | Parent="${entry.destination}"`
+    ).join(" | ");
 
     if (drifted || isRenameCandidate) {
       flagged++;
       const wantedAction = isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT";
-      const changedFields = isRenameCandidate ? ["EventName"] : fieldsToCompare.filter(field => {
-        const iIdx = iCol(field), pIdx = pCol(field);
-        return iIdx >= 0 && pIdx >= 0 && !Engine.Ingest.sourceValuesEqual(ctx, field, iRow[iIdx], match.row[pIdx]);
-      });
-      const fieldComparison = changedFields.map(field => {
-        const iIdx = iCol(field);
-        const pIdx = pCol(field);
-        return `${field}: import="${iRow[iIdx]}" | Parent="${match.row[pIdx]}"`;
-      }).join(" | ");
+      const changedFields = isRenameCandidate ? ["EventName"] : comparison.changed.map(entry => entry.field);
       const decisionValues = {
         ReviewID: `IMPORT_PARENT_${index + 2}_${match.row[pCol("parentID")] || "NO_PARENT_ID"}`,
         SourceSheet: "import",
@@ -1434,10 +1444,12 @@ function goVerifyParentToLineup() {
 }
 
 Engine.Ingest.verifyParentToLineup = function(ctx) {
-  const pSheet = ctx.ss.getSheetByName("Parent Lineup");
-  const lSheet = ctx.ss.getSheetByName("Lineup");
-  const pMap = ctx.maps["Parent Lineup"];
-  const lMap = ctx.maps["Lineup"];
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const pSheet = ctx.sheets[pRole] || ctx.ss.getSheetByName(ctx.getRole(pRole));
+  const lSheet = ctx.sheets[lRole] || ctx.ss.getSheetByName(ctx.getRole(lRole));
+  const pMap = ctx.getMap(pRole);
+  const lMap = ctx.getMap(lRole);
   if (!pSheet || !lSheet || !pMap || !lMap) {
     Engine.Log.error(ctx, "VERIFY_PARENT", "Parent Lineup or Lineup sheet/map not found.");
     return;
@@ -1488,20 +1500,25 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
     children.forEach((child, index) => {
       checked++;
       const expected = expectedDates[index];
-      const childDate = child.row[lCol("Date")];
-      const childVenue = child.row[lCol("Venue")];
       const expectedValid = expected && !isNaN(new Date(expected).getTime());
-      const dateDrift = expectedValid && new Date(childDate).getTime() !== new Date(expected).getTime();
-      const venueDrift = String(childVenue || "").trim() !== String(venue || "").trim();
+      const comparison = Engine.IO.compare(ctx, {
+        source: { Date: expected, Venue: venue },
+        destination: child.row,
+        destMap: lMap,
+        sourceRole: pRole,
+        destinationRole: lRole,
+        fields: expectedValid ? ["Date", "Venue"] : ["Venue"],
+        identifier: child.row[lCol("UUID")] || parentID
+      });
 
-      if (dateDrift || venueDrift) {
+      if (!comparison.equal) {
         flagged++;
         const currentStatus = child.row[lCol("SyncStatus")];
         const details = "Lineup row no longer matches its Parent Lineup's dates/venue.";
         if (Engine.Status.blocksWrite(ctx, currentStatus)) {
           Engine.Log.write(ctx, {
             stage: "VERIFY_PARENT",
-            sheetName: "Lineup",
+            sheetName: lSheet.getName(),
             rowIdx: child.rowIdx,
             id: child.row[lCol("UUID")],
             type: "REVIEW_BLOCKED",
@@ -1513,10 +1530,10 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
         const lastSyncedCol = lCol("LastSynced");
         if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Manual Review");
         if (lastSyncedCol >= 0) lSheet.getRange(child.rowIdx, lastSyncedCol + 1).setValue(new Date());
-        Engine.Status.paint(ctx, "Lineup", child.rowIdx, "Manual Review");
+        Engine.Status.paint(ctx, lRole, child.rowIdx, "Manual Review");
         Engine.Log.write(ctx, {
           stage: "VERIFY_PARENT",
-          sheetName: "Lineup",
+          sheetName: lSheet.getName(),
           rowIdx: child.rowIdx,
           id: child.row[lCol("UUID")],
           type: "DRIFT_DETECTED",

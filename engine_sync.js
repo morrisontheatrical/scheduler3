@@ -357,13 +357,18 @@ Engine.Sync = {
 
       const calTitle = calEvent.getTitle() || "";
       const calStart = calEvent.getStartTime();
-      const logStart = crewRow.Start ? new Date(crewRow.Start) : null;
-      const titleDrift = calTitle.trim() !== String(crewRow.Title || "").trim();
-      const timeDrift = !logStart || logStart.getTime() !== calStart.getTime();
+      const comparison = Engine.IO.compare(ctx, {
+        source: { Title: calTitle, Start: calStart },
+        destination: crewRow,
+        destinationRole: role,
+        fields: ["Title", "Start"],
+        comparisonModes: { Start: "timestamp" },
+        identifier: crewRow.UUID || crewRow.EventID
+      });
 
-      if (titleDrift || timeDrift) {
+      if (!comparison.equal) {
         Engine.Status.apply(ctx, role, null, "Data Drift Detected", {
-          details: `Calendar differs from log (Title: "${calTitle}", Start: ${calStart}).`,
+          details: `Calendar differs from log: ${comparison.changed.map(item => item.field).join(", ")}.`,
           targetObj: crewRow
         });
       } else {
