@@ -22,6 +22,8 @@ function goParent() {
  
   const iMap = ctx.getMap(iRole);
   const pMap = ctx.getMap(pRole);
+  const iSheetName = iSheet.getName();
+  const pSheetName = pSheet.getName();
   const iData = iSheet.getDataRange().getValues();
   const pData = pSheet.getDataRange().getValues();
  
@@ -61,7 +63,7 @@ function goParent() {
       }
       Engine.Log.write(ctx, {
         stage: "INGEST",
-        sheetName: "Parent Lineup",
+        sheetName: pSheetName,
         rowIdx: item.rowNumber,
         id: parentID,
         type: "DELETE_PENDING_APPLIED",
@@ -137,7 +139,7 @@ function goParent() {
       flaggedForReview++;
       Engine.Log.write(ctx, {
         stage: "INGEST",
-        sheetName: "Parent Lineup",
+        sheetName: pSheetName,
         rowIdx: match.rowIdx,
         id: match.row[pCol("parentID")],
         type: "RENAME_CANDIDATE",
@@ -271,7 +273,7 @@ Engine.Ingest.resolveParentDuplicates = function(ctx, options) {
     const duplicates = group.filter(item => item !== keep);
     duplicates.forEach(item => {
       Engine.Log.write(ctx, {
-        stage: "INGEST", sheetName: "Parent Lineup", rowIdx: item.rowNumber,
+        stage: "INGEST", sheetName: pRole, rowIdx: item.rowNumber,
         id: item.row[col("parentID")], type: "PARENT_DUPLICATE",
         details: `Duplicate candidate for ${keep.row[col("parentID")]}; retained earliest row ${keep.rowNumber}.`
       });
@@ -292,6 +294,7 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
   const sheet = pRole && Engine.getSheetByRole(ctx, pRole);
   const map = ctx.getMap(pRole);
   if (!sheet || !map) return { created: 0, suggested: 0 };
+  const parentSheetName = sheet.getName();
 
   const col = field => Engine.getColumnIndex(map, field);
   // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
@@ -379,14 +382,14 @@ Engine.Ingest.buildParentDuplicateSuggestions = function(ctx, options) {
     const values = {
       ReviewID: reviewID,
       ReviewType: "PARENT_DUPLICATE",
-      SourceSheet: "Parent Lineup",
+      SourceSheet: parentSheetName,
       SourceRow: current.rowNumber,
       SourceID: current.parentID,
-      SourceLink: Engine.makeSheetRowLink(ctx, "Parent Lineup", current.rowNumber, `Row ${current.rowNumber}`),
-      CandidateSheet: "Parent Lineup",
+      SourceLink: Engine.makeSheetRowLink(ctx, parentSheetName, current.rowNumber, `Row ${current.rowNumber}`),
+      CandidateSheet: parentSheetName,
       CandidateRow: best.rowNumber,
       CandidateID: best.parentID,
-      CandidateLink: Engine.makeSheetRowLink(ctx, "Parent Lineup", best.rowNumber, `Row ${best.rowNumber}`),
+      CandidateLink: Engine.makeSheetRowLink(ctx, parentSheetName, best.rowNumber, `Row ${best.rowNumber}`),
       ParentTitle: current.EventName,
       CandidateTitle: best.eventName,
       ExistingParentID: current.parentID,
@@ -423,6 +426,7 @@ Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
   const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
   const parentMap = ctx.getMap(pRole);
   if (!parentSheet || !parentMap || !Engine.Decisions) return { created: 0, suggested: 0 };
+  const parentSheetName = parentSheet.getName();
 
   const col = field => Engine.getColumnIndex(parentMap, field);
   // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
@@ -472,10 +476,10 @@ Engine.Ingest.buildParentOnlyReplacementSuggestions = function(ctx) {
       const inserted = Engine.Decisions.addPending(ctx, {
         ReviewID: `PARENT_REPLACEMENT_${current.parentID}_${best.candidate.parentID}`,
         ReviewType: "PARENT_REPLACEMENT",
-        SourceSheet: "Parent Lineup",
+        SourceSheet: parentSheetName,
         SourceRow: current.rowNumber,
         SourceID: current.parentID,
-        CandidateSheet: "Parent Lineup",
+        CandidateSheet: parentSheetName,
         CandidateRow: best.candidate.rowNumber,
         CandidateID: best.candidate.parentID,
         ParentTitle: current.title,
@@ -629,7 +633,7 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   parentSheet.deleteRow(duplicateRow + 1);
   Engine.Log.write(ctx, {
     stage: "INGEST",
-    sheetName: "Parent Lineup",
+    sheetName: pRole,
     id: duplicateParentID,
     type: "PARENT_DUPLICATE_MERGED",
     details: `Merged into ${keepParentID}. Copied source fields: ${copiedFields.join(", ") || "none"}. Repointed ${changedLocations.length} dependent row(s).`
@@ -714,7 +718,7 @@ function goLineup() {
 
     if (parsedDates.dates.length === 0 && parsedDates.spans.length === 0) {
       Engine.Log.write(ctx, {
-        stage: "INGEST", sheetName: "Parent Lineup", rowIdx: rowIdx, id: parentID,
+        stage: "INGEST", sheetName: pRole, rowIdx: rowIdx, id: parentID,
         type: "UNPARSEABLE_DATES",
         details: `No usable dates found: ${parsedDates.errors.join(" | ") || "unknown format"}`
       });
@@ -1049,6 +1053,8 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     Engine.Log.error(ctx, "VERIFY_IMPORT", "import or Parent Lineup sheet/map not found.");
     return;
   }
+  const iSheetName = iSheet.getName();
+  const pSheetName = pSheet.getName();
 
   const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
@@ -1159,7 +1165,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     if (Engine.Status.blocksWrite(ctx, currentStatus)) {
       Engine.Log.write(ctx, {
         stage: "VERIFY_IMPORT",
-        sheetName: "Parent Lineup",
+        sheetName: pSheetName,
         rowIdx: rowIdx,
         id: parentID,
         type: "REVIEW_BLOCKED",
@@ -1205,7 +1211,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         importOnly++;
         Engine.Log.write(ctx, {
           stage: "VERIFY_IMPORT",
-          sheetName: "import",
+          sheetName: iSheetName,
           rowIdx: index + 2,
           id: name,
           type: "IMPORT_ONLY",
@@ -1241,10 +1247,10 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       const changedFields = isRenameCandidate ? ["EventName"] : comparison.changed.map(entry => entry.field);
       const decisionValues = {
         ReviewID: `IMPORT_PARENT_${index + 2}_${match.row[pCol("parentID")] || "NO_PARENT_ID"}`,
-        SourceSheet: "import",
+        SourceSheet: iSheetName,
         SourceRow: index + 2,
         SourceID: name,
-        CandidateSheet: "Parent Lineup",
+        CandidateSheet: pSheetName,
         CandidateRow: match.rowIdx,
         CandidateID: match.row[pCol("parentID")],
         ImportTitle: name,
@@ -1275,7 +1281,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       );
       Engine.Log.write(ctx, {
         stage: "VERIFY_IMPORT",
-        sheetName: "Parent Lineup",
+        sheetName: pSheetName,
         rowIdx: match.rowIdx,
         id: match.row[pCol("parentID")],
         type: isRenameCandidate ? "RENAME_CANDIDATE" : "DRIFT_DETECTED",
@@ -1298,10 +1304,10 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       normalize(pRowValue(pRow, "Venue")) === normalize(bestMatch.importVenue);
     const decisionValues = {
       ReviewID: `PARENT_ONLY_${pRow[pCol("parentID")] || rowIdx}`,
-      SourceSheet: hasExactSourceMatch ? "import" : "",
+      SourceSheet: hasExactSourceMatch ? iSheetName : "",
       SourceRow: hasExactSourceMatch ? bestMatch.importRow : "",
       SourceID: hasExactSourceMatch ? bestMatch.importTitle : "",
-      CandidateSheet: "Parent Lineup",
+      CandidateSheet: pSheetName,
       CandidateRow: rowIdx,
       CandidateID: pRow[pCol("parentID")],
       CandidateTitle: pRow[pCol("EventName")],
@@ -1329,7 +1335,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     );
     Engine.Log.write(ctx, {
       stage: "VERIFY_IMPORT",
-      sheetName: "Parent Lineup",
+      sheetName: pSheetName,
       rowIdx: rowIdx,
       id: pRow[pCol("parentID")] || pRow[pCol("EventName")],
       type: "PARENT_ONLY",
@@ -1505,7 +1511,7 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
       unparseable++;
       Engine.Log.write(ctx, {
         stage: "VERIFY_PARENT",
-        sheetName: "Parent Lineup",
+        sheetName: pRole,
         rowIdx: pData.indexOf(pRow) + 2,
         id: parentID,
         type: "UNPARSEABLE_DATES",
@@ -1583,6 +1589,12 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
   const iMap = ctx.getMap(iRole);
   const pMap = ctx.getMap(pRole);
+  if (!iSheet || !pSheet || !iMap || !pMap) {
+    Engine.Log.error(ctx, "INGEST", "Import or Parent Lineup sheet/map not found for the active mode's target season.");
+    return false;
+  }
+  const iSheetName = iSheet.getName();
+  const pSheetName = pSheet.getName();
   const iCol = fieldName => Engine.getColumnIndex(iMap, fieldName);
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   // Shared normalize (scriptLib SL.Utils), same tier as the other ingest lookups.
@@ -1651,11 +1663,11 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
       Engine.Decisions.addPending(ctx, {
         ReviewID: `IMPORT_DRIFT_${parentID}`,
         ReviewType: "IMPORT_DRIFT",
-        SourceSheet: "import",
+        SourceSheet: iSheetName,
         SourceRow: importSheetRow,
         SourceID: importRow[iCol("EventName")] || "",
         ImportTitle: importRow[iCol("EventName")] || "",
-        CandidateSheet: "Parent Lineup",
+        CandidateSheet: pSheetName,
         CandidateRow: sheetRowNum,
         CandidateID: parentID,
         CandidateTitle: pRow[pCol("EventName")] || "",
@@ -1678,7 +1690,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
     }
     Engine.Log.write(ctx, {
       stage: "INGEST",
-      sheetName: "Parent Lineup",
+      sheetName: pSheetName,
       rowIdx: sheetRowNum,
       id: parentID,
       type: "DRIFT_PENDING_REVIEW",
@@ -1706,7 +1718,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
     changes.forEach(c => {
       Engine.Log.write(ctx, {
         stage: "INGEST",
-        sheetName: "Parent Lineup",
+        sheetName: pSheetName,
         rowIdx: sheetRowNum,
         id: parentID,
         type: "DRIFT_FIELD_UPDATE",
@@ -1717,7 +1729,7 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
 
   Engine.Log.write(ctx, {
     stage: "INGEST",
-    sheetName: "Parent Lineup",
+    sheetName: pSheetName,
     rowIdx: sheetRowNum,
     id: parentID,
     type: "DRIFT_ACCEPTED",

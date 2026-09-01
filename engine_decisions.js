@@ -190,6 +190,9 @@ Engine.Decisions = {
     const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
     const parentMap = ctx.getMap(pRole);
     const parentSheetName = parentSheet && parentSheet.getName();
+    const iRole = Engine.Roles.resolve(ctx, "IMPORT");
+    const importSheet = iRole && Engine.getSheetByRole(ctx, iRole);
+    const importSheetName = importSheet && importSheet.getName();
     const resolveParentRow = parentID => {
       const idColumn = Engine.getColumnIndex(parentMap, "parentID");
       if (!parentSheet || idColumn < 0 || !parentID) return null;
@@ -207,6 +210,8 @@ Engine.Decisions = {
     const keepParentIdCol = this._col(table.map, "KeepParentID");
     const sourceLinkCol = this._col(table.map, "SourceLink");
     const candidateLinkCol = this._col(table.map, "CandidateLink");
+    const sourceSheetCol = this._col(table.map, "SourceSheet");
+    const candidateSheetCol = this._col(table.map, "CandidateSheet");
     const sourceRowCol = this._col(table.map, "SourceRow");
     const candidateRowCol = this._col(table.map, "CandidateRow");
     let linked = 0;
@@ -215,8 +220,14 @@ Engine.Decisions = {
     this.pending(ctx).forEach(decision => {
       const reviewType = String(decision.ReviewType || "");
       const isParentDuplicate = reviewType === "PARENT_DUPLICATE";
-      const isParentLineupCandidate = String(decision.CandidateSheet || "") === parentSheetName;
+      const isParentLineupCandidate = [parentSheetName, "Parent Lineup"].includes(String(decision.CandidateSheet || ""));
       if (!isParentDuplicate && !isParentLineupCandidate) return;
+
+      if (candidateSheetCol >= 0) table.sheet.getRange(decision._rowNumber, candidateSheetCol + 1).setValue(parentSheetName);
+      if (isParentDuplicate && sourceSheetCol >= 0) table.sheet.getRange(decision._rowNumber, sourceSheetCol + 1).setValue(parentSheetName);
+      if (!isParentDuplicate && String(decision.SourceSheet || "") === "import" && importSheetName && sourceSheetCol >= 0) {
+        table.sheet.getRange(decision._rowNumber, sourceSheetCol + 1).setValue(importSheetName);
+      }
 
       if (isParentDuplicate) {
         const sourceRow = resolveParentRow(decision.SourceID);
