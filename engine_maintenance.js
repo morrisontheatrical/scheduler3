@@ -15,9 +15,13 @@ Engine.Maintenance = {
   runHealthCheck: function() {
     const ctx = Engine.getContext();
     const reports = [];
+    const checkedSheets = new Set();
 
-    Object.keys(ctx.sheetDefs || ctx.schema).forEach(sheetName => {
-      const sheetDef = (ctx.sheetDefs && ctx.sheetDefs[sheetName]) || ctx.schema[sheetName];
+    Object.keys(ctx.sheetDefs || ctx.schema).forEach(identifier => {
+      const sheetDef = (ctx.sheetDefs && ctx.sheetDefs[identifier]) || ctx.schema[identifier];
+      const sheetName = (sheetDef && sheetDef.name) || identifier;
+      if (checkedSheets.has(sheetName)) return;
+      checkedSheets.add(sheetName);
       if (sheetDef && sheetDef.settings && sheetDef.settings.isProtected) return; // Sheet_Settings.isProtected
 
       const sheet = ctx.ss.getSheetByName(sheetName);
@@ -52,9 +56,13 @@ Engine.Maintenance = {
     // must resolve to a row on the Status sheet, otherwise that row paints
     // nothing. The Status sheet remains the single source of truth.
     const statusesInData = {};
-    Object.keys(ctx.sheetDefs || ctx.schema || {}).forEach(sheetName => {
-      const sheetDef = (ctx.sheetDefs && ctx.sheetDefs[sheetName]) || ctx.schema[sheetName];
+    const scannedStatusSheets = new Set();
+    Object.keys(ctx.sheetDefs || ctx.schema || {}).forEach(identifier => {
+      const sheetDef = (ctx.sheetDefs && ctx.sheetDefs[identifier]) || ctx.schema[identifier];
       if (!sheetDef || !sheetDef.map) return;
+      const sheetName = sheetDef.name || identifier;
+      if (scannedStatusSheets.has(sheetName)) return;
+      scannedStatusSheets.add(sheetName);
       const syncIdx = Engine.getColumnIndex(sheetDef.map, "SyncStatus");
       if (syncIdx < 0) return;
       const sheet = ctx.ss.getSheetByName(sheetName);
