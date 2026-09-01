@@ -26,6 +26,7 @@ function test_MirrorVenues() {
  * Run this to see exactly what the Script "thinks" your setup looks like.
  */
 function test_DiagnosticDump() {
+  //TEST CLASP PUSH
   try {
     const ctx = Engine.getContext();
     
