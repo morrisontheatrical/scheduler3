@@ -80,7 +80,7 @@ Engine.IDService = {
         if (!sheet) return;
 
         const data = sheet.getDataRange().getValues();
-        const sheetMap = ctx.maps[role];
+        const sheetMap = ctx.getMap(role);
         
         // Safety: if map failed to load for this role
         if (!sheetMap || Engine.getColumnIndex(sheetMap, idKey) < 0) return;

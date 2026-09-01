@@ -12,7 +12,7 @@ Engine.Decisions = {
   ],
 
   _getMap: function(ctx) {
-    return ctx.getMap("decision_log") || ctx.getMap("DECISIONS");
+    return ctx.getMap("DECISIONS");
   },
 
   _col: function(map, fieldName) {
@@ -186,10 +186,11 @@ Engine.Decisions = {
 
   refreshLinks: function(ctx) {
     const table = this.ensureSchema(ctx);
+    const pRole = Engine.Roles.resolve(ctx, "PARENT");
+    const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+    const parentMap = ctx.getMap(pRole);
+    const parentSheetName = parentSheet && parentSheet.getName();
     const resolveParentRow = parentID => {
-      const pRole = Engine.Roles.resolve(ctx, "PARENT");
-      const parentSheet = pRole && Engine.getSheetByRole(ctx, pRole);
-      const parentMap = ctx.getMap(pRole);
       const idColumn = Engine.getColumnIndex(parentMap, "parentID");
       if (!parentSheet || idColumn < 0 || !parentID) return null;
       const data = parentSheet.getDataRange().getValues();
@@ -214,17 +215,17 @@ Engine.Decisions = {
     this.pending(ctx).forEach(decision => {
       const reviewType = String(decision.ReviewType || "");
       const isParentDuplicate = reviewType === "PARENT_DUPLICATE";
-      const isParentLineupCandidate = String(decision.CandidateSheet || "") === "Parent Lineup";
+      const isParentLineupCandidate = String(decision.CandidateSheet || "") === parentSheetName;
       if (!isParentDuplicate && !isParentLineupCandidate) return;
 
       if (isParentDuplicate) {
         const sourceRow = resolveParentRow(decision.SourceID);
         if (sourceRow) {
           table.sheet.getRange(decision._rowNumber, sourceRowCol + 1).setValue(sourceRow);
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, sourceIdCol, "Parent Lineup", sourceRow, decision.SourceID);
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, "Parent Lineup", sourceRow, decision.ParentTitle);
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, "Parent Lineup", sourceRow, decision.ExistingParentID);
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, "Parent Lineup", sourceRow, decision.KeepParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, sourceIdCol, parentSheetName, sourceRow, decision.SourceID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, parentSheetName, sourceRow, decision.ParentTitle);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, parentSheetName, sourceRow, decision.ExistingParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, parentSheetName, sourceRow, decision.KeepParentID);
           if (sourceLinkCol >= 0) table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
           linked++;
         } else {
@@ -235,14 +236,14 @@ Engine.Decisions = {
       const candidateRow = resolveParentRow(decision.CandidateID);
       if (candidateRow) {
         table.sheet.getRange(decision._rowNumber, candidateRowCol + 1).setValue(candidateRow);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateIdCol, "Parent Lineup", candidateRow, decision.CandidateID);
-        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateTitleCol, "Parent Lineup", candidateRow, decision.CandidateTitle);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateIdCol, parentSheetName, candidateRow, decision.CandidateID);
+        this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateTitleCol, parentSheetName, candidateRow, decision.CandidateTitle);
         if (isParentDuplicate) {
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, duplicateParentIdCol, "Parent Lineup", candidateRow, decision.DuplicateParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, duplicateParentIdCol, parentSheetName, candidateRow, decision.DuplicateParentID);
         } else {
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, "Parent Lineup", candidateRow, decision.ParentTitle);
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, "Parent Lineup", candidateRow, decision.ExistingParentID);
-          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, "Parent Lineup", candidateRow, decision.KeepParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, parentTitleCol, parentSheetName, candidateRow, decision.ParentTitle);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, existingParentIdCol, parentSheetName, candidateRow, decision.ExistingParentID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, keepParentIdCol, parentSheetName, candidateRow, decision.KeepParentID);
         }
         if (candidateLinkCol >= 0) table.sheet.getRange(decision._rowNumber, candidateLinkCol + 1).clearContent();
         linked++;

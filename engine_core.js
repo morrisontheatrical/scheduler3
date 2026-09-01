@@ -211,7 +211,9 @@ var Engine = {
     const parsedRow = Number(rowNumber);
     if (!Number.isFinite(parsedRow) || parsedRow <= 0) return "";
 
-    const targetSheet = ctx.ss.getSheetByName(sheetName);
+    const targetSheet = ctx.sheets[sheetName]
+      || (ctx.roles && ctx.roles[sheetName] && ctx.sheets[sheetName])
+      || ctx.ss.getSheetByName(sheetName);
     if (!targetSheet) return label || `Row ${parsedRow}`;
 
     const gid = targetSheet.getSheetId();
@@ -430,7 +432,7 @@ var Engine = {
     const ss = ctx.ss;
 
     // 1. Process Calendars
-    const calSheet = ss.getSheetByName("Calendars");
+    const calSheet = ctx.sheets.CALENDARS || ss.getSheetByName("Calendars");
     if (calSheet) {
       const calData = calSheet.getDataRange().getValues();
       calData.shift(); // Remove headers
@@ -450,8 +452,8 @@ var Engine = {
 
     // 2. Process Lookup Lists using ctx.sheets["Lookup"].map
     //Shouldn't this also load the "ref" sheet??
-    const listSheet = ss.getSheetByName("Lookup");
-    const lookupSheetDef = ctx.sheetDefs["Lookup"] || ctx.schema["Lookup"] || ctx.getMap("Lookup");
+    const listSheet = ctx.sheets.LOOKUP || ss.getSheetByName("Lookup");
+    const lookupSheetDef = ctx.sheetDefs.LOOKUP || ctx.schema.LOOKUP || ctx.getMap("LOOKUP");
     
     if (listSheet && lookupSheetDef && lookupSheetDef.map) {
       const listData = listSheet.getDataRange().getValues();
@@ -567,7 +569,7 @@ var Engine = {
    * Scans idLog for any ID marked as 'Bypassed'
    */
   loadBypassList: function(ctx) {
-    const sheet = ctx.ss.getSheetByName("idLog");
+    const sheet = ctx.sheets.ID_LOG || ctx.ss.getSheetByName("idLog");
     if (!sheet) return [];
     
     const data = sheet.getDataRange().getValues();
@@ -613,8 +615,10 @@ var Engine = {
     },
 
     apply: function(ctx, roleOrSheetName, rowIdx, statusName, logContext = {}) {
-      const sheet = ctx.sheets[roleOrSheetName] || ctx.ss.getSheetByName(ctx.getRole(roleOrSheetName) || roleOrSheetName);
-      const map = ctx.getMap(roleOrSheetName) || ctx.maps[roleOrSheetName];
+      const sheet = ctx.roles[roleOrSheetName]
+        ? Engine.getSheetByRole(ctx, roleOrSheetName)
+        : ctx.sheets[roleOrSheetName];
+      const map = ctx.getMap(roleOrSheetName);
       if (!sheet || !map) {
         Engine.Log.error(ctx, "STATUS", `Could not resolve sheet/map for "${roleOrSheetName}" while applying status "${statusName}".`);
         return;
@@ -670,7 +674,9 @@ var Engine = {
      * without re-routing through the full apply() write/log logic.
      */
     paint: function(ctx, roleOrSheetName, rowIdx, statusName) {
-      const sheet = ctx.sheets[roleOrSheetName] || ctx.ss.getSheetByName(ctx.getRole(roleOrSheetName) || roleOrSheetName);
+      const sheet = ctx.roles[roleOrSheetName]
+        ? Engine.getSheetByRole(ctx, roleOrSheetName)
+        : ctx.sheets[roleOrSheetName];
       if (!sheet || !rowIdx) return;
       const theme = ctx.status[statusName];
       if (!theme) {
@@ -685,7 +691,7 @@ var Engine = {
 
   Log: {
     write: function(ctx, params) {
-      const auditSheet = ctx.ss.getSheetByName("Audit_Log"); 
+      const auditSheet = ctx.sheets.AUDIT || ctx.ss.getSheetByName("Audit_Log"); 
       if (!auditSheet) return;
 
       const { stage, sheetName, rowIdx, id, type, details } = params;
@@ -746,7 +752,7 @@ var Engine = {
    * Loads the idLog into memory for fast identity/drift checks.
    */
   loadRegistry: function(ctx) {
-    const sheet = ctx.ss.getSheetByName("idLog");
+    const sheet = ctx.sheets.ID_LOG || ctx.ss.getSheetByName("idLog");
     if (!sheet) return {};
     
     const data = sheet.getDataRange().getValues();

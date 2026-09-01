@@ -190,8 +190,10 @@ Engine.Ingest.getParentSourceFields = function(ctxOrIMap, maybeIMapOrPMap, maybe
     pMap = maybePMap;
   } else if (ctxOrIMap && (ctxOrIMap.sheetDefs || ctxOrIMap.schema)) {
     ctx = ctxOrIMap;
-    iMap = maybeIMapOrPMap || ctx.getMap("import") || ctx.getMap("IMPORTCURRENT");
-    pMap = ctx.getMap("Parent Lineup") || ctx.getMap("PARENTCURRENT");
+    const iRole = Engine.Roles.resolve(ctx, "IMPORT");
+    const pRole = Engine.Roles.resolve(ctx, "PARENT");
+    iMap = maybeIMapOrPMap || ctx.getMap(iRole);
+    pMap = ctx.getMap(pRole);
   } else {
     iMap = ctxOrIMap;
     pMap = maybeIMapOrPMap;
@@ -200,9 +202,10 @@ Engine.Ingest.getParentSourceFields = function(ctxOrIMap, maybeIMapOrPMap, maybe
   const canonicalFields = [
     "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit"
   ];
+  const importRole = ctx && Engine.Roles.resolve(ctx, "IMPORT");
   const registrySourceFields = Object.keys(iMap || {}).filter(fieldName => {
     const behavior = ctx
-      ? Engine.getSyncBehavior(ctx, "import", fieldName)
+      ? Engine.getSyncBehavior(ctx, importRole, fieldName)
       : (typeof (iMap[fieldName]) === "object" ? iMap[fieldName].syncBehavior : "");
     return behavior === "Source (Read-Only)" && Engine.getColumnIndex(pMap, fieldName) >= 0;
   });
@@ -671,8 +674,8 @@ function goLineup() {
   const pRole = Engine.Roles.resolve(ctx, "PARENT");
   const lRole = Engine.Roles.resolve(ctx, "LINEUP");
 
-  const pSheet = ctx.sheets[pRole] || ss.getSheetByName(ctx.getRole(pRole));
-  const lSheet = ctx.sheets[lRole] || ss.getSheetByName(ctx.getRole(lRole));
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
 
   const pMap = ctx.getMap(pRole);
   const lMap = ctx.getMap(lRole);

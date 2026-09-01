@@ -101,8 +101,8 @@ Engine.Sync = {
     
     // 1. Get the Sheet Name from our registered roles
 
-    const sheetName = ctx.getRole(role); 
-    const sheet = ctx.ss.getSheetByName(sheetName);
+    const sheet = Engine.getSheetByRole(ctx, role);
+    const sheetName = sheet && sheet.getName();
 
     if (!sheet) { //or sheet is null
       Engine.Log.error(ctx, "SYNC", `Sheet for role ${role} ("${sheetName}") not found.`);
@@ -267,10 +267,11 @@ Engine.Sync = {
         Engine.Status.apply(ctx, role, null, "Pushed to Calendar", { targetObj: crewRow });
         
         // Register the new link in the ID Registry
+        const roleSheet = Engine.getSheetByRole(ctx, role);
         Engine.IDService.upsert(ctx, { 
           id: crewRow.UUID,
           details: `Created Cal Event: ${newEventId}`,
-          location: `${ctx.sheets[role].getName()}!R${crewRow._rowNum}`
+          location: roleSheet ? `${roleSheet.getName()}!R${crewRow._rowNum}` : ""
         });
       }
       return;

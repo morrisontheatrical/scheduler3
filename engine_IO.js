@@ -130,8 +130,8 @@ Engine.IO.compare = function(ctx, params) {
  * Converts a sheet into an array of objects based on the Map_Registry
  */
 function scanSheet(role, ctx) {
-  const sheet = ctx.sheets[role] || ctx.ss.getSheetByName(ctx.getRole(role));
-  const map = ctx.getMap(role) || ctx.maps[role];
+  const sheet = Engine.getSheetByRole(ctx, role);
+  const map = ctx.getMap(role);
   if (!sheet || !map) return [];
 
   const data = sheet.getDataRange().getValues();
@@ -152,8 +152,8 @@ function scanSheet(role, ctx) {
  * Writes a batch of objects back to the sheet and automatically updates SyncHashes.
  */
 function batchWrite(role, dataObjects, ctx) {
-  const sheetName = ctx.getRole(role);
-  const sheet = ctx.ss.getSheetByName(sheetName);
+  const sheet = Engine.getSheetByRole(ctx, role);
+  const sheetName = sheet && sheet.getName();
   const map = ctx.getMap(role);
   
   if (!sheet || !map) {
@@ -206,8 +206,8 @@ function batchWrite(role, dataObjects, ctx) {
 }
 
 function patchRows(role, updatedObjects, ctx) {
-  const sheet = ctx.sheets[role] || ctx.ss.getSheetByName(ctx.getRole(role));
-  const map = ctx.getMap(role) || ctx.maps[role];
+  const sheet = Engine.getSheetByRole(ctx, role);
+  const map = ctx.getMap(role);
   if (!sheet || !map) return;
   
   updatedObjects.forEach(obj => {

@@ -14,8 +14,8 @@ Engine.Calendar = (function() {
     pullCalendarEvents: function(ctx, calObj) {
       let results = [];
       const role = "VENUECAL";
-      const sheetConfig = ctx.sheets[role];
-      if (!sheetConfig) return results;
+      const sheet = Engine.getSheetByRole(ctx, role);
+      if (!sheet) return results;
 
       try {
         Engine.Log.write(ctx, {
