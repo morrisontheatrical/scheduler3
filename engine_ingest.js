@@ -704,7 +704,9 @@ function goLineup() {
 
   const existingRecords = {};
   lData.forEach((row, idx) => {
-    const key = `${row[lCol("parentID")]}|${row[lCol("RawDateStr")]}`;
+    const existingDate = new Date(row[lCol("Date")]);
+    if (isNaN(existingDate.getTime())) return;
+    const key = `${row[lCol("parentID")]}|${existingDate.getTime()}`;
     existingRecords[key] = { rowIdx: idx + 1, uuid: row[lCol("UUID")] };
   });
 
@@ -759,7 +761,7 @@ function goLineup() {
 
     entries.forEach((entry, index) => {
       const dateStr = Utilities.formatDate(entry.date, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy HH:mm");
-      const lookupKey = `${parentID}|${dateStr}`;
+      const lookupKey = `${parentID}|${entry.date.getTime()}`;
       const record = existingRecords[lookupKey];
 
       const rowArray = new Array(lWidth).fill("");
@@ -1303,6 +1305,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       normalize(pRowValue(pRow, "Venue")) === normalize(bestMatch.importVenue);
     const decisionValues = {
       ReviewID: `PARENT_ONLY_${pRow[pCol("parentID")] || rowIdx}`,
+      ReviewType: "PARENT_ONLY",
       SourceSheet: hasExactSourceMatch ? iSheetName : "",
       SourceRow: hasExactSourceMatch ? bestMatch.importRow : "",
       SourceID: hasExactSourceMatch ? bestMatch.importTitle : "",

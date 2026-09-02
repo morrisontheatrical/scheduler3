@@ -339,7 +339,7 @@ Engine.Decisions = {
       resolvedKeepID = existingID || keepID || suggestedKeep || resolvedKeepID;
       resolvedDuplicateID = fallbackCandidate || decision.DuplicateParentID || "";
     } else if (keepChoice === "KEEP_OTHER") {
-      resolvedKeepID = suggestedKeep || keepID || existingID;
+      resolvedKeepID = keepID || suggestedKeep || existingID;
       resolvedDuplicateID = decision.DuplicateParentID || fallbackCandidate || "";
     }
 
