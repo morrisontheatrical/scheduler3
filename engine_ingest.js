@@ -673,7 +673,6 @@ function applyConfirmedParentMerges() {
  */
 function goLineup() {
   const ctx = Engine.getContext();
-  const ss = ctx.ss;
 
   const pRole = Engine.Roles.resolve(ctx, "PARENT");
   const lRole = Engine.Roles.resolve(ctx, "LINEUP");
@@ -699,6 +698,58 @@ function goLineup() {
   const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
   const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lMap[fieldName]).filter(index => index >= 0)) + 1;
   const spanOverrideCol = pCol("SpanOverride");
+  const sourceFields = Object.keys(lMap).filter(fieldName =>
+    pCol(fieldName) >= 0 && ![
+      "UUID", "parentID", "RawDateStr", "Date", "Time", "EventOfTotal",
+      "AfterToday", "WithinQuarter", "WithinMonth", "SyncStatus", "LastSynced",
+      "LastUpdated", "UpdateDetails", "SyncHash", "EndDate"
+    ].includes(fieldName)
+  );
+  const sameValue = function(left, right) {
+    const leftDate = left instanceof Date ? left : null;
+    const rightDate = right instanceof Date ? right : null;
+    if (leftDate || rightDate) {
+      const leftTime = new Date(left).getTime();
+      const rightTime = new Date(right).getTime();
+      return !isNaN(leftTime) && !isNaN(rightTime) && leftTime === rightTime;
+    }
+    return String(left === undefined || left === null ? "" : left) === String(right === undefined || right === null ? "" : right);
+  };
+  const formulaFor = function(fieldName) {
+    const fieldColumn = lCol(fieldName);
+    const dateColumn = lCol("Date");
+    if (fieldColumn < 0 || dateColumn < 0) return "";
+    const dateReference = dateColumn === fieldColumn ? "RC" : `RC[${dateColumn - fieldColumn}]`;
+    if (fieldName === "AfterToday") return `=${dateReference}>=TODAY()`;
+    if (fieldName === "WithinQuarter") return `=${dateReference}<=EOMONTH(TODAY(),3)`;
+    if (fieldName === "WithinMonth") return `=${dateReference}<=EOMONTH(TODAY(),1)`;
+    return "";
+  };
+  const writeChangedFields = function(record, values) {
+    const before = {};
+    const after = {};
+    Object.keys(values).forEach(fieldName => {
+      const column = lCol(fieldName);
+      if (column < 0 || sameValue(record.row[column], values[fieldName])) return;
+      before[fieldName] = record.row[column];
+      after[fieldName] = values[fieldName];
+    });
+    if (Engine.IO.serializeRow(before) === Engine.IO.serializeRow(after)) return [];
+
+    Object.keys(after).forEach(fieldName => {
+      lSheet.getRange(record.rowIdx, lCol(fieldName) + 1).setValue(after[fieldName]);
+    });
+    return Object.keys(after);
+  };
+  const ensureDerivedFormulas = function(rowIdx) {
+    ["AfterToday", "WithinQuarter", "WithinMonth"].forEach(fieldName => {
+      const column = lCol(fieldName);
+      const formula = formulaFor(fieldName);
+      if (column >= 0 && formula && !lSheet.getRange(rowIdx, column + 1).getFormula()) {
+        lSheet.getRange(rowIdx, column + 1).setFormulaR1C1(formula);
+      }
+    });
+  };
 
   // ...rest is unchanged — everything downstream already goes through pCol/lCol
 
@@ -707,7 +758,7 @@ function goLineup() {
     const existingDate = new Date(row[lCol("Date")]);
     if (isNaN(existingDate.getTime())) return;
     const key = `${row[lCol("parentID")]}|${existingDate.getTime()}`;
-    existingRecords[key] = { rowIdx: idx + 1, uuid: row[lCol("UUID")] };
+    existingRecords[key] = { rowIdx: idx + 1, row: row, uuid: row[lCol("UUID")] };
   });
 
   pData.forEach((pRow, idx) => {
@@ -728,7 +779,7 @@ function goLineup() {
     }
 
     // Build the final set of Lineup entries this row should produce.
-    const entries = parsedDates.dates.map(d => ({ date: d, endDate: null }));
+    const entries = parsedDates.dateEntries.map(entry => ({ date: entry.date, raw: entry.raw, endDate: null }));
 
     parsedDates.spans.forEach(span => {
       const override = spanOverrideCol >= 0 ? String(pRow[spanOverrideCol] || "").trim().toUpperCase() : "";
@@ -741,7 +792,7 @@ function goLineup() {
 
       if (policy === "DAY_BY_DAY") {
         for (let d = new Date(span.start); d <= span.end; d.setDate(d.getDate() + 1)) {
-          entries.push({ date: new Date(d), endDate: null });
+          entries.push({ date: new Date(d), raw: span.raw, endDate: null });
         }
         return;
       }
@@ -760,27 +811,73 @@ function goLineup() {
     entries.sort((a, b) => a.date.getTime() - b.date.getTime());
 
     entries.forEach((entry, index) => {
-      const dateStr = Utilities.formatDate(entry.date, ss.getSpreadsheetTimeZone(), "MM/dd/yyyy HH:mm");
       const lookupKey = `${parentID}|${entry.date.getTime()}`;
       const record = existingRecords[lookupKey];
+      const values = {};
+      sourceFields.forEach(fieldName => {
+        values[fieldName] = pRow[pCol(fieldName)];
+      });
+      values.parentID = parentID;
+      values.Date = entry.date;
+      values.Time = entry.date;
+      values.RawDateStr = entry.raw || "";
+      values.EventOfTotal = `${index + 1} of ${entries.length}`;
+      if (entry.endDate) values.EndDate = entry.endDate;
 
-      const rowArray = new Array(lWidth).fill("");
-      rowArray[lCol("EventName")] = pRow[pCol("EventName")];
-      rowArray[lCol("parentID")] = parentID;
-      rowArray[lCol("Date")] = entry.date;
-      rowArray[lCol("RawDateStr")] = dateStr;
-      rowArray[lCol("EventOfTotal")] = `${index + 1} of ${entries.length}`;
-      rowArray[lCol("Venue")] = pRow[pCol("Venue")];
-      if (entry.endDate && lCol("EndDate") >= 0) rowArray[lCol("EndDate")] = entry.endDate;
+      const identity = Engine.getLibraryModule("Identity");
+      if (identity && typeof identity.generate === "function") {
+        values.SyncHash = identity.generate({
+          title: values.EventName,
+          date: values.Date,
+          time: values.Time,
+          venue: values.Venue
+        }).hash;
+      }
 
       if (record) {
-        rowArray[lCol("UUID")] = record.uuid;
-        lSheet.getRange(record.rowIdx, 1, 1, rowArray.length).setValues([rowArray]);
-        Engine.Status.paint(ctx, lRole, record.rowIdx, rowArray[lCol("SyncStatus")] || "Draft");
+        const currentStatus = record.row[lCol("SyncStatus")];
+        if (Engine.Status.blocksWrite(ctx, currentStatus)) {
+          Engine.Log.write(ctx, {
+            stage: "INGEST",
+            sheetName: lRole,
+            rowIdx: record.rowIdx,
+            id: record.uuid || parentID,
+            type: "REFRESH_BLOCKED",
+            details: `Parent Lineup update skipped because existing status "${currentStatus}" blocks writes.`
+          });
+          return;
+        }
+
+        const changedFields = writeChangedFields(record, values);
+        if (changedFields.length) {
+          Engine.Status.apply(ctx, lRole, record.rowIdx, "Active", {
+            stage: "INGEST",
+            id: record.uuid || parentID,
+            details: `Updated from Parent Lineup: ${changedFields.join(", ")}`
+          });
+        } else if (currentStatus !== "Active") {
+          Engine.Status.apply(ctx, lRole, record.rowIdx, "Active", {
+            stage: "INGEST",
+            id: record.uuid || parentID,
+            details: "Confirmed current with Parent Lineup."
+          });
+        } else {
+          const lastSyncedCol = lCol("LastSynced");
+          if (lastSyncedCol >= 0) lSheet.getRange(record.rowIdx, lastSyncedCol + 1).setValue(new Date());
+        }
+        ensureDerivedFormulas(record.rowIdx);
       } else {
+        const rowArray = new Array(lWidth).fill("");
+        Object.keys(values).forEach(fieldName => {
+          const column = lCol(fieldName);
+          if (column >= 0) rowArray[column] = values[fieldName];
+        });
         rowArray[lCol("UUID")] = Utilities.getUuid();
         rowArray[lCol("SyncStatus")] = "Draft";
+        if (lCol("LastSynced") >= 0) rowArray[lCol("LastSynced")] = new Date();
+        if (lCol("LastUpdated") >= 0) rowArray[lCol("LastUpdated")] = new Date();
         lSheet.appendRow(rowArray);
+        ensureDerivedFormulas(lSheet.getLastRow());
         Engine.Status.paint(ctx, lRole, lSheet.getLastRow(), "Draft");
       }
     });
@@ -807,7 +904,7 @@ Engine.Ingest = Engine.Ingest || {};
  * Parses the multiline DatesAndTimes cells used by Parent Lineup.
  */
 Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
-  const result = { dates: [], spans: [], errors: [] };
+  const result = { dates: [], dateEntries: [], spans: [], errors: [] };
   const parserModule = Engine.getLibraryModule("TheatricalParser");
   if (!parserModule || typeof parserModule.parse !== "function" || !rawDates) {
     if (rawDates) result.errors.push("Theatrical parser unavailable");
@@ -849,13 +946,14 @@ Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
 
     const parsed = parserModule.parse(content);
     if (parsed && parsed.startDate && !isNaN(parsed.startDate.getTime())) {
-      result.dates.push(parsed.startDate);
+      result.dateEntries.push({ date: parsed.startDate, raw: line });
     } else if (!(parsed && parsed.isTBD)) {
       result.errors.push(content);
     }
   });
 
-  result.dates.sort((a, b) => a.getTime() - b.getTime());
+  result.dateEntries.sort((a, b) => a.date.getTime() - b.date.getTime());
+  result.dates = result.dateEntries.map(entry => entry.date);
   return result;
 };
 

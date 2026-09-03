@@ -368,7 +368,7 @@ var Engine = {
       if (key === "defaultDuration") config.defaultDuration = Number(val);
       if (key === "logTypes") config.logTypes = val;
       if (key === "writeToCalendar") config.writeToCalendar = String(val).toLowerCase() === "true" || val === true;
-      if (key === "Crew Draft Calendar ID") config.crewDraftCalendarId = val;
+      if (key === "Crew Draft Calendar ID") config.crewDraftCalendarId = val; //depreciated
       if (nam && nam.toLowerCase() === "mode") config.mode = val;
     });
 

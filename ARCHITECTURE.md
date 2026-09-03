@@ -79,6 +79,26 @@ The workbook operates across four distinct structural layers to maintain determi
    - Granular event instance layer parsed into individual performance dates/times for calendar sync.
    - parseDatesAndTimes performs the complex parsing of the DatesAndTimes field into individual evnts
 
+### Lineup Instance Identity and Updates
+
+`parentID` identifies the Parent Lineup event and remains stable as that event is
+updated from import. `UUID` identifies one individual Lineup instance. A Lineup
+instance is matched internally by `parentID` plus its complete parsed Date/Time
+timestamp; that composite is a reconciliation key, not a new stored identity.
+
+`goLineup()` preserves the UUID of a matched instance and mints a UUID only for a
+genuinely new parent/date-time instance. UUID values are opaque: legacy composite
+values and GUID values must not be interpreted by their format. Mixed legacy rows
+must be reconciled deliberately, with downstream references considered, rather
+than silently deleted by an explode run.
+
+The Parent `DatesAndTimes` line is retained on Lineup as `RawDateStr` exactly as
+it was split from the parent cell. The parsed timestamp is written to both `Date`
+and `Time`, whose sheet number formats provide the date-only and time-only views.
+`goLineup()` updates only source-managed or derived fields that changed; it does
+not rewrite a matched row wholesale or erase its operational state. New rows
+receive their initial `Draft` status, timestamps, derived formulas, and SyncHash.
+
 4. **Governance Layer:**
    - See Metadata sources
    - **Sheets:** `decision_log`, `idLog`, `Audit_Log`, `Sheet_Settings`
@@ -126,6 +146,12 @@ Active engine flows resolve managed sheets through `SheetRole` values defined in
 `import` is read-only because it is supplied by `IMPORTRANGE`. Its row number is not a permanent identity. Parent identity matching must use content/source evidence and preserve an existing `parentID` when continuity is established.
 
 `UniqueID` remains the mixed-form `idLog` key. Its interpretation comes from `RecordType`, source sheet, and location.
+
+`SyncHash` on operational data sheets is a deterministic change-detection hash
+generated from event identity inputs. It is not a replacement for `parentID` or
+`UUID`, and a changed hash does not by itself authorize replacing an instance.
+The `idLog.Fingerprint` field is registry-owned and has a separate evolving
+snapshot/audit purpose; do not conflate it with data-sheet `SyncHash`.
 
 ## Status, Behavior, and Decisions
 

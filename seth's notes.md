@@ -11,6 +11,11 @@
 - merge DEVELOPMENT_INTENTIONS.md with agent instructions
 - agent-notes/review normalize0829.md and compare with scriptLib normalize utility
 - agent-notes/COPILOT_AGENT_INSTRUCTIONS_RoleSweep.md
+- Compare these plan documents with ROADMAP.md. 
+    - What is actually complete?
+    - What is in progress?
+    - Which issues are intertwined or overlapping?
+    - List any open questions or decisions I need to make. 
 
 ## TO DO
 - create diagram to represnt data flow
