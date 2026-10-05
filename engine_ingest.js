@@ -589,37 +589,126 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   const changedLocations = [];
   Object.keys(ctx.sheetDefs || {}).forEach(sheetName => {
     const map = ctx.getMap(sheetName);
-    const sheet = ctx.ss.getSheetByName(sheetName);
-    const col = Engine.getColumnIndex(map, "parentID");
+    const sheet = ctx.sheets[sheetName] || ctx.ss.getSheetByName(sheetName);
+    const col = Engine.getColumnIndex(map, "parentID") >= 0
+      ? Engine.getColumnIndex(map, "parentID")
+      : Engine.getColumnIndex(map, "ParentID");
     if (!sheet || col < 0 || sheet === parentSheet) return;
     const values = sheet.getDataRange().getValues();
     for (let i = 1; i < values.length; i++) {
-      if (values[i][col] === duplicateParentID) {
+      if (String(values[i][col] || "").trim() === String(duplicateParentID).trim()) {
         sheet.getRange(i + 1, col + 1).setValue(keepParentID);
         changedLocations.push(`${sheetName}!R${i + 1}`);
       }
     }
   });
 
-  const idLog = ctx.sheets.ID_LOG;
-  const idMap = ctx.maps.ID_LOG;
+  const now = new Date();
+  const idLog = ctx.sheets.ID_LOG || ctx.ss.getSheetByName("idLog");
+  const idMap = ctx.maps.ID_LOG || {};
   const idCol = Engine.getColumnIndex(idMap, "UniqueID");
   const idStatusCol = Engine.getColumnIndex(idMap, "SyncStatus");
   const idDetailsCol = Engine.getColumnIndex(idMap, "LogDetails");
+  const idLastUpdatedCol = Engine.getColumnIndex(idMap, "LastUpdated");
+  const idMergedCol = Engine.getColumnIndex(idMap, "MergedIDs") >= 0
+    ? Engine.getColumnIndex(idMap, "MergedIDs")
+    : Engine.getColumnIndex(idMap, "Merged IDs");
+
   const idData = idLog && idLog.getDataRange().getValues();
   if (idData && idCol >= 0) {
-    const idRow = idData.findIndex((row, index) => index > 0 && row[idCol] === duplicateParentID);
+    // 2a. Update duplicate row in idLog to 'Merged'
+    const idRow = idData.findIndex((row, index) => index > 0 && String(row[idCol] || "").trim() === String(duplicateParentID).trim());
     if (idRow >= 0) {
       if (idStatusCol >= 0) idLog.getRange(idRow + 1, idStatusCol + 1).setValue("Merged");
       if (idDetailsCol >= 0) idLog.getRange(idRow + 1, idDetailsCol + 1).setValue(`Merged into ParentID ${keepParentID}`);
+      if (idLastUpdatedCol >= 0) idLog.getRange(idRow + 1, idLastUpdatedCol + 1).setValue(now);
+    } else if (Engine.IDService && typeof Engine.IDService.upsert === "function") {
+      Engine.IDService.upsert(ctx, {
+        id: duplicateParentID,
+        type: pRole,
+        title: duplicateValues[Engine.getColumnIndex(parentMap, "EventName")] || "Merged Duplicate",
+        parentId: "N/A",
+        status: "Merged",
+        details: `Merged into ParentID ${keepParentID}`
+      });
     }
+
+    // 2b. Append duplicateParentID to survivor row's MergedIDs
+    const survivorRow = idData.findIndex((row, index) => index > 0 && String(row[idCol] || "").trim() === String(keepParentID).trim());
+    if (survivorRow >= 0 && idMergedCol >= 0) {
+      const existingMergedStr = String(idData[survivorRow][idMergedCol] || "").trim();
+      const existingMergedList = existingMergedStr.split(",").map(s => s.trim()).filter(Boolean);
+      if (!existingMergedList.includes(duplicateParentID)) {
+        existingMergedList.push(duplicateParentID);
+        idLog.getRange(survivorRow + 1, idMergedCol + 1).setValue(existingMergedList.join(", "));
+        if (idLastUpdatedCol >= 0) idLog.getRange(survivorRow + 1, idLastUpdatedCol + 1).setValue(now);
+      }
+    }
+  }
+
+  // 3. Re-point any active pending decisions in decision_log that reference the duplicate ID
+  let repointedDecisions = 0;
+  try {
+    const dSheet = Engine.getSheetByRole(ctx, "DECISIONS");
+    const dMap = ctx.getMap("DECISIONS");
+    if (dSheet && dMap) {
+      const dData = dSheet.getDataRange().getValues();
+      const dStatusCol = Engine.getColumnIndex(dMap, "ActionStatus");
+      const dExistingParentCol = Engine.getColumnIndex(dMap, "ExistingParentID");
+      const dCandidateCol = Engine.getColumnIndex(dMap, "CandidateID");
+      const dKeepParentCol = Engine.getColumnIndex(dMap, "KeepParentID");
+      const dDupParentCol = Engine.getColumnIndex(dMap, "DuplicateParentID");
+      const dDetailsCol = Engine.getColumnIndex(dMap, "ActionDetails");
+      const dReviewIdCol = Engine.getColumnIndex(dMap, "ReviewID");
+
+      for (let i = 1; i < dData.length; i++) {
+        const row = dData[i];
+        const status = dStatusCol >= 0 ? String(row[dStatusCol] || "PENDING").trim().toUpperCase() : "PENDING";
+        if (status !== "PENDING" && status !== "FAILED") continue;
+
+        let rowChanged = false;
+        if (dExistingParentCol >= 0 && String(row[dExistingParentCol] || "").trim() === String(duplicateParentID).trim()) {
+          dSheet.getRange(i + 1, dExistingParentCol + 1).setValue(keepParentID);
+          rowChanged = true;
+        }
+        if (dCandidateCol >= 0 && String(row[dCandidateCol] || "").trim() === String(duplicateParentID).trim()) {
+          dSheet.getRange(i + 1, dCandidateCol + 1).setValue(keepParentID);
+          rowChanged = true;
+        }
+        if (dKeepParentCol >= 0 && String(row[dKeepParentCol] || "").trim() === String(duplicateParentID).trim()) {
+          dSheet.getRange(i + 1, dKeepParentCol + 1).setValue(keepParentID);
+          rowChanged = true;
+        }
+        if (dDupParentCol >= 0 && String(row[dDupParentCol] || "").trim() === String(duplicateParentID).trim()) {
+          dSheet.getRange(i + 1, dDupParentCol + 1).setValue(keepParentID);
+          rowChanged = true;
+        }
+
+        if (rowChanged) {
+          repointedDecisions++;
+          const reviewId = dReviewIdCol >= 0 ? row[dReviewIdCol] : `Row ${i + 1}`;
+          if (dDetailsCol >= 0) {
+            dSheet.getRange(i + 1, dDetailsCol + 1).setValue(`Repointed from merged ParentID ${duplicateParentID} to ${keepParentID}`);
+          }
+          Engine.Log.write(ctx, {
+            stage: "DECISION",
+            sheetName: "decision_log",
+            rowIdx: i + 1,
+            id: reviewId,
+            type: "DECISION_REPOINTED",
+            details: `Repointed decision referencing merged ${duplicateParentID} to surviving ${keepParentID}.`
+          });
+        }
+      }
+    }
+  } catch (decErr) {
+    Engine.Log.warn(ctx, "INGEST", `Could not repoint decisions during merge: ${decErr.message}`);
   }
 
   const syncStatusCol = Engine.getColumnIndex(parentMap, "SyncStatus");
   const lastSyncedCol = Engine.getColumnIndex(parentMap, "LastSynced");
   const lastUpdatedCol = Engine.getColumnIndex(parentMap, "LastUpdated");
   const updateDetailsCol = Engine.getColumnIndex(parentMap, "UpdateDetails");
-  const now = new Date();
   if (syncStatusCol >= 0) parentSheet.getRange(keepRow + 1, syncStatusCol + 1).setValue("Active");
   Engine.Status.paint(ctx, pRole, keepRow + 1, "Active");
   if (lastSyncedCol >= 0) parentSheet.getRange(keepRow + 1, lastSyncedCol + 1).setValue(now);
@@ -636,13 +725,14 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
     sheetName: pRole,
     id: duplicateParentID,
     type: "PARENT_DUPLICATE_MERGED",
-    details: `Merged into ${keepParentID}. Copied source fields: ${copiedFields.join(", ") || "none"}. Repointed ${changedLocations.length} dependent row(s).`
+    details: `Merged into ${keepParentID}. Copied source fields: ${copiedFields.join(", ") || "none"}. Repointed ${changedLocations.length} dependent row(s). Repointed ${repointedDecisions} decision(s).`
   });
   return {
     keepParentID: keepParentID,
     duplicateParentID: duplicateParentID,
     copiedFields: copiedFields,
-    changedLocations: changedLocations
+    changedLocations: changedLocations,
+    repointedDecisions: repointedDecisions
   };
 };
 
@@ -1344,8 +1434,18 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       flagged++;
       const wantedAction = isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT";
       const changedFields = isRenameCandidate ? ["EventName"] : comparison.changed.map(entry => entry.field);
+      const reviewType = isRenameCandidate ? "IMPORT_RENAME" : "IMPORT_DRIFT";
+      const evidenceStr = isRenameCandidate
+        ? `Opening=${iRow[iCol("Opening")]}, Range=${iRow[iCol("Range")]}, Venue=${iRow[iCol("Venue")]}`
+        : fieldComparison;
+      const parentId = match.row[pCol("parentID")] || "NO_PARENT_ID";
+      const reviewId = Engine.Decisions && typeof Engine.Decisions.stableReviewID === "function"
+        ? Engine.Decisions.stableReviewID(reviewType, name, parentId, evidenceStr)
+        : `IMPORT_PARENT_${index + 2}_${parentId}`;
+
       const decisionValues = {
-        ReviewID: `IMPORT_PARENT_${index + 2}_${match.row[pCol("parentID")] || "NO_PARENT_ID"}`,
+        ReviewID: reviewId,
+        ReviewType: reviewType,
         SourceSheet: iSheetName,
         SourceRow: index + 2,
         SourceID: name,
@@ -1388,6 +1488,31 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
           ? `Possible renamed event: import "${name}" vs Parent Lineup "${match.row[pCol("EventName")]}".`
           : "Parent Lineup no longer matches import for this event."
       });
+    } else {
+      // Clean match: Parent Lineup matches import.
+      // If the parent row was previously flagged with an engine diagnostic status (Manual Review, Data Drift Detected),
+      // heal it back to 'Synced' and supersede any active drift decisions for this parentID.
+      const currentStatus = String(match.row[pCol("SyncStatus")] || "").trim();
+      const parentId = match.row[pCol("parentID")];
+      const healableStatuses = ["Manual Review", "Data Drift Detected"];
+      if (healableStatuses.includes(currentStatus) && !Engine.Status.blocksWrite(ctx, currentStatus)) {
+        Engine.Status.apply(ctx, pRole, match.rowIdx, "Synced", {
+          stage: "VERIFY_IMPORT",
+          id: parentId,
+          details: "Drift resolved: Parent Lineup now cleanly matches import source.",
+          suppressLog: false
+        });
+
+        // Mark any pending IMPORT_DRIFT / IMPORT_PARENT decision as SUPERSEDED
+        if (parentId && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
+          Engine.Decisions.reviewable(ctx)
+            .filter(d => (d.ExistingParentID === parentId || d.CandidateID === parentId) &&
+                         ["IMPORT_DRIFT", "IMPORT_PARENT", "IMPORT_RENAME"].includes(String(d.ReviewType || "")))
+            .forEach(d => {
+              Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Parent Lineup now cleanly matches import.");
+            });
+        }
+      }
     }
   });
 
@@ -1401,8 +1526,12 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
       normalize(pRowValue(pRow, "Opening")) === normalize(bestMatch.importOpening) &&
       normalize(pRowValue(pRow, "Range")) === normalize(bestMatch.importRange) &&
       normalize(pRowValue(pRow, "Venue")) === normalize(bestMatch.importVenue);
+    const parentId = pRow[pCol("parentID")] || rowIdx;
+    const reviewId = Engine.Decisions && typeof Engine.Decisions.stableReviewID === "function"
+      ? Engine.Decisions.stableReviewID("PARENT_ONLY", "NONE", parentId, pRow[pCol("EventName")] || "")
+      : `PARENT_ONLY_${parentId}`;
     const decisionValues = {
-      ReviewID: `PARENT_ONLY_${pRow[pCol("parentID")] || rowIdx}`,
+      ReviewID: reviewId,
       ReviewType: "PARENT_ONLY",
       SourceSheet: hasExactSourceMatch ? iSheetName : "",
       SourceRow: hasExactSourceMatch ? bestMatch.importRow : "",
@@ -1555,6 +1684,64 @@ function refreshParentDuplicateDecisions() {
   return results;
 }
 
+Engine.Ingest.refreshRelevantDecisions = function(ctx) {
+  let totalSuperseded = 0;
+  try {
+    const parentOnlyRes = Engine.Ingest.refreshParentOnlyDecisions(ctx);
+    totalSuperseded += (parentOnlyRes && parentOnlyRes.superseded) || 0;
+  } catch (e) {
+    Engine.Log.warn(ctx, "DECISION", `refreshParentOnlyDecisions: ${e.message}`);
+  }
+
+  try {
+    const parentDupRes = Engine.Ingest.refreshParentDuplicateDecisions(ctx);
+    totalSuperseded += (parentDupRes && parentDupRes.superseded) || 0;
+  } catch (e) {
+    Engine.Log.warn(ctx, "DECISION", `refreshParentDuplicateDecisions: ${e.message}`);
+  }
+
+  // Check Lineup drift decisions
+  try {
+    const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+    const lSheet = Engine.getSheetByRole(ctx, lRole);
+    const lMap = ctx.getMap(lRole);
+    if (lSheet && lMap && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
+      const lData = lSheet.getDataRange().getValues();
+      const uuidCol = Engine.getColumnIndex(lMap, "UUID");
+      const statusCol = Engine.getColumnIndex(lMap, "SyncStatus");
+      const lByUuid = {};
+      for (let i = 1; i < lData.length; i++) {
+        const u = lData[i][uuidCol];
+        if (u) lByUuid[u] = lData[i];
+      }
+
+      Engine.Decisions.reviewable(ctx)
+        .filter(d => String(d.ReviewType || "") === "PARENT_LINEUP_DRIFT")
+        .forEach(d => {
+          const row = lByUuid[d.CandidateID];
+          if (!row || (statusCol >= 0 && String(row[statusCol] || "").trim() === "Synced")) {
+            if (Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Lineup performance is now Synced or row was removed.")) {
+              totalSuperseded++;
+            }
+          }
+        });
+    }
+  } catch (lErr) {
+    Engine.Log.warn(ctx, "DECISION", `refreshRelevantDecisions Lineup pass: ${lErr.message}`);
+  }
+
+  return { superseded: totalSuperseded };
+};
+
+function refreshRelevantDecisions() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Refresh Stale Reviews");
+  const results = Engine.Ingest.refreshRelevantDecisions(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Refresh Stale Reviews", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+
 /**
  * VERIFY (read-only): Flags Lineup rows whose Date/Venue no longer match a
  * re-parse of their Parent Lineup row's DatesAndTimes range. Does not overwrite.
@@ -1663,17 +1850,149 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
           type: "DRIFT_DETECTED",
           details: details
         });
+
+        // Queue structured decision in decision_log
+        const uuid = child.row[lCol("UUID")] || "NO_UUID";
+        const evidenceStr = comparison.changed
+          ? comparison.changed.map(e => `${e.field}: parent="${e.source}" | lineup="${e.destination}"`).join(" | ")
+          : details;
+        if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+          const reviewId = typeof Engine.Decisions.stableReviewID === "function"
+            ? Engine.Decisions.stableReviewID("PARENT_LINEUP_DRIFT", parentID, uuid, evidenceStr)
+            : `PARENT_LINEUP_${parentID}_${uuid}`;
+          Engine.Decisions.addPending(ctx, {
+            ReviewID: reviewId,
+            ReviewType: "PARENT_LINEUP_DRIFT",
+            SourceSheet: pSheet.getName(),
+            SourceRow: pData.indexOf(pRow) + 2,
+            SourceID: parentID,
+            CandidateSheet: lSheet.getName(),
+            CandidateRow: child.rowIdx,
+            CandidateID: uuid,
+            ParentTitle: pRow[pCol("EventName")] || "",
+            CandidateTitle: child.row[lCol("EventName")] || child.row[lCol("Title")] || "",
+            ExistingParentID: parentID,
+            MatchedFields: "parentID",
+            ChangedFields: (comparison.changed || []).map(e => e.field).join(", "),
+            Evidence: evidenceStr,
+            Confidence: "HIGH",
+            SuggestedAction: "SYNC_PARENT_TO_LINEUP",
+            SuggestionReason: "Lineup performance date/venue drifted from Parent DatesAndTimes schedule.",
+            Decision: "PENDING",
+            ActionStatus: "PENDING"
+          });
+        }
+      } else {
+        // Clean match: Lineup matches Parent Lineup
+        const currentStatus = String(child.row[lCol("SyncStatus")] || "").trim();
+        const uuid = child.row[lCol("UUID")];
+        if (currentStatus === "Manual Review" && !Engine.Status.blocksWrite(ctx, currentStatus)) {
+          const statusCol = lCol("SyncStatus");
+          if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Synced");
+          Engine.Status.paint(ctx, lRole, child.rowIdx, "Synced");
+
+          if (uuid && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
+            Engine.Decisions.reviewable(ctx)
+              .filter(d => (d.CandidateID === uuid || d.SourceID === parentID) && d.ReviewType === "PARENT_LINEUP_DRIFT")
+              .forEach(d => {
+                Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Lineup performance cleanly matches Parent.");
+              });
+          }
+        }
       }
     });
+
+    // Check if Parent expected more performances than exist in Lineup
+    if (expectedDates.length > children.length) {
+      flagged++;
+      Engine.Log.warn(ctx, "VERIFY_PARENT", `Parent ${parentID} expects ${expectedDates.length} performances, but Lineup only has ${children.length}.`);
+      if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+        const reviewId = typeof Engine.Decisions.stableReviewID === "function"
+          ? Engine.Decisions.stableReviewID("LINEUP_MISSING", parentID, `count-${expectedDates.length}-${children.length}`)
+          : `LINEUP_MISSING_${parentID}`;
+        Engine.Decisions.addPending(ctx, {
+          ReviewID: reviewId,
+          ReviewType: "LINEUP_MISSING_PERFORMANCE",
+          SourceSheet: pSheet.getName(),
+          SourceRow: pData.indexOf(pRow) + 2,
+          SourceID: parentID,
+          ParentTitle: pRow[pCol("EventName")] || "",
+          ExistingParentID: parentID,
+          Evidence: `Expected ${expectedDates.length} performances (${expectedDates.join(", ")}), found ${children.length} in Lineup.`,
+          Confidence: "HIGH",
+          SuggestedAction: "EXPLODE_LINEUP",
+          SuggestionReason: "Parent DatesAndTimes has additional performances not yet exploded to Lineup.",
+          Decision: "PENDING",
+          ActionStatus: "PENDING"
+        });
+      }
+    }
+  });
+
+  // Check for orphan Lineup rows (parentID not in Parent Lineup)
+  const validParentIDs = new Set(pData.map(r => String(r[pCol("parentID")] || "").trim()).filter(Boolean));
+  let orphans = 0;
+  lData.forEach((row, idx) => {
+    const childPid = String(row[lCol("parentID")] || "").trim();
+    if (!childPid || validParentIDs.has(childPid)) return;
+
+    // Check if childPid was merged in idLog
+    const regEntry = ctx.registry && ctx.registry[childPid];
+    const isMerged = regEntry && (regEntry.MergedIDs || regEntry.Location);
+    // Search survivor in registry
+    let survivorId = null;
+    if (ctx.registry) {
+      Object.keys(ctx.registry).forEach(regId => {
+        const mergedList = String(ctx.registry[regId].MergedIDs || "").split(",").map(s => s.trim());
+        if (mergedList.includes(childPid)) survivorId = regId;
+      });
+    }
+
+    if (survivorId && validParentIDs.has(survivorId)) {
+      // Auto-repoint orphan to survivor
+      const pidCol = lCol("parentID");
+      if (pidCol >= 0) lSheet.getRange(idx + 2, pidCol + 1).setValue(survivorId);
+      Engine.Log.write(ctx, {
+        stage: "VERIFY_PARENT",
+        sheetName: lSheet.getName(),
+        rowIdx: idx + 2,
+        id: row[lCol("UUID")],
+        type: "PARENT_REPOINTED",
+        details: `Auto-repointed orphaned Lineup row from merged ParentID ${childPid} to survivor ${survivorId}.`
+      });
+    } else {
+      orphans++;
+      if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+        const uuid = row[lCol("UUID")] || `R${idx + 2}`;
+        const reviewId = typeof Engine.Decisions.stableReviewID === "function"
+          ? Engine.Decisions.stableReviewID("LINEUP_ORPHAN", childPid, uuid)
+          : `LINEUP_ORPHAN_${childPid}_${uuid}`;
+        Engine.Decisions.addPending(ctx, {
+          ReviewID: reviewId,
+          ReviewType: "LINEUP_ORPHAN",
+          CandidateSheet: lSheet.getName(),
+          CandidateRow: idx + 2,
+          CandidateID: uuid,
+          CandidateTitle: row[lCol("EventName")] || row[lCol("Title")] || "",
+          ExistingParentID: childPid,
+          Evidence: `ParentID ${childPid} does not exist in Parent Lineup.`,
+          Confidence: "HIGH",
+          SuggestedAction: "REVIEW_LINEUP_ORPHAN",
+          SuggestionReason: "Lineup row references a non-existent parentID.",
+          Decision: "PENDING",
+          ActionStatus: "PENDING"
+        });
+      }
+    }
   });
 
   Engine.Log.write(ctx, {
     stage: "VERIFY_PARENT",
     type: "VERIFY_PARENT_COMPLETE",
-    details: `Checked ${checked} Lineup rows against Parent Lineup. ${flagged} drifted, ${unparseable} Parent Lineup row(s) had unparseable date ranges.`
+    details: `Checked ${checked} Lineup rows against Parent Lineup. ${flagged} drifted, ${unparseable} Parent Lineup row(s) had unparseable date ranges, ${orphans} orphan(s) detected.`
   });
 
-  return { checked: checked, flagged: flagged, unparseable: unparseable };
+  return { checked: checked, flagged: flagged, unparseable: unparseable, orphans: orphans };
 };
 
 // ============================================================

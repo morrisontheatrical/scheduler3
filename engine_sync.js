@@ -34,14 +34,20 @@ Engine.Sync = {
     ctx.registry = {};
     const regData = ctx.sheets.ID_LOG.getDataRange().getValues();
     const uniqueIdCol = ctx.getCol("ID_LOG", "UniqueID");
-    const syncHashCol = ctx.getCol("ID_LOG", "SyncHash");
+    const syncHashCol = ctx.getCol("ID_LOG", "Fingerprint") >= 0
+      ? ctx.getCol("ID_LOG", "Fingerprint")
+      : ctx.getCol("ID_LOG", "SyncHash");
     const sheetLocationCol = ctx.getCol("ID_LOG", "SheetLocation");
+    const mergedIdsCol = ctx.getCol("ID_LOG", "MergedIDs") >= 0
+      ? ctx.getCol("ID_LOG", "MergedIDs")
+      : ctx.getCol("ID_LOG", "Merged IDs");
     for (let i = 1; i < regData.length; i++) {
       const sId = regData[i][uniqueIdCol];
       if (sId) {
         ctx.registry[sId] = {
-          SyncHash: regData[i][syncHashCol],
-          Location: regData[i][sheetLocationCol]
+          SyncHash: syncHashCol >= 0 ? regData[i][syncHashCol] : "N/A",
+          Location: sheetLocationCol >= 0 ? regData[i][sheetLocationCol] : "N/A",
+          MergedIDs: mergedIdsCol >= 0 ? regData[i][mergedIdsCol] : ""
         };
       }
     }
@@ -215,6 +221,112 @@ Engine.Sync = {
       type: "RECONCILE_COMPLETE",
       details: `Reconciliation complete. Checked ${crewEvents.length} crew rows.`
     });
+  },
+
+  /**
+   * RECONCILIATION: Lineup vs Crew_Calendar_Log
+   * Checks that all confirmed Lineup rows exist in Crew_Calendar_Log,
+   * flags drift in date/venue, and detects orphan crew log rows.
+   */
+  verifyLineupToCrewLog: function(ctx) {
+    const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+    const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+    const lMap = ctx.getMap(lRole);
+    const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+    const crewRole = isDraft ? "DRAFTCAL" : "CREWCAL";
+    const crewSheet = Engine.getSheetByRole(ctx, crewRole);
+    const crewMap = ctx.getMap(crewRole);
+
+    if (!lSheet || !lMap || !crewSheet || !crewMap) {
+      Engine.Log.warn(ctx, "RECONCILE", `Cannot reconcile Lineup to ${crewRole}: sheet or map missing.`);
+      return { checked: 0, missing: 0, drifted: 0, orphans: 0 };
+    }
+
+    const lCol = f => Engine.getColumnIndex(lMap, f);
+    const cCol = f => Engine.getColumnIndex(crewMap, f);
+    const lData = lSheet.getDataRange().getValues().slice(1);
+    const cData = crewSheet.getDataRange().getValues().slice(1);
+
+    const crewByUUID = new Map();
+    cData.forEach((row, idx) => {
+      const uuid = row[cCol("UUID")];
+      if (uuid) crewByUUID.set(String(uuid).trim(), { row: row, rowIdx: idx + 2 });
+    });
+
+    let checked = 0;
+    let missing = 0;
+    let drifted = 0;
+    const lineupUUIDs = new Set();
+
+    lData.forEach((lRow, idx) => {
+      const uuid = String(lRow[lCol("UUID")] || "").trim();
+      if (!uuid) return;
+      lineupUUIDs.add(uuid);
+      checked++;
+
+      const crewEntry = crewByUUID.get(uuid);
+      if (!crewEntry) {
+        missing++;
+        Engine.Log.warn(ctx, "RECONCILE", `Lineup row ${idx + 2} (${uuid}: ${lRow[lCol("EventName")]}) has no entry in ${crewRole}.`);
+        if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+          const parentId = lRow[lCol("parentID")] || "";
+          const reviewId = typeof Engine.Decisions.stableReviewID === "function"
+            ? Engine.Decisions.stableReviewID("CREWLOG_MISSING", parentId, uuid)
+            : `CREWLOG_MISSING_${uuid}`;
+          Engine.Decisions.addPending(ctx, {
+            ReviewID: reviewId,
+            ReviewType: "CREWLOG_MISSING",
+            SourceSheet: lSheet.getName(),
+            SourceRow: idx + 2,
+            SourceID: uuid,
+            CandidateSheet: crewSheet.getName(),
+            CandidateTitle: lRow[lCol("EventName")] || "",
+            ExistingParentID: parentId,
+            Evidence: `Lineup row ${uuid} is not present in ${crewRole}.`,
+            Confidence: "HIGH",
+            SuggestedAction: "PUSH_LINEUP_TO_CREWLOG",
+            SuggestionReason: "Lineup performance missing from crew calendar log.",
+            Decision: "PENDING",
+            ActionStatus: "PENDING"
+          });
+        }
+      } else {
+        // Compare date and venue
+        const lDate = lRow[lCol("Date")];
+        const cDate = crewEntry.row[cCol("Date")];
+        const lVenue = String(lRow[lCol("Venue")] || "").trim();
+        const cVenue = String(crewEntry.row[cCol("Location")] || "").trim();
+
+        const lTime = lDate ? new Date(lDate).getTime() : 0;
+        const cTime = cDate ? new Date(cDate).getTime() : 0;
+        const dateMismatch = lTime !== cTime;
+        const venueMismatch = lVenue && cVenue && lVenue.toLowerCase() !== cVenue.toLowerCase();
+
+        if (dateMismatch || venueMismatch) {
+          drifted++;
+          Engine.Log.warn(ctx, "RECONCILE", `Lineup row ${uuid} differs from ${crewRole} entry: dateMismatch=${dateMismatch}, venueMismatch=${venueMismatch}`);
+        }
+      }
+    });
+
+    // Check for orphan crew rows (Source="Lineup" but UUID not in Lineup)
+    let orphans = 0;
+    cData.forEach((cRow, idx) => {
+      const source = String(cRow[cCol("Source")] || "").trim();
+      const uuid = String(cRow[cCol("UUID")] || "").trim();
+      if (source === "Lineup" && uuid && !lineupUUIDs.has(uuid)) {
+        orphans++;
+        Engine.Log.warn(ctx, "RECONCILE", `Crew log row ${idx + 2} (${uuid}) references a Lineup UUID that no longer exists.`);
+      }
+    });
+
+    Engine.Log.write(ctx, {
+      stage: "RECONCILE",
+      type: "RECONCILE_LINEUP_CREW_COMPLETE",
+      details: `Lineup vs ${crewRole}: checked ${checked}, missing ${missing}, drifted ${drifted}, orphans ${orphans}.`
+    });
+
+    return { checked: checked, missing: missing, drifted: drifted, orphans: orphans };
   },
   syncCrewCalendar: function(ctx) {
   const role = "CREWCAL";
@@ -426,3 +538,11 @@ Engine.Sync = {
     });
   }
 };
+
+function verifyLineupToCrewLog() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Verify Lineup vs Crew Log");
+  const results = Engine.Sync.verifyLineupToCrewLog(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Verify Lineup vs Crew Log", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}

@@ -756,16 +756,22 @@ var Engine = {
     if (!sheet) return {};
     
     const data = sheet.getDataRange().getValues();
-    const headers = data.shift();
+    const headers = data.shift() || [];
     const idIdx = headers.indexOf("UniqueID");
-    const hashIdx = headers.indexOf("SyncHash");
+    const hashIdx = headers.indexOf("Fingerprint") >= 0
+      ? headers.indexOf("Fingerprint")
+      : headers.indexOf("SyncHash");
+    const mergedIdx = headers.indexOf("MergedIDs") >= 0
+      ? headers.indexOf("MergedIDs")
+      : headers.indexOf("Merged IDs");
     
     let registry = {};
     data.forEach(row => {
       const id = row[idIdx];
       if (id) {
         registry[id] = {
-          SyncHash: row[hashIdx] || "N/A"
+          SyncHash: hashIdx >= 0 ? (row[hashIdx] || "N/A") : "N/A",
+          MergedIDs: mergedIdx >= 0 ? (row[mergedIdx] || "") : ""
         };
       }
     });

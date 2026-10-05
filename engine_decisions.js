@@ -24,6 +24,45 @@ Engine.Decisions = {
     return index >= 0 ? row[index] : "";
   },
 
+  /**
+   * Generates a stable, content-derived ReviewID independent of sheet row numbers.
+   */
+  stableReviewID: function(type, sourceId, candidateId, evidenceKey) {
+    const cleanType = String(type || "REVIEW").trim().toUpperCase();
+    const cleanSource = String(sourceId || "NA").trim().replace(/[\s_]+/g, "-");
+    const cleanCandidate = String(candidateId || "NA").trim().replace(/[\s_]+/g, "-");
+    let hashStr = "";
+    if (evidenceKey !== undefined && evidenceKey !== null && evidenceKey !== "") {
+      const identity = Engine.getLibraryModule("Identity");
+      if (identity && typeof identity._hashString === "function") {
+        hashStr = identity._hashString(String(evidenceKey));
+      } else {
+        const rawDigest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(evidenceKey));
+        hashStr = Utilities.base64Encode(rawDigest).replace(/[^a-zA-Z0-9]/g, "").slice(0, 8);
+      }
+    }
+    return hashStr
+      ? `${cleanType}_${cleanSource}_${cleanCandidate}_${hashStr}`
+      : `${cleanType}_${cleanSource}_${cleanCandidate}`;
+  },
+
+  /**
+   * Formats a structured comparison or list of changed fields into canonical Evidence string.
+   */
+  formatEvidence: function(comparison) {
+    if (!comparison) return "";
+    if (typeof comparison === "string") return comparison;
+    if (Array.isArray(comparison)) return comparison.join(", ");
+    if (comparison.changed && Array.isArray(comparison.changed)) {
+      return comparison.changed.map(field => {
+        const src = comparison.before && comparison.before[field] !== undefined ? comparison.before[field] : "";
+        const dst = comparison.after && comparison.after[field] !== undefined ? comparison.after[field] : "";
+        return `${field}: source="${src}" | dest="${dst}"`;
+      }).join(" | ");
+    }
+    return String(comparison);
+  },
+
   ensureComparisonColumns: function(ctx) {
     const sheet = Engine.getSheetByRole(ctx, "DECISIONS");
     const registry = ctx.ss.getSheetByName("Map_Registry");
@@ -192,12 +231,22 @@ Engine.Decisions = {
     const parentSheetName = parentSheet && parentSheet.getName();
     const iRole = Engine.Roles.resolve(ctx, "IMPORT");
     const importSheet = iRole && Engine.getSheetByRole(ctx, iRole);
+    const importMap = ctx.getMap(iRole);
     const importSheetName = importSheet && importSheet.getName();
     const resolveParentRow = parentID => {
       const idColumn = Engine.getColumnIndex(parentMap, "parentID");
       if (!parentSheet || idColumn < 0 || !parentID) return null;
       const data = parentSheet.getDataRange().getValues();
-      const rowIndex = data.findIndex((row, index) => index > 0 && String(row[idColumn]) === String(parentID));
+      const rowIndex = data.findIndex((row, index) => index > 0 && String(row[idColumn]).trim() === String(parentID).trim());
+      return rowIndex >= 0 ? rowIndex + 1 : null;
+    };
+    const resolveImportRow = title => {
+      const titleColumn = importMap ? Engine.getColumnIndex(importMap, "EventName") : 0;
+      if (!importSheet || titleColumn < 0 || !title) return null;
+      const data = importSheet.getDataRange().getValues();
+      const normalize = s => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+      const target = normalize(title);
+      const rowIndex = data.findIndex((row, index) => index > 0 && normalize(row[titleColumn]) === target);
       return rowIndex >= 0 ? rowIndex + 1 : null;
     };
 
@@ -208,6 +257,7 @@ Engine.Decisions = {
     const existingParentIdCol = this._col(table.map, "ExistingParentID");
     const duplicateParentIdCol = this._col(table.map, "DuplicateParentID");
     const keepParentIdCol = this._col(table.map, "KeepParentID");
+    const importTitleCol = this._col(table.map, "ImportTitle");
     const sourceLinkCol = this._col(table.map, "SourceLink");
     const candidateLinkCol = this._col(table.map, "CandidateLink");
     const sourceSheetCol = this._col(table.map, "SourceSheet");
@@ -225,7 +275,7 @@ Engine.Decisions = {
 
       if (candidateSheetCol >= 0) table.sheet.getRange(decision._rowNumber, candidateSheetCol + 1).setValue(parentSheetName);
       if (isParentDuplicate && sourceSheetCol >= 0) table.sheet.getRange(decision._rowNumber, sourceSheetCol + 1).setValue(parentSheetName);
-      if (!isParentDuplicate && String(decision.SourceSheet || "") === "import" && importSheetName && sourceSheetCol >= 0) {
+      if (!isParentDuplicate && ["import", importSheetName].includes(String(decision.SourceSheet || "")) && importSheetName && sourceSheetCol >= 0) {
         table.sheet.getRange(decision._rowNumber, sourceSheetCol + 1).setValue(importSheetName);
       }
 
@@ -241,6 +291,17 @@ Engine.Decisions = {
           linked++;
         } else {
           cleared++;
+        }
+      } else if (["import", importSheetName].includes(String(decision.SourceSheet || ""))) {
+        const sourceRow = resolveImportRow(decision.ImportTitle || decision.SourceID);
+        if (sourceRow) {
+          table.sheet.getRange(decision._rowNumber, sourceRowCol + 1).setValue(sourceRow);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, sourceIdCol, importSheetName, sourceRow, decision.SourceID);
+          if (importTitleCol >= 0) {
+            this._setLinkedValue(ctx, table.sheet, decision._rowNumber, importTitleCol, importSheetName, sourceRow, decision.ImportTitle);
+          }
+          if (sourceLinkCol >= 0) table.sheet.getRange(decision._rowNumber, sourceLinkCol + 1).clearContent();
+          linked++;
         }
       }
 
@@ -439,6 +500,33 @@ Engine.Decisions = {
           if (!keepID || !duplicateID) throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
           const mergeResult = Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
           actionDetails = `Merged ${duplicateID} into ${keepID}; copied ${mergeResult.copiedFields.join(", ") || "no"} source fields`;
+        } else if (action === "SYNC_PARENT_TO_LINEUP") {
+          if (!["ACCEPT", "SYNC"].includes(userDecision)) throw new Error("SYNC_PARENT_TO_LINEUP requires Decision=ACCEPT");
+          const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+          const lSheet = Engine.getSheetByRole(ctx, lRole);
+          const lMap = ctx.getMap(lRole);
+          const uuid = decision.CandidateID;
+          if (lSheet && lMap && uuid) {
+            const lData = lSheet.getDataRange().getValues();
+            const uuidCol = Engine.getColumnIndex(lMap, "UUID");
+            const rowIdx = lData.findIndex((r, idx) => idx > 0 && String(r[uuidCol]).trim() === String(uuid).trim());
+            if (rowIdx > 0) {
+              const statusCol = Engine.getColumnIndex(lMap, "SyncStatus");
+              const lastSyncedCol = Engine.getColumnIndex(lMap, "LastSynced");
+              if (statusCol >= 0) lSheet.getRange(rowIdx + 1, statusCol + 1).setValue("Synced");
+              if (lastSyncedCol >= 0) lSheet.getRange(rowIdx + 1, lastSyncedCol + 1).setValue(new Date());
+              Engine.Status.paint(ctx, lRole, rowIdx + 1, "Synced");
+              actionDetails = `Synced Lineup ${uuid} to Parent schedule.`;
+            } else {
+              actionDetails = `Lineup row for UUID ${uuid} not found; decision closed.`;
+            }
+          }
+        } else if (action === "EXPLODE_LINEUP") {
+          if (!["ACCEPT", "EXPLODE"].includes(userDecision)) throw new Error("EXPLODE_LINEUP requires Decision=ACCEPT");
+          if (Engine.Ingest && typeof Engine.Ingest.goLineup === "function") {
+            Engine.Ingest.goLineup();
+            actionDetails = `Re-exploded dates for Parent ${decision.ExistingParentID || decision.SourceID}`;
+          }
         } else {
           throw new Error(`Unsupported RequestedAction: ${action}`);
         }
