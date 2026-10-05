@@ -53,7 +53,11 @@ All range access must convert through `Engine.getColumnIndex(map, fieldName)`. I
 - **`SyncStatus` vs. `TechStatus` are different concepts.** `SyncStatus` is the operational field that drives engine behavior (Status-sheet color + behavior rules, `Engine.Status.apply`). `TechStatus` is a reference-only production/technical status field (`Lookup`/`ref`) with no engine behavior attached — don't conflate the two when reading or writing registry rows.
 - **`Map_Registry.isHidden`**: marks a field's column as intended to be hidden on the physical sheet. Planned feature — **not yet enforced by any code** (no `hideColumn()`/`showColumn()` helper exists yet; see ROADMAP.md).
 - **`Map_Registry.Derivation`**: optional column documenting the exception cases where a field's value is *not* a simple same-name passthrough from the layer above (see Layered Data Architecture below) — e.g. computed fields (`EventOfTotal`, `RawDateStr` parsed from `DatesAndTimes`), generated identity fields (`UUID` via `Utilities.getUuid()`), or externally-sourced fields (`eventID` from the Google Calendar API, not a sheet at all). Ordinary passthrough fields (same `Field Name`, one layer up) leave this blank by convention — the layered architecture below is the implicit rule, `Derivation` documents the exceptions to it.
-- **Identity/change-detection has two overlapping mechanisms, not yet unified:** `SyncHash` (a SHA-256 of normalized `Title|StartTime|EndTime|Location`, used today across `Lineup`/`Parent Lineup`/`Crew_Calendar_Log`/`Venue_Cal_Log`/draft equivalents for drift detection) and `idLog.Fingerprint` (planned — a full-row JSON snapshot via `Engine.IO.serializeRow()`, intended to make post-merge/post-delete recovery and comparison easier). `Fingerprint` is not yet wired to `serializeRow()`; treat it as reserved/aspirational until that lands.
+- **`SyncHash` vs. `Fingerprint` (Distinct Roles & Evolution):**
+  - **`SyncHash` (Operational Change Detection)**: A compact cryptographic hash (MD5 or SHA-256) of normalized key fields (`normalize(Title) | Date | Time | Venue`). It lives strictly on operational event sheets (`Lineup`, `draft_Lineup`, `Parent Lineup`, `draft_Parent`, `Crew_Calendar_Log`, `Draft_Season_Log`, `Venue_Cal_Log`). Its sole purpose is high-speed drift detection during sync passes.
+  - **`Fingerprint` (Identity / Row Snapshot)**: Historically originated as a human-readable delineated string (`Title | Date | Time | Location`) used to compare against shifting, ID-less `import` data. In Scheduler 3, `Fingerprint` is registry-owned on `idLog`, functioning as a full-row JSON snapshot via `Engine.IO.serializeRow()`. It captures the state of deleted or merged rows for post-merge recovery, deep diffing, and audit reconstruction.
+  - **Rule**: Never query `idLog` for `SyncHash`; `idLog`'s canonical column is `Fingerprint`. Data sheets use `SyncHash`.
+
 
 ## Layered Data Architecture
 
@@ -148,10 +152,11 @@ Active engine flows resolve managed sheets through `SheetRole` values defined in
 `UniqueID` remains the mixed-form `idLog` key. Its interpretation comes from `RecordType`, source sheet, and location.
 
 `SyncHash` on operational data sheets is a deterministic change-detection hash
-generated from event identity inputs. It is not a replacement for `parentID` or
+generated from event identity inputs (`Title | Date | Time | Venue`). It is not a replacement for `parentID` or
 `UUID`, and a changed hash does not by itself authorize replacing an instance.
-The `idLog.Fingerprint` field is registry-owned and has a separate evolving
-snapshot/audit purpose; do not conflate it with data-sheet `SyncHash`.
+The `idLog.Fingerprint` field is registry-owned, serving as a serialized JSON snapshot
+of the entity's complete row data for audit and recovery; do not conflate it with data-sheet `SyncHash`.
+
 
 ## Status, Behavior, and Decisions
 

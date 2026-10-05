@@ -46,8 +46,9 @@
 
 12. Reconcile Parent Lineup -> Lineup -> Crew Calendar relationships.
   - see parent https://github.com/morrisontheatrical/scheduler3/issues/13
-  - see also https://github.com/morrisontheatrical/scheduler3/issues/25
-  - see also https://github.com/morrisontheatrical/scheduler3/issues/24
+  - **Unpopulated Lineup Fields ([#25](https://github.com/morrisontheatrical/scheduler3/issues/25))**: Ensure `EventOfTotal`, `EndDate`, `AfterToday`, `WithinQuarter`, `WithinMonth`, `SyncStatus`, and `LastUpdated` are populated and refreshed during `goLineup()`.
+  - **Theatrical Date Parsing & Unparseable Review ([#24](https://github.com/morrisontheatrical/scheduler3/issues/24))**: Restore complex theatrical parsing via `TheatricalParser` library; flag unparseable `DatesAndTimes` as `Manual Review` on `Parent Lineup` with `UpdateDetails`.
+
 
 13. Correct Venue Calendar association semantics: `EventID` is the venue event; `UUID` is the associated Lineup/Crew row.
   - see https://github.com/morrisontheatrical/scheduler3/issues/12
@@ -90,7 +91,7 @@
   - Normalize Branch
   - see agent-notes/normalizeTitle-0829.md
 
-25. Wire `idLog.Fingerprint` to `Engine.IO.serializeRow()` as the intended full-row JSON snapshot mechanism (item 6 above), and reconcile it against the existing `SyncHash` hash-based drift detection — decide whether these stay as two distinct mechanisms or get unified.
+25. Wire `idLog.Fingerprint` to `Engine.IO.serializeRow()` as the intended full-row JSON snapshot mechanism (item 6 above). **Decision confirmed**: `Fingerprint` (JSON snapshot on `idLog`) and `SyncHash` (compact hash on data sheets) remain two distinct mechanisms. `Fingerprint` captures complete row state for recovery/audit; `SyncHash` is a fast drift-detection hash of key identity fields.
   - see https://github.com/morrisontheatrical/scheduler3/issues/18
   - see https://github.com/morrisontheatrical/scheduler3/issues/8
 
@@ -117,17 +118,25 @@
 32. make sure runHealthCheck logs the health check results.
   - see 
 
-33. Sync ID Registry Error (Issue #28): Open range exception bug (starting column of the range is too small) is missing from the roadmap.
+33. Sync ID Registry Error (Issue #28): Open range exception bug caused by `SyncHash` vs. `Fingerprint` column lookup mismatch in `Engine.IDService.syncAll()` and `upsert()`.
+  - in progress — `engine_IDService.js` and `engine_sync.js` now resolve `Fingerprint` first with `SyncHash` fallback; pending manual confirmation that the live sheet header is `Fingerprint`.
   - see [#28](https://github.com/morrisontheatrical/scheduler3/issues/28)
+  - `SyncHash` vs. `Fingerprint` distinction now documented in ARCHITECTURE.md.
 
-34. Unpopulated Lineup Fields (Issue #25): Bug tracking missing values in LINEUPCURRENT / LINEUPDRAFT (EventOfTotal, AfterToday, SyncStatus, LastUpdated, etc.) is untracked.
+34. Unpopulated Lineup Fields (Issue #25): `EventOfTotal`, `EndDate`, `AfterToday`, `WithinQuarter`, `WithinMonth`, `SyncStatus`, `LastUpdated` must be populated during `goLineup()` for both new rows and updates.
+  - tracked under Immediate Priority 12 / [#13](https://github.com/morrisontheatrical/scheduler3/issues/13)
   - see [#25](https://github.com/morrisontheatrical/scheduler3/issues/25)
 
-35. Complex Date Parser (Issue #24): Restoring parseComplexDateTime from Depreciated/scriptLib.LookupSYNC.js 
+35. Complex Date Parser (Issue #24): Restoring theatrical date parsing via `TheatricalParser` library in `Engine.Ingest.parseParentDatesAndTimes`. Unparseable dates now flag `Parent Lineup` rows as `Manual Review` with details (restoring legacy behavior).
+  - in progress — `TheatricalParser` integrated; `Manual Review` status applied on parse failure in both `goLineup()` and `verifyParentToLineup()`.
   - see [#24](https://github.com/morrisontheatrical/scheduler3/issues/24)
   - see parent [#13](https://github.com/morrisontheatrical/scheduler3/issues/13)
 
-36. Load `ref`-owned enum lists into `ctx.lookup.lists` and prevent empty data-validation writes.
+36. `EndDate` downstream propagation: Multi-day `Lineup` rows carry `EndDate` for date spans (`MULTI_DAY` policy). Sync to `Crew_Calendar_Log` / Google Calendar should create multi-day events. `EndDate` may also be backfilled from `Crew_Calendar_Log` or `Draft_Season_Log` when calendar events are associated with Lineup rows.
+  - see parent [#13](https://github.com/morrisontheatrical/scheduler3/issues/13)
+
+
+37. Load `ref`-owned enum lists into `ctx.lookup.lists` and prevent empty data-validation writes.
   - `Lookup` supplies venue and operational lists; `ref` is the source of truth for `Options`, behaviors, decisions, and other enum lists.
   - until this is implemented, do not run `Refresh Dropdowns` when an enum source list is empty.
   - see [#9](https://github.com/morrisontheatrical/scheduler3/issues/9)
@@ -240,6 +249,9 @@ Reference-only (not part of the `SyncStatus` state machine above — see `ARCHIT
 - **(2026-08-28)** `repairMapRegistry()` intentionally skips any `Sheet_Settings.isProtected` sheet (`import`, `Lookup`, `Status`, `ref`) — cleanup of stale/duplicate rows on those sheets requires a manual pass, this is not a bug.
 - **(2026-08-28)** `draft_Lineup`, `draft_Parent`, and `Draft_Season_Log` `Map_Registry` rows now exist (added to make `Sheet_Settings` operational) and are fully typed. They still need `Sheet_Settings` role assignment (`LINEUPDRAFT`/`PARENTDRAFT`) before `Engine.Roles.resolve()` can rely on them.
 - **(2026-08-28)** `idLog.Fingerprint` is intended to become a full-row JSON snapshot via `Engine.IO.serializeRow()` (distinct from `SyncHash`'s hash-based approach) — not yet implemented; its physical header was reverted from an auto-drifted "SyncHash" back to "Fingerprint" to avoid confusing the two mechanisms.
+- **(2026-10-05)** **`SyncHash` vs. `Fingerprint` distinction confirmed**: `SyncHash` is an operational compact hash (MD5/SHA-256 of `Title|Date|Time|Venue`) on data sheets for fast drift detection. `Fingerprint` is an `idLog`-owned full-row JSON snapshot via `Engine.IO.serializeRow()` for post-merge/post-delete recovery and audit. Historically, `Fingerprint` originated as a human-readable pipe-delimited string in legacy scripts (`createFingerprint()`). Code must never query `idLog` for `SyncHash`; always use `Fingerprint` for the `idLog` column. See ARCHITECTURE.md.
+- **(2026-10-05)** **Unparseable dates flag `Manual Review`**: When `parseParentDatesAndTimes` returns zero dates and zero spans, the Parent Lineup row is flagged `Manual Review` with the raw date text in `UpdateDetails` — restoring legacy behavior where parse failures were always visible on the sheet, not just logged to `Audit_Log`.
+- **(2026-10-05)** **`EndDate` flows downstream**: Multi-day `Lineup` rows (from `MULTI_DAY` span policy) carry `EndDate`. Sync to `Crew_Calendar_Log` / Google Calendar should create multi-day events. `EndDate` may also be backfilled from calendar logs when events are associated with Lineup rows.
 
 ## Deferred Recovery
 --UPDATE THIS WHEN WE RECOVER 

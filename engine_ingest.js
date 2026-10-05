@@ -860,10 +860,11 @@ function goLineup() {
     const parsedDates = Engine.Ingest.parseParentDatesAndTimes(rawDates);
 
     if (parsedDates.dates.length === 0 && parsedDates.spans.length === 0) {
-      Engine.Log.write(ctx, {
-        stage: "INGEST", sheetName: pRole, rowIdx: rowIdx, id: parentID,
+      Engine.Status.apply(ctx, pRole, rowIdx, "Manual Review", {
+        stage: "INGEST",
+        id: parentID,
         type: "UNPARSEABLE_DATES",
-        details: `No usable dates found: ${parsedDates.errors.join(" | ") || "unknown format"}`
+        details: `No usable dates found: ${parsedDates.errors.join(" | ") || rawDates}`
       });
       return;
     }
@@ -1796,13 +1797,11 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
     const expectedDates = parsedDates.dates;
     if (expectedDates.length === 0) {
       unparseable++;
-      Engine.Log.write(ctx, {
+      Engine.Status.apply(ctx, pRole, pData.indexOf(pRow) + 2, "Manual Review", {
         stage: "VERIFY_PARENT",
-        sheetName: pRole,
-        rowIdx: pData.indexOf(pRow) + 2,
         id: parentID,
         type: "UNPARSEABLE_DATES",
-        details: `No usable dates found: ${parsedDates.errors.join(" | ") || "unknown format"}`
+        details: `No usable dates found: ${parsedDates.errors.join(" | ") || rawDates}`
       });
       return;
     }

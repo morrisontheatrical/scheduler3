@@ -5,6 +5,12 @@
 - [Issue #7: decision_log Queue Purge and Decision History](https://github.com/morrisontheatrical/scheduler3/issues/7)
 - [Issue #13: Parent Lineup -> Lineup -> Calendar Reconciliation](https://github.com/morrisontheatrical/scheduler3/issues/13)
 
+**Specific Bugs Kept Visible**:
+- [Issue #28: Sync ID Registry Range Error](https://github.com/morrisontheatrical/scheduler3/issues/28) (Open range exception fixed via `Fingerprint`/`SyncHash` lookup fallback in `Engine.IDService`)
+- [Issue #25: Unpopulated Lineup Fields](https://github.com/morrisontheatrical/scheduler3/issues/25) (Tracking missing values during Lineup explosion: `EventOfTotal`, `AfterToday`, `SyncStatus`, `LastUpdated`, etc.)
+- [Issue #24: Restoring Complex Date Parsing](https://github.com/morrisontheatrical/scheduler3/issues/24) (Under #13: `parseComplexDateTime` restoration via `TheatricalParser` for multi-date spans, time ranges, and TBA performances)
+
+
 ---
 
 ## 1. Accomplishments by Component
