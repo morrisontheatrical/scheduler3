@@ -45,6 +45,9 @@ The primary user interface is organized under the **Event Manager** menu:
 - `goLineup`: parseDatesAndTimes to split Parent Events into individual show times
 - `goCrewLog`: CRUD `Crew_Calendar_Log` / `Draft_Season_Log` based on `LINEUPCURRENT` / `LINEUPDRAFT`
 
+New Lineup performances receive readable `<parentID>-C##` UUIDs. Existing IDs,
+including random UUIDs from earlier runs, are not rewritten.
+
 ### Planned Event Manager UI (Future Dialog / Sidebar)
 As detailed in [UI-Design.md](UI-Design.md), a future consolidated **Event Manager** custom sidebar/dialog will provide:
 - **Custom Sync Scoping:** UI controls to select specific date ranges, venues, or sheet roles.
@@ -109,6 +112,7 @@ Verification may update status and `LastSynced` when the current behavior allows
 * **Universal Hyperlinking:** `refreshLinks()` generates rich-text cell links for **all** review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`) into `SourceLink` and `CandidateLink`.
 * **Persistence:** Unresolved manual reviews (`PENDING`, `FAILED`) persist in `decision_log` across verification passes.
 * **Applied rows:** When a review item is applied, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
+* **No re-prompt after apply:** If a later verification produces the same stable `ReviewID`, the engine checks `Audit_Log` and suppresses it when that review was already applied; any stale pending copy of that same ID is removed.
 * **Superseded rows:** `Refresh Resolved Parent-Only Reviews` and `Refresh Stale Parent Duplicate Reviews` mark resolved items `SUPERSEDED` (with a reason in `ActionDetails`) but keep the row for reference. Use `Archive Superseded Decisions` to delete all `SUPERSEDED` rows from `decision_log` (each is logged to `Audit_Log` first).
 * **`REVIEW_PARENT_ONLY` + `ACCEPT`:** a Parent-only review has no automatic mutation. Reviewing it `ACCEPT` (retain), `NOT_DUPLICATE` (retain as confirmed non-duplicate), or `REJECTED` (dropped) closes the decision and removes the row; there is no import row to copy from.
 * **`REVIEW_IMPORT_DRIFT` / `ACCEPT_IMPORT`:** applies the import values over the Parent Lineup row. Requires the matching `import` row to still exist — if the import row was deleted upstream, the apply fails with "Import row could not be resolved" and the row stays `FAILED` for retry.
@@ -168,9 +172,10 @@ and eligibility reason in `Audit_Log`. The preview is read-only. Applying the
 decision deletes only the unique Lineup row that still has no Parent row in the
 active season; a missing, duplicate, or no-longer-orphan UUID fails and remains
 available for correction. The deleted row snapshot is retained in
-`idLog.Fingerprint`. If a linked calendar-log row remains, a follow-up
-`LINEUP_DELETE_CLEANUP` decision is queued. Other `MARK_DELETE` review types
-are not applied as row deletions.
+`idLog.Fingerprint`. If a linked `CREWCAL` row has an `EventID`, a follow-up
+`LINEUP_DELETE_CLEANUP` decision is queued. Rows without an `EventID` and
+`DRAFTCAL` staging rows are retained and audited without a non-actionable
+review. Other `MARK_DELETE` review types are not applied as row deletions.
 
 For Lineup rows manually marked `SyncStatus=Delete Pending`, run
 `Preview Lineup Delete Pending` and inspect the UUIDs, titles, and any blocked
@@ -183,7 +188,8 @@ not regenerated from its Parent row while that same parent/date pair remains;
 changing the source date creates a new occurrence.
 
 The resulting `LINEUP_DELETE_CLEANUP` review defaults to `KEEP_CALENDAR`.
-Reviewers may choose `MARK_CALENDAR_DELETE` for an active `CREWCAL` entry;
+Reviewers may choose `MARK_CALENDAR_DELETE` for an active `CREWCAL` entry with
+an `EventID`;
 after accepting and applying that decision, the linked log row is marked
 `To Delete on calendar`. The existing calendar sync removes the event only
 when its write permissions allow it, and retains the log row as history.
@@ -212,6 +218,12 @@ Users can set operational statuses in `Parent Lineup` to dictate engine behavior
 * **`Bypassed`:** The engine completely skips this row during drift and duplicate checks. No `decision_log` items will be generated.
 * **`Delete Pending`:** `Ingest Season` (`goParent`) removes the row from `Parent Lineup` and writes an audit entry. For Lineup rows, first use `Preview Lineup Delete Pending`; `Explode Dates` (`goLineup`) then removes uniquely identified rows, saves snapshots to `idLog.Fingerprint`, marks registry entries `Deleted`, refreshes row locations, and logs blocked rows. The Parent and Lineup workflows are season-aware.
 * **`Possible Duplicate`:** The `verify` script explicitly scans this row against `Parent Lineup` and `import`. If a match is found, it creates a `PARENT_DUPLICATE` task. If no automated match is found, it generates a `REVIEW_PARENT_ONLY` task with the note: *"Flagged as Possible Duplicate by user, but no automated match found."*
+
+## Cross-Layer Match Review
+
+`Verify import vs Parent Lineup` first uses the exact event-name match. When names differ, it may suggest a likely related row using title similarity, series, venue, opening-date proximity, and date range. Review evidence lists the signals and score; ambiguous candidates are not selected. `Verify Parent Lineup vs Lineup` also reports title and series drift, in addition to expected date and venue, for records connected by `parentID`.
+
+These signals are comparison evidence only. They do not change identities, merge rows, or apply field updates automatically. Review the source and candidate rows before accepting a change.
 
 ## Season Promotion Protocol (Role Swapping)
 

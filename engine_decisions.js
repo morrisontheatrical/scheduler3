@@ -353,11 +353,50 @@ Engine.Decisions = {
     return { linked: linked, cleared: cleared };
   },
 
+  appliedReviewIDs: function(ctx) {
+    if (ctx.appliedReviewIDs instanceof Set) return ctx.appliedReviewIDs;
+    const auditSheet = Engine.getSheetByRole(ctx, "AUDIT");
+    const auditMap = ctx.getMap("AUDIT");
+    const idCol = Engine.getColumnIndex(auditMap, "UniqueID");
+    const typeCol = Engine.getColumnIndex(auditMap, "Type") >= 0
+      ? Engine.getColumnIndex(auditMap, "Type")
+      : Engine.getColumnIndex(auditMap, "RecordType");
+    const applied = new Set();
+    if (auditSheet && idCol >= 0 && typeCol >= 0) {
+      auditSheet.getDataRange().getValues().slice(1).forEach(row => {
+        if (String(row[typeCol] || "").trim().toUpperCase() === "DECISION_APPLIED" && row[idCol]) {
+          applied.add(String(row[idCol]).trim());
+        }
+      });
+    }
+    ctx.appliedReviewIDs = applied;
+    return applied;
+  },
+
   addPending: function(ctx, values) {
     const table = this.ensureSchema(ctx);
     const data = table.sheet.getDataRange().getValues();
     const reviewCol = this._col(table.map, "ReviewID");
     const statusCol = this._col(table.map, "ActionStatus");
+    const reviewID = String(values.ReviewID || "").trim();
+    if (this.appliedReviewIDs(ctx).has(reviewID)) {
+      data.slice(1)
+        .map((row, index) => ({ row: row, rowNumber: index + 2 }))
+        .filter(item => String(item.row[reviewCol] || "").trim() === reviewID)
+        .sort((left, right) => right.rowNumber - left.rowNumber)
+        .forEach(item => {
+          table.sheet.deleteRow(item.rowNumber);
+          Engine.Log.write(ctx, {
+            stage: "DECISION",
+            sheetName: table.sheet.getName(),
+            rowIdx: item.rowNumber,
+            id: reviewID,
+            type: "DECISION_DUPLICATE_SUPPRESSED",
+            details: "Removed a pending review whose stable ReviewID is already recorded as applied in Audit_Log."
+          });
+        });
+      return false;
+    }
 
 // A live PENDING row or an unresolved FAILED row both represent an
   // active, unresolved decision for this pair. Don't create a second
@@ -598,6 +637,7 @@ Engine.Decisions = {
         if (actionedAtCol >= 0) table.sheet.getRange(decision._rowNumber, actionedAtCol + 1).setValue(new Date());
         if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(actionDetails);
         Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_APPLIED", details: actionDetails });
+        this.appliedReviewIDs(ctx).add(String(decision.ReviewID || "").trim());
         table.sheet.deleteRow(decision._rowNumber);
         results.applied++;
       } catch (error) {

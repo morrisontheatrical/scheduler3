@@ -706,7 +706,19 @@ var Engine = {
           || (ctx.roles && ctx.roles[sheetName] && ctx.ss.getSheetByName(ctx.roles[sheetName]));
         if (targetSheet) {
           const gid = targetSheet.getSheetId();
-          rangeRefCell = `=HYPERLINK("#gid=${gid}&range=A${rowNum}","Row ${rowNum}")`;
+          const targetDef = (ctx.sheetDefs && (ctx.sheetDefs[sheetName] || ctx.sheetDefs[targetSheet.getName()])) || null;
+          const targetRole = targetDef && targetDef.role;
+          const map = (ctx.maps && (ctx.maps[sheetName] || ctx.maps[targetSheet.getName()] || (targetRole && ctx.maps[targetRole])))
+            || (targetDef && targetDef.map)
+            || {};
+          const titleCol = Engine.getColumnIndex(map, "EventName") >= 0
+            ? Engine.getColumnIndex(map, "EventName")
+            : Engine.getColumnIndex(map, "Title");
+          let label = titleCol >= 0
+            ? String(targetSheet.getRange(rowNum, titleCol + 1).getDisplayValue() || "").trim()
+            : "";
+          if (!label) label = `Row ${rowNum}`;
+          rangeRefCell = `=HYPERLINK("#gid=${gid}&range=A${rowNum}","${label.replace(/"/g, '""')}")`;
         }
       }
 

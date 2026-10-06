@@ -42,7 +42,7 @@ Engine.Calendar = (function() {
         events.forEach(event => {
           results.push({
             eventID: event.getId(),        // Matches your Registry
-            UUID: event.getId(),           
+            UUID: "",                    // Lineup link; preserved/populated by mirrorVenues, never the eventID
             Title: event.getTitle() || "No Title",
             Date: event.getStartTime(),
             Start: event.getStartTime(),
@@ -127,7 +127,7 @@ function global_pullCalendarEvents(ctx, calObj) {
     events.forEach(event => {
       results.push({
         eventID: event.getId(),        // Matches your Registry
-        UUID: event.getId(),           
+        UUID: "",                    // Lineup link; preserved/populated by mirrorVenues, never the eventID
         Title: event.getTitle() || "No Title",
         Date: event.getStartTime(),
         Start: event.getStartTime(),

@@ -790,6 +790,49 @@ function applyConfirmedParentMerges() {
 /**
  * STAGE 3: Explodes Parent Lineup into individual events in the Lineup sheet.
  */
+Engine.Ingest.lineupOccurrenceKey = function(ctx, dateValue, timeValue) {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (isNaN(date.getTime())) return "";
+  const timeZone = ctx.timeZone || Session.getScriptTimeZone();
+  const dateKey = Utilities.formatDate(date, timeZone, "yyyy-MM-dd");
+  let timeKey = "";
+  if (timeValue instanceof Date && !isNaN(timeValue.getTime())) {
+    timeKey = Utilities.formatDate(timeValue, timeZone, "HH:mm:ss");
+  } else {
+    const match = String(timeValue || "").trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+    if (match) {
+      let hours = Number(match[1]);
+      const minutes = Number(match[2]);
+      const seconds = Number(match[3] || 0);
+      const meridiem = String(match[4] || "").toUpperCase();
+      if (minutes > 59 || seconds > 59 || hours > (meridiem ? 12 : 23) || (meridiem && hours < 1)) return "";
+      if (meridiem === "AM" && hours === 12) hours = 0;
+      if (meridiem === "PM" && hours !== 12) hours += 12;
+      timeKey = [hours, minutes, seconds].map(value => String(value).padStart(2, "0")).join(":");
+    }
+  }
+  if (!timeKey) timeKey = Utilities.formatDate(date, timeZone, "HH:mm:ss");
+  return `${dateKey}|${timeKey}`;
+};
+
+Engine.Ingest.nextLineupUUID = function(parentID, usedUUIDs) {
+  const prefix = `${parentID}-C`;
+  let suffix = 0;
+  usedUUIDs.forEach(id => {
+    const candidate = String(id);
+    if (!candidate.startsWith(prefix)) return;
+    const number = candidate.slice(prefix.length);
+    if (/^\d+$/.test(number)) suffix = Math.max(suffix, Number(number));
+  });
+  let uuid = `${prefix}${String(suffix + 1).padStart(2, "0")}`;
+  while (usedUUIDs.has(uuid)) {
+    suffix++;
+    uuid = `${prefix}${String(suffix + 1).padStart(2, "0")}`;
+  }
+  usedUUIDs.add(uuid);
+  return uuid;
+};
+
 function goLineup() {
   const ctx = Engine.getContext();
 
@@ -822,8 +865,8 @@ function goLineup() {
     if (String(registryEntry && registryEntry.Status || "").trim().toUpperCase() !== "DELETED" ||
         !String(registryEntry && registryEntry.LogDetails || "").includes("[LINEUP_DELETE_PENDING]") ||
         !snapshot || !snapshot.parentID || !snapshot.Date) return;
-    const date = snapshot.Date instanceof Date ? snapshot.Date : new Date(snapshot.Date);
-    if (!isNaN(date.getTime())) deletedOccurrenceKeys.add(`${snapshot.parentID}|${date.getTime()}`);
+    const occurrenceKey = Engine.Ingest.lineupOccurrenceKey(ctx, snapshot.Date, snapshot.Time);
+    if (occurrenceKey) deletedOccurrenceKeys.add(`${snapshot.parentID}|${occurrenceKey}`);
   });
   let skippedDeletedOccurrences = 0;
   const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lMap[fieldName]).filter(index => index >= 0)) + 1;
@@ -884,10 +927,13 @@ function goLineup() {
   // ...rest is unchanged — everything downstream already goes through pCol/lCol
 
   const existingRecords = {};
+  const usedLineupUUIDs = new Set(Object.keys(ctx.registry || {}).map(id => String(id)));
   lData.forEach((row, idx) => {
-    const existingDate = new Date(row[lCol("Date")]);
-    if (isNaN(existingDate.getTime())) return;
-    const key = `${row[lCol("parentID")]}|${existingDate.getTime()}`;
+    const existingUUID = String(row[lCol("UUID")] || "").trim();
+    if (existingUUID) usedLineupUUIDs.add(existingUUID);
+    const occurrenceKey = Engine.Ingest.lineupOccurrenceKey(ctx, row[lCol("Date")], row[lCol("Time")]);
+    if (!occurrenceKey) return;
+    const key = `${row[lCol("parentID")]}|${occurrenceKey}`;
     existingRecords[key] = { rowIdx: idx + 1, row: row, uuid: row[lCol("UUID")] };
   });
 
@@ -942,7 +988,8 @@ function goLineup() {
     entries.sort((a, b) => a.date.getTime() - b.date.getTime());
 
     entries.forEach((entry, index) => {
-      const lookupKey = `${parentID}|${entry.date.getTime()}`;
+      const occurrenceKey = Engine.Ingest.lineupOccurrenceKey(ctx, entry.date, entry.date);
+      const lookupKey = `${parentID}|${occurrenceKey}`;
       const record = existingRecords[lookupKey];
       if (!record && deletedOccurrenceKeys.has(lookupKey)) {
         skippedDeletedOccurrences++;
@@ -1007,7 +1054,7 @@ function goLineup() {
           const column = lCol(fieldName);
           if (column >= 0) rowArray[column] = values[fieldName];
         });
-        rowArray[lCol("UUID")] = Utilities.getUuid();
+        rowArray[lCol("UUID")] = Engine.Ingest.nextLineupUUID(parentID, usedLineupUUIDs);
         rowArray[lCol("SyncStatus")] = "Draft";
         if (lCol("LastSynced") >= 0) rowArray[lCol("LastSynced")] = new Date();
         if (lCol("LastUpdated") >= 0) rowArray[lCol("LastUpdated")] = new Date();
@@ -1271,9 +1318,22 @@ Engine.Ingest.createLineupDeletionCleanupDecision = function(ctx, role, sheet, c
   if (!Engine.Decisions || typeof Engine.Decisions.addPending !== "function") {
     throw new Error("Decision engine is unavailable; cannot queue the calendar cleanup review.");
   }
+
   const match = matches[0];
   const eventID = eventIdCol >= 0 ? String(match.row[eventIdCol] || "").trim() : "";
-  const canMarkCalendarDelete = logRole === "CREWCAL" && !!eventID;
+  if (logRole !== "CREWCAL" || !eventID) {
+    Engine.Log.write(ctx, {
+      stage: "INGEST",
+      sheetName: logSheet.getName(),
+      rowIdx: match.rowNumber,
+      id: candidate.uuid,
+      type: "LINEUP_DELETE_NO_CALENDAR_EVENT",
+      details: logRole !== "CREWCAL"
+        ? "Lineup row was deleted; staging-log row retained because it is not connected to an active calendar event."
+        : "Lineup row was deleted; linked Crew Calendar log row retained because it has no EventID."
+    });
+    return false;
+  }
   const suggestedAction = "KEEP_CALENDAR";
   const reviewID = Engine.Decisions.stableReviewID(
     "LINEUP_DELETE_CLEANUP",
@@ -1293,11 +1353,7 @@ Engine.Ingest.createLineupDeletionCleanupDecision = function(ctx, role, sheet, c
     VenueEventID: eventID,
     Evidence: `Lineup row ${candidate.uuid} was deleted. Linked ${logRole} row ${match.rowNumber} remains${eventID ? ` with EventID ${eventID}` : " without an EventID"}.`,
     SuggestedAction: suggestedAction,
-    SuggestionReason: canMarkCalendarDelete
-      ? "Default is to keep calendar data unchanged. A reviewer may choose MARK_CALENDAR_DELETE to mark the log row for the normal, permission-gated calendar sync."
-      : logRole !== "CREWCAL"
-        ? `This ${logRole} is a staging log; choose KEEP_CALENDAR. Calendar-event deletion is not available through the current sync path.`
-        : "The linked CREWCAL row has no EventID; choose KEEP_CALENDAR because there is no calendar event to delete.",
+    SuggestionReason: "Default is to keep calendar data unchanged. A reviewer may choose MARK_CALENDAR_DELETE to mark the log row for the normal, permission-gated calendar sync.",
     Decision: "PENDING"
   });
 };
@@ -1733,74 +1789,95 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
   });
 
-  const fieldsToCompare = ["Series", "Opening", "Range", "Venue", "Pricing"];
+  const fieldsToCompare = ["EventName", "Series", "Opening", "Range", "Venue", "Pricing"];
   const pRowValue = (row, fieldName) => {
     const index = pCol(fieldName);
     return index >= 0 ? row[index] : "";
   };
-  const normalizeForCompare = value => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normalizeForCompare = value => normalize(value).toLowerCase();
+  const comparisonTokens = value => normalizeForCompare(value).match(/[a-z0-9]+/g) || [];
   const titleSimilarityScore = (a, b) => {
-    const left = normalizeForCompare(a);
-    const right = normalizeForCompare(b);
+    const leftTokens = comparisonTokens(a);
+    const rightTokens = comparisonTokens(b);
+    const left = leftTokens.join(" ");
+    const right = rightTokens.join(" ");
     if (!left || !right) return 0;
     if (left === right) return 100;
     if (left.includes(right) || right.includes(left)) return 80;
-    const leftWords = left.split(/\s+/).filter(Boolean);
-    const rightWords = right.split(/\s+/).filter(Boolean);
-    if (!leftWords.length || !rightWords.length) return 0;
-    const overlap = leftWords.filter(word => rightWords.includes(word)).length;
-    return Math.min(60, Math.round((overlap / Math.max(leftWords.length, rightWords.length)) * 100));
+    const leftSet = new Set(leftTokens);
+    const rightSet = new Set(rightTokens);
+    const overlap = Array.from(leftSet).filter(token => rightSet.has(token)).length;
+    return Math.round((overlap / Math.max(leftSet.size, rightSet.size)) * 100);
   };
-  const likelyParentMatches = function(parentRow, rowIdx) {
-    const parentTitle = pRowValue(parentRow, "EventName");
-    const parentVenue = pRowValue(parentRow, "Venue");
-    const parentOpening = pRowValue(parentRow, "Opening");
-    const parentRange = pRowValue(parentRow, "Range");
-    const matches = [];
+  const openingSimilarity = (left, right) => {
+    const a = left instanceof Date ? left : new Date(left);
+    const b = right instanceof Date ? right : new Date(right);
+    if (isNaN(a.getTime()) || isNaN(b.getTime())) return { score: 0, reason: "" };
+    const days = Math.abs(a.getTime() - b.getTime()) / 86400000;
+    if (a.getFullYear() === b.getFullYear() && days <= 60) {
+      return { score: Math.round(20 * (1 - days / 61)), reason: `openings ${Math.round(days)} day(s) apart` };
+    }
+    const anchorA = Date.UTC(2000, a.getMonth(), a.getDate());
+    const anchorB = Date.UTC(2000, b.getMonth(), b.getDate());
+    const dayDifference = Math.abs(anchorA - anchorB) / 86400000;
+    const calendarDistance = Math.min(dayDifference, 366 - dayDifference);
+    return calendarDistance <= 30
+      ? { score: Math.round(12 * (1 - calendarDistance / 31)), reason: `openings near the same annual date (${calendarDistance} day(s) apart)` }
+      : { score: 0, reason: "" };
+  };
+  const scoreImportParentCandidate = (parentRow, importRow, importRowNumber) => {
+    const reasons = [];
+    let score = 0;
+    const titleScore = titleSimilarityScore(pRowValue(parentRow, "EventName"), importRow[iCol("EventName")]);
+    if (titleScore) {
+      const points = Math.round(titleScore * 0.35);
+      score += points;
+      reasons.push(`title similarity ${titleScore}%`);
+    }
 
-    iData.forEach((iRow, index) => {
-      const importTitle = iRow[iCol("EventName")] || "";
-      const importVenue = iRow[iCol("Venue")] || "";
-      const importOpening = iRow[iCol("Opening")] || "";
-      const importRange = iRow[iCol("Range")] || "";
-      let score = 0;
-      let reasons = [];
+    const parentSeries = normalizeForCompare(pRowValue(parentRow, "Series"));
+    const importSeries = normalizeForCompare(importRow[iCol("Series")]);
+    if (parentSeries && importSeries && parentSeries === importSeries) {
+      score += 25;
+      reasons.push("same series");
+    }
 
-      const titleScore = titleSimilarityScore(parentTitle, importTitle);
-      if (titleScore > 0) {
-        score += titleScore;
-        reasons.push(`title similarity ${titleScore}%`);
-      }
+    const parentVenue = normalizeForCompare(pRowValue(parentRow, "Venue"));
+    const importVenue = normalizeForCompare(importRow[iCol("Venue")]);
+    if (parentVenue && importVenue && parentVenue === importVenue) {
+      score += 15;
+      reasons.push("same venue");
+    }
 
-      if (normalizeForCompare(parentVenue) && normalizeForCompare(parentVenue) === normalizeForCompare(importVenue)) {
-        score += 25;
-        reasons.push("same venue");
-      }
+    const opening = openingSimilarity(pRowValue(parentRow, "Opening"), importRow[iCol("Opening")]);
+    if (opening.score) {
+      score += opening.score;
+      reasons.push(opening.reason);
+    }
 
-      if (normalizeForCompare(parentOpening) && normalizeForCompare(parentOpening) === normalizeForCompare(importOpening)) {
-        score += 20;
-        reasons.push("same opening");
-      }
-
-      if (normalizeForCompare(parentRange) && normalizeForCompare(parentRange) === normalizeForCompare(importRange)) {
-        score += 20;
-        reasons.push("same range");
-      }
-
-      if (score >= 35) {
-        matches.push({
-          importRow: index + 2,
-          importTitle: importTitle,
-          importOpening: importOpening,
-          importRange: importRange,
-          importVenue: importVenue,
-          score: score,
-          reasons: reasons.join(", ")
-        });
-      }
-    });
-
-    return matches.sort((a, b) => b.score - a.score).slice(0, 3);
+    const parentRange = normalizeForCompare(pRowValue(parentRow, "Range"));
+    const importRange = normalizeForCompare(importRow[iCol("Range")]);
+    if (parentRange && importRange && parentRange === importRange) {
+      score += 15;
+      reasons.push("same date range");
+    }
+    return {
+      importRow: importRowNumber,
+      importTitle: importRow[iCol("EventName")] || "",
+      importOpening: importRow[iCol("Opening")] || "",
+      importRange: importRow[iCol("Range")] || "",
+      importVenue: importRow[iCol("Venue")] || "",
+      score: Math.min(100, score),
+      reasons: reasons
+    };
+  };
+  const likelyParentMatches = function(parentRow) {
+    return iData
+      .map((iRow, index) => scoreImportParentCandidate(parentRow, iRow, index + 2))
+      .filter(match => match.score >= 35)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(match => Object.assign({}, match, { reasons: match.reasons.join(", ") }));
   };
   let flagged = 0;
   let importOnly = 0;
@@ -1854,18 +1931,23 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     if (!name) return;
     let match = pByName[normalize(name)];
     let isRenameCandidate = false;
+    let renameMatchEvidence = "";
 
     if (!match) {
       const candidates = pData
-        .map((row, rowIndex) => ({ row: row, rowIdx: rowIndex + 2 }))
-        .filter(candidate => ["Opening", "Range", "Venue"].every(field => {
-          const iIdx = iCol(field);
-          const pIdx = pCol(field);
-          return iIdx >= 0 && pIdx >= 0 && normalize(iRow[iIdx]) === normalize(candidate.row[pIdx]);
-        }));
-      if (candidates.length === 1) {
-        match = candidates[0];
+        .map((row, rowIndex) => ({
+          row: row,
+          rowIdx: rowIndex + 2,
+          evidence: scoreImportParentCandidate(row, iRow, index + 2)
+        }))
+        .filter(candidate => !matchedParentRows[candidate.rowIdx] && candidate.evidence.score >= 55)
+        .sort((a, b) => b.evidence.score - a.evidence.score);
+      const best = candidates[0];
+      const runnerUp = candidates[1];
+      if (best && (!runnerUp || best.evidence.score - runnerUp.evidence.score >= 12)) {
+        match = best;
         isRenameCandidate = true;
+        renameMatchEvidence = `Likely same event: ${best.evidence.reasons.join(", ")} (match score ${best.evidence.score}/100).`;
         renamedCandidate++;
       } else {
         importOnly++;
@@ -1875,7 +1957,9 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
           rowIdx: index + 2,
           id: name,
           type: "IMPORT_ONLY",
-          details: "No matching Parent Lineup row found."
+          details: candidates.length
+            ? `No confident Parent match. Leading candidates: ${candidates.slice(0, 3).map(candidate => `${candidate.row[pCol("EventName")]} (${candidate.evidence.score}/100: ${candidate.evidence.reasons.join(", ")})`).join("; ")}.`
+            : "No matching Parent Lineup row found."
         });
         return;
       }
@@ -1904,10 +1988,12 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     if (drifted || isRenameCandidate) {
       flagged++;
       const wantedAction = isRenameCandidate ? "ACCEPT_IMPORT" : "REVIEW_IMPORT_DRIFT";
-      const changedFields = isRenameCandidate ? ["EventName"] : comparison.changed.map(entry => entry.field);
+      const changedFields = isRenameCandidate
+        ? Array.from(new Set(["EventName"].concat(comparison.changed.map(entry => entry.field))))
+        : comparison.changed.map(entry => entry.field);
       const reviewType = isRenameCandidate ? "IMPORT_RENAME" : "IMPORT_DRIFT";
       const evidenceStr = isRenameCandidate
-        ? `Opening=${iRow[iCol("Opening")]}, Range=${iRow[iCol("Range")]}, Venue=${iRow[iCol("Venue")]}`
+        ? `${renameMatchEvidence} Import fields: ${fieldComparison || "no mapped differences"}`
         : fieldComparison;
       const parentId = match.row[pCol("parentID")] || "NO_PARENT_ID";
       const reviewId = Engine.Decisions && typeof Engine.Decisions.stableReviewID === "function"
@@ -1926,13 +2012,19 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
         ImportTitle: name,
         ParentTitle: match.row[pCol("EventName")],
         ExistingParentID: match.row[pCol("parentID")],
-        MatchedFields: isRenameCandidate ? "Opening, Range, Venue" : "EventName",
+        MatchedFields: isRenameCandidate ? match.evidence.reasons.join(", ") : "EventName",
         ChangedFields: changedFields.join(", "),
-        ChangedDetails: isRenameCandidate ? `Title changed from "${match.row[pCol("EventName")]}" to "${name}" while date/venue remained stable.` : fieldComparison,
-        Evidence: isRenameCandidate ? `Opening=${iRow[iCol("Opening")]}, Range=${iRow[iCol("Range")]}, Venue=${iRow[iCol("Venue")]}` : `Import row ${index + 2} vs Parent Lineup row ${match.rowIdx}: ${fieldComparison}`,
-        Confidence: isRenameCandidate ? "MEDIUM" : "LOW",
+        ChangedDetails: isRenameCandidate
+          ? `Possible cross-layer match. Parent "${match.row[pCol("EventName")]}" vs Import "${name}". ${fieldComparison}`
+          : fieldComparison,
+        Evidence: isRenameCandidate
+          ? `Import row ${index + 2} vs Parent Lineup row ${match.rowIdx}: ${evidenceStr}`
+          : `Import row ${index + 2} vs Parent Lineup row ${match.rowIdx}: ${fieldComparison}`,
+        Confidence: isRenameCandidate ? (match.evidence.score >= 75 ? "HIGH" : "MEDIUM") : "LOW",
         SuggestedAction: wantedAction,
-        SuggestionReason: isRenameCandidate ? "Stable Opening/Range/Venue with a title placeholder change suggests the same event." : "Row differs from import and needs explicit review before mutation.",
+        SuggestionReason: isRenameCandidate
+          ? "Multiple title, series, date, range, and venue signals suggest a related event; confirm identity and intended field changes before applying."
+          : "Row differs from import and needs explicit review before mutation.",
         SuggestedKeepID: match.row[pCol("parentID")] || "",
         CandidateIDs: match.row[pCol("parentID")] || "",
         KeepChoice: isRenameCandidate ? "KEEP_EXISTING" : "",
@@ -1991,12 +2083,21 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     const rowIdx = index + 2;
     if (matchedParentRows[rowIdx]) return;
     parentOnly++;
-    const likelyMatches = likelyParentMatches(pRow, rowIdx);
+    const likelyMatches = likelyParentMatches(pRow);
     const bestMatch = likelyMatches[0];
     const hasExactSourceMatch = bestMatch &&
       normalize(pRowValue(pRow, "Opening")) === normalize(bestMatch.importOpening) &&
       normalize(pRowValue(pRow, "Range")) === normalize(bestMatch.importRange) &&
       normalize(pRowValue(pRow, "Venue")) === normalize(bestMatch.importVenue);
+    const hasConfidentLikelyMatch = bestMatch &&
+      bestMatch.score >= 55 &&
+      (!likelyMatches[1] || bestMatch.score - likelyMatches[1].score >= 12);
+    const sourceCandidate = hasExactSourceMatch || hasConfidentLikelyMatch ? bestMatch : null;
+    const likelyCandidateEvidence = likelyMatches.length
+      ? `Likely Import candidates: ${likelyMatches.map((candidate, candidateIndex) =>
+        `#${candidateIndex + 1} row ${candidate.importRow} "${candidate.importTitle}" (${candidate.score}/100; ${candidate.reasons})`
+      ).join("; ")}.`
+      : "No likely Import candidates scored.";
     const parentId = pRow[pCol("parentID")] || rowIdx;
     const reviewId = Engine.Decisions && typeof Engine.Decisions.stableReviewID === "function"
       ? Engine.Decisions.stableReviewID("PARENT_ONLY", "NONE", parentId, pRow[pCol("EventName")] || "")
@@ -2004,21 +2105,31 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     const decisionValues = {
       ReviewID: reviewId,
       ReviewType: "PARENT_ONLY",
-      SourceSheet: hasExactSourceMatch ? iSheetName : "",
-      SourceRow: hasExactSourceMatch ? bestMatch.importRow : "",
-      SourceID: hasExactSourceMatch ? bestMatch.importTitle : "",
+      SourceSheet: sourceCandidate ? iSheetName : "",
+      SourceRow: sourceCandidate ? sourceCandidate.importRow : "",
+      SourceID: sourceCandidate ? sourceCandidate.importTitle : "",
       CandidateSheet: pSheetName,
       CandidateRow: rowIdx,
       CandidateID: pRow[pCol("parentID")],
       CandidateTitle: pRow[pCol("EventName")],
-      ImportTitle: hasExactSourceMatch ? bestMatch.importTitle : "",
+      ImportTitle: sourceCandidate ? sourceCandidate.importTitle : "",
       ParentTitle: pRow[pCol("EventName")],
       ExistingParentID: pRow[pCol("parentID")],
-      Confidence: hasExactSourceMatch ? "HIGH" : "LOW",
+      MatchedFields: sourceCandidate ? sourceCandidate.reasons : "",
+      Evidence: `${likelyCandidateEvidence} ${hasExactSourceMatch
+        ? "Top candidate matches the existing schedule/venue fallback."
+        : hasConfidentLikelyMatch
+          ? "Top candidate is a unique likely relationship; confirm it is the same event before applying changes."
+          : "No source candidate was selected; do not treat these similarity results as an identity match."}`,
+      Confidence: hasExactSourceMatch ? "HIGH" : hasConfidentLikelyMatch ? (bestMatch.score >= 75 ? "HIGH" : "MEDIUM") : "LOW",
       SuggestedAction: hasExactSourceMatch ? "ACCEPT_IMPORT" : "REVIEW_PARENT_ONLY",
       SuggestionReason: hasExactSourceMatch
         ? `Exact import match at row ${bestMatch.importRow}; accept import as the source of truth for the retained Parent ID.`
-        : "No matching import row found; review before deleting or merging.",
+        : hasConfidentLikelyMatch
+          ? "A likely related Import row was found from title, series, date, range, and venue signals. Review the evidence; no source change is applied automatically."
+          : likelyMatches.length
+            ? "Likely Import candidates are ambiguous or below the selection threshold. Review candidate evidence; no identity match is assumed."
+            : "No confident matching import row found; review before deleting or merging.",
       SuggestedKeepID: pRow[pCol("parentID")] || "",
       CandidateIDs: "",
       DuplicateParentID: "",
@@ -2281,20 +2392,37 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
       checked++;
       const expected = expectedDates[index];
       const expectedValid = expected && !isNaN(new Date(expected).getTime());
+      const parentTitle = pRow[pCol("EventName")];
+      const parentSeries = pCol("Series") >= 0 ? pRow[pCol("Series")] : "";
+      const parentFields = {
+        EventName: parentTitle,
+        Series: parentSeries,
+        Date: expected,
+        Venue: venue
+      };
+      const lineupTitleField = lCol("EventName") >= 0
+        ? "EventName"
+        : lCol("Title") >= 0 ? "Title" : "";
+      const compareFields = ["EventName", "Series", "Date", "Venue"]
+        .filter(field => (field === "Date" ? expectedValid : pCol(field) >= 0) &&
+          (field === "EventName" ? Boolean(lineupTitleField) : lCol(field) >= 0));
       const comparison = Engine.IO.compare(ctx, {
-        source: { Date: expected, Venue: venue },
+        source: parentFields,
         destination: child.row,
+        sourceMap: pMap,
         destMap: lMap,
+        fieldAliases: lineupTitleField ? { EventName: lineupTitleField } : {},
         sourceRole: pRole,
         destinationRole: lRole,
-        fields: expectedValid ? ["Date", "Venue"] : ["Venue"],
+        fields: compareFields,
         identifier: child.row[lCol("UUID")] || parentID
       });
 
       if (!comparison.equal) {
         flagged++;
         const currentStatus = child.row[lCol("SyncStatus")];
-        const details = "Lineup row no longer matches its Parent Lineup's dates/venue.";
+        const changedFields = (comparison.changed || []).map(entry => entry.field);
+        const details = `Lineup row differs from Parent Lineup in: ${changedFields.join(", ") || "mapped fields"}.`;
         if (Engine.Status.blocksWrite(ctx, currentStatus)) {
           Engine.Log.write(ctx, {
             stage: "VERIFY_PARENT",
@@ -2323,7 +2451,7 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
         // Queue structured decision in decision_log
         const uuid = child.row[lCol("UUID")] || "NO_UUID";
         const evidenceStr = comparison.changed
-          ? comparison.changed.map(e => `${e.field}: parent="${e.source}" | lineup="${e.destination}"`).join(" | ")
+          ? comparison.changed.map(e => `${e.field}: Parent="${e.source}" | Lineup="${e.destination}"`).join(" | ")
           : details;
         if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
           const reviewId = typeof Engine.Decisions.stableReviewID === "function"
@@ -2338,15 +2466,15 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
             CandidateSheet: lSheet.getName(),
             CandidateRow: child.rowIdx,
             CandidateID: uuid,
-            ParentTitle: pRow[pCol("EventName")] || "",
+            ParentTitle: parentTitle || "",
             CandidateTitle: child.row[lCol("EventName")] || child.row[lCol("Title")] || "",
             ExistingParentID: parentID,
             MatchedFields: "parentID",
-            ChangedFields: (comparison.changed || []).map(e => e.field).join(", "),
+            ChangedFields: changedFields.join(", "),
             Evidence: evidenceStr,
             Confidence: "HIGH",
             SuggestedAction: "SYNC_PARENT_TO_LINEUP",
-            SuggestionReason: "Lineup performance date/venue drifted from Parent DatesAndTimes schedule.",
+            SuggestionReason: "Parent ID anchors the related records; title, series, date, and venue differences are evidence for review. No change is applied by verification.",
             Decision: "PENDING",
             ActionStatus: "PENDING"
           });

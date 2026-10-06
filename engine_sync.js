@@ -120,6 +120,18 @@ Engine.Sync = {
 
     // 3. The Write
     if (allVenueEvents.length > 0) {
+      // Preserve manually/engine-assigned Lineup UUID links; the clear below would wipe them.
+      const priorUuidByEventId = {};
+      scanSheet(role, ctx).forEach(function(r) {
+        const eid = String(r.eventID || r.EventID || "").trim();
+        const uuid = String(r.UUID || "").trim();
+        if (eid && uuid) priorUuidByEventId[eid] = uuid;
+      });
+      allVenueEvents.forEach(function(ev) {
+        const prior = priorUuidByEventId[String(ev.eventID).trim()];
+        if (prior) ev.UUID = prior;
+      });
+
       // Clear old data safely
       const lastRow = sheet.getLastRow();
       if (lastRow > 1) {
