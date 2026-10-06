@@ -153,6 +153,7 @@ Engine.Sync = {
    * Identifies Venue Adoptions and flags Location Conflicts.
    */
  reconcileLogs: function(ctx) {
+    const lineupToCrew = this.verifyLineupToCrewLog(ctx);
     const crewEvents = scanSheet('CREWCAL', ctx);
     const venueEvents = scanSheet('VENUECAL', ctx);
     Engine.Log.write(ctx, {
@@ -213,7 +214,7 @@ Engine.Sync = {
     Engine.Log.write(ctx, {
       stage: "RECONCILE",
       type: "RECONCILE_COMPLETE",
-      details: `Reconciliation complete. Checked ${crewEvents.length} crew rows.`
+      details: `Reconciliation complete. Checked ${crewEvents.length} crew rows against venues; checked ${lineupToCrew.checked} Lineup rows against ${lineupToCrew.crewRole}, ${lineupToCrew.missing} missing, ${lineupToCrew.drifted} drifted, ${lineupToCrew.orphans} orphaned.`
     });
   },
 
@@ -233,7 +234,7 @@ Engine.Sync = {
 
     if (!lSheet || !lMap || !crewSheet || !crewMap) {
       Engine.Log.warn(ctx, "RECONCILE", `Cannot reconcile Lineup to ${crewRole}: sheet or map missing.`);
-      return { checked: 0, missing: 0, drifted: 0, orphans: 0 };
+      return { crewRole: crewRole, checked: 0, missing: 0, drifted: 0, orphans: 0 };
     }
 
     const lCol = f => Engine.getColumnIndex(lMap, f);
@@ -251,11 +252,16 @@ Engine.Sync = {
     let missing = 0;
     let drifted = 0;
     const lineupUUIDs = new Set();
+    const reviewableLineupUUIDs = new Set();
+    const driftUUIDs = new Set();
 
     lData.forEach((lRow, idx) => {
       const uuid = String(lRow[lCol("UUID")] || "").trim();
       if (!uuid) return;
       lineupUUIDs.add(uuid);
+      const lineupStatus = String(lRow[lCol("SyncStatus")] || "").trim();
+      if (lineupStatus === "Delete Pending" || Engine.Status.blocksWrite(ctx, lineupStatus)) return;
+      reviewableLineupUUIDs.add(uuid);
       checked++;
 
       const crewEntry = crewByUUID.get(uuid);
@@ -275,7 +281,7 @@ Engine.Sync = {
             SourceID: uuid,
             CandidateSheet: crewSheet.getName(),
             CandidateTitle: lRow[lCol("EventName")] || "",
-            ExistingParentID: parentId,
+            ExistingParentID: lRow[lCol("parentID")] || "",
             Evidence: `Lineup row ${uuid} is not present in ${crewRole}.`,
             Confidence: "HIGH",
             SuggestedAction: "PUSH_LINEUP_TO_CREWLOG",
@@ -285,20 +291,83 @@ Engine.Sync = {
           });
         }
       } else {
-        // Compare date and venue
-        const lDate = lRow[lCol("Date")];
-        const cDate = crewEntry.row[cCol("Date")];
-        const lVenue = String(lRow[lCol("Venue")] || "").trim();
-        const cVenue = String(crewEntry.row[cCol("Location")] || "").trim();
+        const source = {
+          EventName: lRow[lCol("EventName")],
+          Date: lRow[lCol("Date")],
+          Start: lRow[lCol("Date")],
+          End: Engine.Ingest._lineupEndTime(ctx, lRow, lMap),
+          Venue: lRow[lCol("Venue")]
+        };
+        const destination = {
+          Title: cCol("Title") >= 0 ? crewEntry.row[cCol("Title")] : "",
+          Date: cCol("Date") >= 0 ? crewEntry.row[cCol("Date")] : "",
+          Start: cCol("Start") >= 0 ? crewEntry.row[cCol("Start")] : "",
+          End: cCol("End") >= 0 ? crewEntry.row[cCol("End")] : "",
+          Location: cCol("Location") >= 0 ? crewEntry.row[cCol("Location")] : ""
+        };
+        const fieldAliases = { EventName: "Title", Venue: "Location" };
+        const sourceAvailable = {
+          EventName: lCol("EventName") >= 0,
+          Date: lCol("Date") >= 0,
+          Start: lCol("Date") >= 0,
+          End: lCol("Date") >= 0,
+          Venue: lCol("Venue") >= 0
+        };
+        const fieldPairs = [
+          ["EventName", "Title"],
+          ["Date", "Date"],
+          ["Start", "Start"],
+          ["End", "End"],
+          ["Venue", "Location"]
+        ].filter(([sourceField, destinationField]) =>
+          sourceAvailable[sourceField] &&
+          cCol(destinationField) >= 0
+        );
+        const comparison = Engine.IO.compare(ctx, {
+          source: source,
+          destination: destination,
+          destMap: crewMap,
+          fields: fieldPairs.map(([sourceField]) => sourceField),
+          fieldAliases: fieldAliases,
+          fieldTypes: { Date: "DATETIME", Start: "DATETIME", End: "DATETIME" },
+          identifier: uuid
+        });
 
-        const lTime = lDate ? new Date(lDate).getTime() : 0;
-        const cTime = cDate ? new Date(cDate).getTime() : 0;
-        const dateMismatch = lTime !== cTime;
-        const venueMismatch = lVenue && cVenue && lVenue.toLowerCase() !== cVenue.toLowerCase();
-
-        if (dateMismatch || venueMismatch) {
+        if (!comparison.equal) {
           drifted++;
-          Engine.Log.warn(ctx, "RECONCILE", `Lineup row ${uuid} differs from ${crewRole} entry: dateMismatch=${dateMismatch}, venueMismatch=${venueMismatch}`);
+          driftUUIDs.add(uuid);
+          const parentId = lRow[lCol("parentID")] || "";
+          const changedFields = comparison.changed.map(change => change.field);
+          const evidence = comparison.changed.map(change =>
+            `${change.field}: Lineup="${change.source}" | ${crewRole}="${change.destination}"`
+          ).join(" | ");
+          Engine.Log.warn(ctx, "RECONCILE", `Lineup row ${uuid} differs from ${crewRole}: ${changedFields.join(", ")}.`);
+          if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+            const reviewId = typeof Engine.Decisions.stableReviewID === "function"
+              ? Engine.Decisions.stableReviewID("LINEUP_CREW_DRIFT", parentId, uuid, evidence)
+              : `LINEUP_CREW_DRIFT_${uuid}`;
+            Engine.Decisions.addPending(ctx, {
+              ReviewID: reviewId,
+              ReviewType: "LINEUP_CREW_DRIFT",
+              SourceSheet: lSheet.getName(),
+              SourceRow: idx + 2,
+              SourceID: uuid,
+              CandidateSheet: crewSheet.getName(),
+              CandidateRow: crewEntry.rowIdx,
+              CandidateID: uuid,
+              ParentTitle: source.EventName || "",
+              CandidateTitle: destination.Title || "",
+              ExistingParentID: parentId,
+              MatchedFields: "UUID",
+              ChangedFields: changedFields.join(", "),
+              Evidence: evidence,
+              Confidence: "HIGH",
+              SuggestedAction: "PUSH_LINEUP_TO_CREWLOG",
+              SuggestionReason: "Lineup UUID links the records; differences are review evidence. No update is applied by verification.",
+              Decision: "PENDING",
+              ActionStatus: "PENDING"
+            });
+          }
         }
       }
     });
@@ -314,13 +383,31 @@ Engine.Sync = {
       }
     });
 
+    if (Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
+      Engine.Decisions.reviewable(ctx)
+        .filter(decision => ["CREWLOG_MISSING", "LINEUP_CREW_DRIFT"].includes(String(decision.ReviewType || "")))
+        .forEach(decision => {
+          const uuid = String(decision.CandidateID || decision.SourceID || "").trim();
+          const resolved = decision.ReviewType === "CREWLOG_MISSING"
+            ? crewByUUID.has(uuid) || !reviewableLineupUUIDs.has(uuid)
+            : !reviewableLineupUUIDs.has(uuid) || (crewByUUID.has(uuid) && !driftUUIDs.has(uuid));
+          if (resolved && Engine.Decisions.markSuperseded(
+            ctx,
+            decision.ReviewID,
+            "Superseded: the active-season Lineup and crew-log rows now match."
+          )) {
+            Engine.Log.info(ctx, "RECONCILE", `Superseded resolved ${decision.ReviewType} review ${decision.ReviewID}.`);
+          }
+        });
+    }
+
     Engine.Log.write(ctx, {
       stage: "RECONCILE",
       type: "RECONCILE_LINEUP_CREW_COMPLETE",
       details: `Lineup vs ${crewRole}: checked ${checked}, missing ${missing}, drifted ${drifted}, orphans ${orphans}.`
     });
 
-    return { checked: checked, missing: missing, drifted: drifted, orphans: orphans };
+    return { crewRole: crewRole, checked: checked, missing: missing, drifted: drifted, orphans: orphans };
   },
   syncCrewCalendar: function(ctx) {
   const role = "CREWCAL";

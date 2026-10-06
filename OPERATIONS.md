@@ -20,9 +20,23 @@
 
 `Run Health Check` validates each physical sheet once even though the context stores both physical-name and SheetRole aliases. Remaining header findings should be reviewed against `Map_Registry` before any repair operation. `Repair Map Registry` modifies registry metadata; use `previewMapRegistryRepair(sheetName)` first when a finding is not already understood.
 
+## Controlled Reconciliation and Identity Checks
+
+Use a disposable workbook copy for any flow that writes rows, IDs, statuses, or decisions. Keep calendar writes disabled. Do not close issues #1, #4, #7, #8, #10, #13, #24, #25, or #28 until their relevant checks have been completed in both Draft and Current modes and the results recorded on the issue.
+
+1. In **Dev / Test > Diagnostics**, run `Test Theatrical Date Parsing`; confirm representative complex date strings parse, spans retain their intended end date, and invalid input is reported.
+2. In the disposable copy, run `Ingest Season`, then `Explode Dates`. Check that each Parent event's Lineup instances retain stable UUIDs on repeat runs and that new/updated rows populate `EventOfTotal`, `EndDate`, `AfterToday`, `WithinQuarter`, `WithinMonth`, `SyncStatus`, and `LastUpdated`.
+3. Run `Verify Parent Lineup vs Lineup`. Confirm title/series/date/venue drift and missing/orphan rows create review items without silently applying field updates. Verify a clean match supersedes the corresponding drift review and an unresolved manual action is not overwritten.
+4. Run `Sync Lineup to Crew Log` and `Reconcile Logs`. Check UUID associations, titles, dates, start/end times, locations, multi-day `EndDate`, missing crew-log decisions, drift decisions, and orphan reporting. Confirm Draft routes to `Draft_Season_Log` and Current routes to `Crew_Calendar_Log`.
+5. In the controlled copy, approve a `CREWLOG_MISSING` or `LINEUP_CREW_DRIFT` review by setting `Decision=ACCEPT`, then run `Apply Reviewed Decisions`. Confirm exactly one active-season row matches the Lineup UUID and the decision is recorded in `Audit_Log`. Confirm a `Delete Pending` Lineup row is not pushed, and a locked/bypassed row remains unchanged.
+6. For merge/delete paths, first run `Preview Approved Deletes` or `Preview Lineup Delete Pending`. In the controlled copy only, check snapshots and registry lineage after applying a reviewed operation; confirm the keeper ID remains stable and pending decisions are repointed or superseded as expected.
+7. Run `Sync ID Registry`. Confirm `Fingerprint` snapshots, `Merged IDs`, current `SheetLocation`, and idLog links refer to the intended rows after the log sheets are sorted.
+8. Run `Lookup List Diagnostics`. Confirm `Venue`, `CrewStaff`, and `CallType` report `LOOKUP` as source and enum lists such as `Options` report `REFRULES`, with nonzero counts for every list that should drive a dropdown. Then run **Maintenance > Refresh Dropdowns** and verify the expected validations; any skipped empty list should be investigated in `Audit_Log`, not replaced with an empty validation.
+9. Run `Refresh Decision Row Links` and verify Import→Parent, Parent-only, and Parent-duplicate links. Treat links for newer Lineup/Crew review types, Audit_Log-to-decision references, and the broad Calls/calendar-log associations as unfinished until their scope is implemented and checked.
+
 ## Menu Organization
 
-- `Diagnostics`: context and health checks.
+- `Diagnostics`: context, health, and lookup-list checks.
 - `Verification`: whole-sheet comparisons and calendar comparison.
 - `Maintenance`: registry, headers, hashes, and dropdowns.
 - `Decision Review`: pending review queue and approved decision processing.
@@ -77,7 +91,7 @@ As detailed in [UI-Design.md](UI-Design.md), a future consolidated **Event Manag
 
 Protected sheets are skipped unless an explicit confirmation path is used.
 
-Do not run `Refresh Dropdowns` until the `ref`-backed enum lookup work is complete. `Options` and other enum values are owned by `ref`, while the current dropdown loader reads `Lookup`; an empty source list could install an empty validation rule.
+`Refresh Dropdowns` reads `Venue`, `CrewStaff`, and `CallType` from the `LOOKUP` role and shared enum lists such as `Options` from `REFRULES`. Run **Lookup List Diagnostics** first when checking a new or changed registry mapping. Empty lists are skipped and logged; verify the source data rather than attempting to refresh an empty dropdown.
 
 ## Map_Registry Maintenance
 
@@ -109,7 +123,7 @@ Verification may update status and `LastSynced` when the current behavior allows
 `decision_log` is the editable review queue. `Audit_Log` is historical output.
 `decision_log` acts strictly as an active to-do list.
 
-* **Universal Hyperlinking:** `refreshLinks()` generates rich-text cell links for **all** review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`) into `SourceLink` and `CandidateLink`.
+* **Decision-row links:** `refreshLinks()` generates links for Import→Parent, Parent-only, and Parent-duplicate reviews into `SourceLink` and `CandidateLink`. New Lineup/Crew review types and Audit_Log-to-decision links still need implementation/validation.
 * **Persistence:** Unresolved manual reviews (`PENDING`, `FAILED`) persist in `decision_log` across verification passes.
 * **Applied rows:** When a review item is applied, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
 * **No re-prompt after apply:** If a later verification produces the same stable `ReviewID`, the engine checks `Audit_Log` and suppresses it when that review was already applied; any stale pending copy of that same ID is removed.

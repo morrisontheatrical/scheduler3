@@ -152,6 +152,12 @@ and `Time`, whose sheet number formats provide the date-only and time-only views
 `goLineup()` updates only source-managed or derived fields that changed; it does
 not rewrite a matched row wholesale or erase its operational state. New rows
 receive their initial `Draft` status, timestamps, derived formulas, and SyncHash.
+When a parsed span has `EndDate`, the downstream crew-log `End` uses that calendar
+date with the Lineup start time; otherwise it uses the configured default
+duration. Reconciliation compares the Lineup identity, title, date/start, end,
+and venue/location against the active crew log. Missing or drifted rows create
+review decisions; only an accepted `PUSH_LINEUP_TO_CREWLOG` action writes the
+specific UUID, and Delete Pending or blocked Lineup rows are not pushed.
 
 4. **Governance Layer:**
    - See Metadata sources

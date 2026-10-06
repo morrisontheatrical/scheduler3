@@ -1004,7 +1004,7 @@ function goLineup() {
       values.Time = entry.date;
       values.RawDateStr = entry.raw || "";
       values.EventOfTotal = `${index + 1} of ${entries.length}`;
-      if (entry.endDate) values.EndDate = entry.endDate;
+      values.EndDate = entry.endDate || "";
 
       const identity = Engine.getLibraryModule("Identity");
       if (identity && typeof identity.generate === "function") {
@@ -1032,6 +1032,9 @@ function goLineup() {
 
         const changedFields = writeChangedFields(record, values);
         if (changedFields.length) {
+          if (lCol("LastUpdated") >= 0) {
+            lSheet.getRange(record.rowIdx, lCol("LastUpdated") + 1).setValue(new Date());
+          }
           Engine.Status.apply(ctx, lRole, record.rowIdx, "Active", {
             stage: "INGEST",
             id: record.uuid || parentID,
@@ -1088,6 +1091,25 @@ function goCrewLog(options) {
 }
 
 Engine.Ingest = Engine.Ingest || {};
+
+Engine.Ingest._lineupEndTime = function(ctx, lineupRow, lineupMap) {
+  const startCol = Engine.getColumnIndex(lineupMap, "Date");
+  const endDateCol = Engine.getColumnIndex(lineupMap, "EndDate");
+  const start = startCol >= 0 ? new Date(lineupRow[startCol]) : new Date(NaN);
+  if (isNaN(start.getTime())) return null;
+
+  const rawEndDate = endDateCol >= 0 ? lineupRow[endDateCol] : "";
+  if (rawEndDate) {
+    const end = new Date(rawEndDate);
+    if (!isNaN(end.getTime())) {
+      end.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+      if (end > start) return end;
+    }
+  }
+
+  const configuredDuration = Number(ctx.mode && ctx.mode.defaultDuration) || 2;
+  return new Date(start.getTime() + configuredDuration * 60 * 60 * 1000);
+};
 
 /**
  * Parses the multiline DatesAndTimes cells used by Parent Lineup.
@@ -1594,6 +1616,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
   const lData = lSheet.getDataRange().getValues();
   lData.shift();
+  const requestedUUID = String(options.uuid || "").trim();
 
   // Anchor identity: a log row is linked to its Lineup row via Source="Lineup" + matching UUID.
   const logRows = scanSheet(targetRole, ctx);
@@ -1602,7 +1625,6 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
     if (row.Source === "Lineup" && row.UUID) existingByUUID[row.UUID] = row;
   });
 
-  const defaultDuration = (ctx.mode && ctx.mode.defaultDuration) || 2;
   const newRows = [];
   const changedRows = [];
   let skippedLocked = 0;
@@ -1610,8 +1632,15 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
 
   lData.forEach(lRow => {
     const uuid = lRow[lCol("UUID")];
+    if (requestedUUID && String(uuid || "").trim() !== requestedUUID) return;
     const title = lRow[lCol("EventName")];
     if (!uuid || !title) return;
+
+    const lineupStatus = String(lRow[lCol("SyncStatus")] || "").trim();
+    if (lineupStatus === "Delete Pending" || Engine.Status.blocksWrite(ctx, lineupStatus)) {
+      skippedLocked++;
+      return;
+    }
 
     const location = lRow[lCol("Venue")];
     const eventOfTotal = lRow[lCol("EventOfTotal")];
@@ -1638,7 +1667,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
       return; // Don't create a new row until the date is fixable.
     }
 
-    const end = new Date(start.getTime() + defaultDuration * 60 * 60 * 1000);
+    const end = Engine.Ingest._lineupEndTime(ctx, lRow, lMap);
 
     // NEW: no log row yet for this Lineup event.
     if (!existing) {
@@ -1652,6 +1681,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
         Source: "Lineup",
         UUID: uuid,
         SyncStatus: "Manual Review",
+        LastUpdated: new Date(),
         LastSynced: new Date()
       });
       return;
@@ -1666,13 +1696,13 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
     }
 
     const comparison = Engine.IO.compare(ctx, {
-      source: { EventName: title, Start: start, Venue: location },
+      source: { EventName: title, Start: start, End: end, Venue: location },
       destination: existing,
       sourceRole: Engine.Roles.resolve(ctx, "LINEUP"),
       destinationRole: targetRole,
-      fields: ["EventName", "Start", "Venue"],
+      fields: ["EventName", "Start", "End", "Venue"],
       fieldAliases: { EventName: "Title", Venue: "Location" },
-      comparisonModes: { Start: "timestamp" },
+      comparisonModes: { Start: "timestamp", End: "timestamp" },
       identifier: uuid
     });
 
@@ -1680,7 +1710,9 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
       existing.Title = title;
       existing.Date = start;
       existing.Start = start;
+      existing.End = end;
       existing.Location = location;
+      existing.LastUpdated = new Date();
       Engine.Status.apply(ctx, targetRole, null, "Data Drift Detected", {
         details: "Lineup changed since the last sync.",
         targetObj: existing

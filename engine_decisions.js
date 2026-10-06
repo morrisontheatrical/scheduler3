@@ -629,6 +629,24 @@ Engine.Decisions = {
             Engine.Ingest.goLineup();
             actionDetails = `Re-exploded dates for Parent ${decision.ExistingParentID || decision.SourceID}`;
           }
+        } else if (action === "PUSH_LINEUP_TO_CREWLOG") {
+          if (userDecision !== "ACCEPT") throw new Error("PUSH_LINEUP_TO_CREWLOG requires Decision=ACCEPT");
+          const uuid = String(decision.SourceID || decision.CandidateID || "").trim();
+          if (!uuid) throw new Error("PUSH_LINEUP_TO_CREWLOG requires the source Lineup UUID");
+
+          const syncResult = Engine.Ingest.syncLineupToLog(ctx, { uuid: uuid });
+          if (!syncResult) throw new Error("Could not resolve active-season Lineup and crew-log sheets.");
+          if (syncResult.skippedLocked) throw new Error(`A status blocks pushing Lineup UUID ${uuid} to the crew log.`);
+          if (syncResult.flaggedBadDate) throw new Error(`Lineup UUID ${uuid} has no valid date and was not pushed.`);
+          const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+          const crewRole = isDraft ? "DRAFTCAL" : "CREWCAL";
+          const linkedRows = scanSheet(crewRole, ctx).filter(row =>
+            row.Source === "Lineup" && String(row.UUID || "").trim() === uuid
+          );
+          if (linkedRows.length !== 1) {
+            throw new Error(`Expected one ${crewRole} row for Lineup UUID ${uuid}; found ${linkedRows.length}`);
+          }
+          actionDetails = `Pushed Lineup ${uuid} to ${crewRole}.`;
         } else {
           throw new Error(`Unsupported RequestedAction: ${action}`);
         }
