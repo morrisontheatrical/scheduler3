@@ -55,17 +55,7 @@ var Engine = {
     ctx.settings.ControlPanel = this.loadControlPanelSettings(ss);
     ctx.status = this.loadStatusRules(ss);
     
-    // 3. Load Registry (Fast-lookup for Identity)
-    ctx.registry = this.loadRegistry(ctx);
-
-    // 4. Load Lookups (Now safe to use because maps are ready)
-    const lookupData = this.loadLookups(ctx);
-    ctx.lookup = lookupData      // This populates your lists
-    ctx.calendars = lookupData.calendars; // This populates your venue IDs
-
-    ctx.runtime.bypassList = this.loadBypassList(ctx);
-
-    // Helpers
+    // Helpers (must be attached before steps 3-4, which call ctx.getRole/getMap)
     ctx.get = (sheetName) => ss.getSheetByName(sheetName);
     ctx.getRole = function(roleName) {
       // 'this' refers to the active 'ctx' object
@@ -129,6 +119,15 @@ var Engine = {
       const sheetDef = this.sheetDefs[identifier] || this.schema[identifier];
       return (sheetDef && sheetDef.columns && sheetDef.columns[fieldName]) || null;
     };
+
+    // 3. Load Registry (Fast-lookup for Identity)
+    ctx.registry = this.loadRegistry(ctx);
+
+    // 4. Load Lookups and bypass list
+    const lookupData = this.loadLookups(ctx);
+    ctx.lookup = lookupData;
+    ctx.calendars = lookupData.calendars;
+    ctx.runtime.bypassList = this.loadBypassList(ctx);
 
     return ctx;
   },
