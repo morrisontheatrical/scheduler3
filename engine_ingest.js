@@ -2360,6 +2360,9 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
   lData.forEach((row, idx) => {
     const pid = row[lCol("parentID")];
     if (!pid) return;
+    const status = String(row[lCol("SyncStatus")] || "").trim();
+    const statusBehaviors = Engine.Status.getBehavior(ctx, status);
+    if (statusBehaviors.includes("BYPASS")) return;
     if (!lByParent[pid]) lByParent[pid] = [];
     lByParent[pid].push({ row: row, rowIdx: idx + 2 });
   });
@@ -2414,6 +2417,8 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
         fieldAliases: lineupTitleField ? { EventName: lineupTitleField } : {},
         sourceRole: pRole,
         destinationRole: lRole,
+        // Compare the performance's calendar day, not hidden fractional time.
+        comparisonModes: { Date: "date" },
         fields: compareFields,
         identifier: child.row[lCol("UUID")] || parentID
       });

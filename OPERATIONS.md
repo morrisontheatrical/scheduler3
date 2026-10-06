@@ -100,7 +100,7 @@ Do not run `Refresh Dropdowns` until the `ref`-backed enum lookup work is comple
 
 **Known open gap (issue #7):** a clean match today does nothing — a review status left by a prior run (e.g. `Data Drift Detected`) is not cleared, and the matching `IMPORT_PARENT` decision is not superseded, so a stale flag persists until a human resolves it. The heal-to-`Synced` + `markSuperseded` design is drafted for issue #7; do not treat "row stayed orange" as evidence of live drift until that lands.
 
-`Verify Parent Lineup vs Lineup` compares parsed Parent Lineup dates and venues to Lineup rows using the same comparator. `Compare Draft Calendar vs Crew Log` likewise compares calendar title and full event start against the crew log.
+`Verify Parent Lineup vs Lineup` compares parsed Parent Lineup dates and venues to Lineup rows using the same comparator. It ignores Lineup rows marked `Delete Pending` or carrying a `BYPASS` status behavior while aligning each Parent schedule occurrence to its Lineup row; pending removals must not shift the date comparison for remaining performances. The Lineup `Date` field compares by calendar day, not hidden fractional-time precision. `Compare Draft Calendar vs Crew Log` likewise compares calendar title and full event start against the crew log.
 
 Verification may update status and `LastSynced` when the current behavior allows it. `LOCKED` and `BYPASS` rows are not mutated, but detected differences are logged.
 
@@ -221,7 +221,7 @@ Users can set operational statuses in `Parent Lineup` to dictate engine behavior
 
 ## Cross-Layer Match Review
 
-`Verify import vs Parent Lineup` first uses the exact event-name match. When names differ, it may suggest a likely related row using title similarity, series, venue, opening-date proximity, and date range. Review evidence lists the signals and score; ambiguous candidates are not selected. `Verify Parent Lineup vs Lineup` also reports title and series drift, in addition to expected date and venue, for records connected by `parentID`.
+`Verify import vs Parent Lineup` first uses the exact event-name match. When names differ, it may suggest a likely related row using title similarity, series, venue, opening-date proximity, and date range. Review evidence lists the signals and score; ambiguous candidates are not selected. `Verify Parent Lineup vs Lineup` also reports title and series drift, in addition to expected date and venue, for records connected by `parentID`. Date verification compares calendar days explicitly, ignoring hidden fractional-time differences in spreadsheet date values.
 
 These signals are comparison evidence only. They do not change identities, merge rows, or apply field updates automatically. Review the source and candidate rows before accepting a change.
 
