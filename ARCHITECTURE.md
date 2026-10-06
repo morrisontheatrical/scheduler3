@@ -118,6 +118,7 @@ flowchart TD
     I -- "verifyImportToParent" --> DecLog
     DecLog -- "applyPending (MERGE_PARENT)" --> P
     P -- "mergeParentDuplicate" --> IDLog
+    P -- "mergeParentDuplicate" --> AuditLog
     IDLog -- "Cascading parentID Update" --> L
     IDLog -- "Cascading parentID and UUID Update" --> C
     IDLog -- "Cascading ID Update" --> Calls
@@ -125,7 +126,7 @@ flowchart TD
     P -- "verifyParentToLineup" --> DecLog
     L -- "reconcileLogs" --> C
     DecLog -- "Purge applied" --> AuditLog
-    Calls -- "Synced with Calendar" --> L
+    Calls -- "Synced with Calendar" --> C
     L -- "reconcileLogs" --> D
 ```
 
