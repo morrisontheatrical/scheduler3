@@ -178,54 +178,74 @@ Engine.Maintenance = {
 
   /**
    * Refreshes Data Validation (Dropdowns) across the workbook
-   * based on the lists in the 'Lookup' sheet.
+   * based on the role-owned lists loaded into ctx.lookup.
    */
   applyDropdowns: function(ctx) {
-    const ss = ctx.ss;
-    const lookupSheet = Engine.getSheetByRole(ctx, "LOOKUP");
-    const lMap = ctx.getMap("LOOKUP");
-    if (!lookupSheet || !lMap) return;
-
-    const lData = lookupSheet.getDataRange().getValues().slice(1);
-    const getList = (colIdx) => {
-      if (colIdx < 0) return [];
-      return lData
-        .map(row => row[colIdx])
-        .filter(val => val !== "" && val !== null && val !== undefined);
-    };
-
-    const venueList = getList(Engine.getColumnIndex(lMap, "Venue"));
-    const crewList = getList(Engine.getColumnIndex(lMap, "CrewStaff"));
-    const callTypeList = getList(Engine.getColumnIndex(lMap, "CallType"));
-    const optionsList = getList(Engine.getColumnIndex(lMap, "Options"));
+    const lists = (ctx.lookup && ctx.lookup.lists) || {};
+    const listSources = (ctx.lookup && ctx.lookup.listSources) || {};
 
     const lineupRole = Engine.Roles.resolve(ctx, "LINEUP");
     const isDraftSeason = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
     const logRole = isDraftSeason ? "DRAFTCAL" : "CREWCAL";
 
     const targets = {};
-    if (lineupRole) targets[lineupRole] = { "Venue": venueList };
-    targets[logRole] = { "Location": venueList, "Options": optionsList };
+    if (lineupRole) targets[lineupRole] = { "Venue": "Venue" };
+    targets[logRole] = { "Location": "Venue", "Options": "Options" };
 
+    let applied = 0;
+    let skipped = 0;
     for (const [role, config] of Object.entries(targets)) {
       const targetSheet = Engine.getSheetByRole(ctx, role);
       const targetMap = ctx.getMap(role);
       if (!targetSheet || !targetMap) continue;
 
-      for (const [colName, list] of Object.entries(config)) {
+      for (const [colName, listName] of Object.entries(config)) {
+        const list = lists[listName] || [];
         const colIdx = Engine.getColumnIndex(targetMap, colName);
         if (colIdx < 0) continue;
 
-        const range = targetSheet.getRange(2, colIdx + 1, targetSheet.getMaxRows() - 1);
+        if (!Array.isArray(list) || list.length === 0) {
+          skipped++;
+          Engine.Log.warn(ctx, "MAINTENANCE", `Skipped dropdown validation for ${role}.${colName}: ${listName} source ${listSources[listName] || "unknown"} has no values.`);
+          continue;
+        }
+
+        const validationRows = targetSheet.getMaxRows() - 1;
+        if (validationRows < 1) {
+          skipped++;
+          Engine.Log.warn(ctx, "MAINTENANCE", `Skipped dropdown validation for ${role}.${colName}: target sheet has no data rows.`);
+          continue;
+        }
+
+        const range = targetSheet.getRange(2, colIdx + 1, validationRows);
         const rule = SpreadsheetApp.newDataValidation()
                                    .requireValueInList(list)
                                    .setAllowInvalid(false)
                                    .build();
         range.setDataValidation(rule);
+        applied++;
       }
     }
 
-    Engine.Log.write(ctx, { type: "MAINTENANCE", details: "Data Validation (Dropdowns) refreshed." });
+    Engine.Log.write(ctx, {
+      type: "MAINTENANCE",
+      details: `Data Validation (Dropdowns) refreshed: ${applied} applied, ${skipped} skipped.`
+    });
+    return { applied: applied, skipped: skipped };
+  },
+
+  diagnoseLookupLists: function(ctx) {
+    const lists = (ctx.lookup && ctx.lookup.lists) || {};
+    const sources = (ctx.lookup && ctx.lookup.listSources) || {};
+    const report = Object.keys(lists).sort().map(fieldName => ({
+      fieldName: fieldName,
+      source: sources[fieldName] || "unknown",
+      count: Array.isArray(lists[fieldName]) ? lists[fieldName].length : 0
+    }));
+    const lines = report.map(item => `${item.fieldName}: source=${item.source}, count=${item.count}`);
+    const message = lines.length ? lines.join("\n") : "No lookup lists are loaded.";
+    console.log(message);
+    return report;
   },
 
   /**
@@ -750,4 +770,3 @@ function resyncStatusColors() {
   const colorValues = hexValues.map(([hex]) => [Engine.ColorPalette.nameForHex(hex) || ""]);
   sheet.getRange(2, colorCol, colorValues.length, 1).setValues(colorValues);
 }
-

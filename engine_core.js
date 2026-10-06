@@ -428,11 +428,10 @@ var Engine = {
    * 2. Loads Dropdown lists (Call Types, etc.)
    */
   loadLookups: function(ctx) {
-    let lookups = { calendars: [], lists: {} }; // Calendars is an array now
-    const ss = ctx.ss;
+    const lookups = { calendars: [], lists: {}, listSources: {} };
 
     // 1. Process Calendars
-    const calSheet = ctx.sheets.CALENDARS || ss.getSheetByName("Calendars");
+    const calSheet = Engine.getSheetByRole(ctx, "CALENDARS");
     if (calSheet) {
       const calData = calSheet.getDataRange().getValues();
       calData.shift(); // Remove headers
@@ -450,29 +449,31 @@ var Engine = {
       });
     }
 
-    // 2. Process Lookup Lists using ctx.sheets["Lookup"].map
-    //Shouldn't this also load the "ref" sheet??
-    const listSheet = ctx.sheets.LOOKUP || ss.getSheetByName("Lookup");
-    const lookupSheetDef = ctx.sheetDefs.LOOKUP || ctx.schema.LOOKUP || ctx.getMap("LOOKUP");
-    
-    if (listSheet && lookupSheetDef && lookupSheetDef.map) {
-      const listData = listSheet.getDataRange().getValues();
-      const map = lookupSheetDef.map;
-      let cleanColumn = null;
+    const lookupOwnedFields = new Set(["Venue", "CrewStaff", "CallType"]);
+    const loadLists = (role, preserveExisting) => {
+      const sheet = Engine.getSheetByRole(ctx, role);
+      const map = ctx.getMap(role);
+      if (!sheet || !map) return;
 
-      const utils = this.getLibraryModule("Utils");
-      if (utils && typeof utils.getCleanColumn === "function") cleanColumn = utils.getCleanColumn;
-      else if (typeof scriptLib !== "undefined" && typeof scriptLib.getCleanColumn === "function") cleanColumn = scriptLib.getCleanColumn;
-
+      const rows = sheet.getDataRange().getValues().slice(1);
       Object.keys(map).forEach(fieldName => {
-        const colIdx = this.getColumnIndex(map, fieldName);
+        if (preserveExisting && lookupOwnedFields.has(fieldName)) return;
+        const colIdx = Engine.getColumnIndex(map, fieldName);
         if (colIdx < 0) return;
-        lookups.lists[fieldName] = cleanColumn
-          ? cleanColumn(listData, colIdx)
-          : listData.map(row => row[colIdx]).filter(value => value !== "" && value !== null && value !== undefined);
+
+        const values = rows
+          .map(row => row[colIdx])
+          .filter(value => value !== "" && value !== null && value !== undefined &&
+            (typeof value !== "string" || value.trim() !== ""));
+        lookups.lists[fieldName] = values;
+        lookups.listSources[fieldName] = role;
       });
-    }
-    
+    };
+
+    // Lookup owns venue and operational lists; REFRULES owns shared enum lists.
+    loadLists("LOOKUP", false);
+    loadLists("REFRULES", true);
+
     return lookups;
   },
 

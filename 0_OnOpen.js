@@ -6,6 +6,7 @@ function onOpen() {
       .addItem('Diagnostic Dump', 'test_DiagnosticDump')
       .addItem('Test Normalization and Compare', 'test_NormalizationAndCompare')
       .addItem('Test Theatrical Date Parsing', 'test_TheatricalDateParsing')
+      .addItem('Lookup List Diagnostics', 'test_LookupListDiagnostics')
       .addItem('Run Health Check', 'goHealthCheck')
       .addItem('Test Status Color Provider', 'test_StatusColorProvider')
       .addItem('Open Audit Log', 'openAuditLog'))
@@ -118,6 +119,11 @@ function test_SyncIDRegistry() {
 function test_RefreshDropdowns() {
   const ctx = Engine.getContext();
   return Engine.Maintenance.applyDropdowns(ctx);
+}
+
+function test_LookupListDiagnostics() {
+  const ctx = Engine.getContext();
+  return Engine.Maintenance.diagnoseLookupLists(ctx);
 }
 
 function goHealthCheck() {
