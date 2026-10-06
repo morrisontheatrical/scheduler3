@@ -30,6 +30,8 @@ function onOpen() {
       .addItem('Generate Parent Duplicate Suggestions', 'generateParentDuplicateSuggestions')
       .addItem('Refresh Stale Parent Duplicate Reviews', 'refreshParentDuplicateDecisions')
       .addItem('Refresh Resolved Parent-Only Reviews', 'refreshParentOnlyDecisions')
+      .addItem('Preview Approved Deletes', 'previewApprovedDeletes')
+      .addItem('Preview Lineup Delete Pending', 'previewLineupDeletePending')
       .addItem('Apply Reviewed Decisions (Includes Merges)', 'applyPendingDecisions')
       .addItem('Archive Superseded Decisions', 'archiveSupersededDecisions'))
     .addSubMenu(ui.createMenu('Sync Tests')
@@ -155,4 +157,3 @@ function openAuditLog() {
     SpreadsheetApp.getUi().alert("Audit Log not found.");
   }
 }
-

@@ -57,7 +57,15 @@ All range access must convert through `Engine.getColumnIndex(map, fieldName)`. I
   - **`SyncHash` (Operational Change Detection)**: A compact cryptographic hash (MD5 or SHA-256) of normalized key fields (`normalize(Title) | Date | Time | Venue`). It lives strictly on operational event sheets (`Lineup`, `draft_Lineup`, `Parent Lineup`, `draft_Parent`, `Crew_Calendar_Log`, `Draft_Season_Log`, `Venue_Cal_Log`). Its sole purpose is high-speed drift detection during sync passes.
   - **`Fingerprint` (Identity / Row Snapshot)**: Historically originated as a human-readable delineated string (`Title | Date | Time | Location`) used to compare against shifting, ID-less `import` data. In Scheduler 3, `Fingerprint` is registry-owned on `idLog`, functioning as a full-row JSON snapshot via `Engine.IO.serializeRow()`. It captures the state of deleted or merged rows for post-merge recovery, deep diffing, and audit reconstruction.
   - **Rule**: Never query `idLog` for `SyncHash`; `idLog`'s canonical column is `Fingerprint`. Data sheets use `SyncHash`.
+  - `serializeRow()` omits the internal `_rowNum` property and encodes Date values so `deserializeRow()` restores them as Dates. The deserializer rejects malformed snapshots rather than silently returning an empty result. `Engine.IDService.syncAll()` upgrades legacy compact hash values in `Fingerprint` to snapshots while continuing to expose the embedded data-sheet `SyncHash` to runtime comparisons.
+  - Before an approved Lineup orphan deletion or Parent merge, the full source row is saved to the corresponding idLog entry. Deleted snapshots are preserved; if the same identity still exists on a downstream log, `SheetLocation` may point to that surviving row.
+  - Any Lineup deletion that still has a linked active-season calendar-log row queues a `LINEUP_DELETE_CLEANUP` review. `KEEP_CALENDAR` leaves it untouched; `MARK_CALENDAR_DELETE` marks an eligible `CREWCAL` row for the existing permission-gated calendar sync and retains the log row.
+  - Calendar cleanup defaults to `KEEP_CALENDAR`; the reviewer can choose `MARK_CALENDAR_DELETE`. This uses existing decision fields rather than adding a `Mode_Config` column. `Status` behaviors continue to describe whether status-driven writes are blocked or allowed; they do not select this cleanup policy.
 
+Calendar logs (`Venue_Cal_Log`, `Crew_Calendar_Log`, and `Draft_Season_Log`)
+are sorted in ascending `Date`, then `Start` order after sync writes. Sorting
+changes physical row positions, so the identity registry refreshes
+`SheetLocation` and hyperlinks after each sort.
 
 ## Layered Data Architecture
 
@@ -82,6 +90,46 @@ The workbook operates across four distinct structural layers to maintain determi
    - **Calendar Log Key:** 'eventID' once populated. If not populated, depending on options/mode/sheetBehavior, a calendar event should be created and the eventID populated. 
    - Granular event instance layer parsed into individual performance dates/times for calendar sync.
    - parseDatesAndTimes performs the complex parsing of the DatesAndTimes field into individual evnts
+
+```mermaid
+flowchart TD
+    subgraph Intake["1. Raw Intake"]
+        I["import / draft_import"]
+    end
+
+    subgraph Catalog["2. Master Catalog"]
+        P["Parent Lineup / draft_Parent (parentID)"]
+    end
+
+    subgraph Execution["3. Execution & Calendar Logs"]
+        L["Lineup / draft_Lineup (UUID, parentID)"]
+        C["Crew_Calendar_Log (EventID, UUID, parentID)"]
+        D["Draft_Season_Log (EventID, UUID, parentID)"]
+        V["Venue_Cal_Log (EventID, Associated UUID)"]
+        Calls["Calls (callID, UUID, parentID)"]
+    end
+
+    subgraph Governance["4. Governance & Decision Engine"]
+        IDLog["idLog (UniqueID, MergedIDs Alias Table)"]
+        DecLog["decision_log (Active Review Queue)"]
+        AuditLog["Audit_Log (Immutable History)"]
+    end
+
+    I -- "verifyImportToParent" --> DecLog
+    DecLog -- "applyPending (MERGE_PARENT)" --> P
+    P -- "mergeParentDuplicate" --> IDLog
+    IDLog -- "Cascading parentID Update" --> L
+    IDLog -- "Cascading parentID and UUID Update" --> C
+    IDLog -- "Cascading ID Update" --> Calls
+    IDLog -- "DECISION_REPOINTED" --> DecLog
+    P -- "verifyParentToLineup" --> DecLog
+    L -- "reconcileLogs" --> C
+    DecLog -- "Purge applied" --> AuditLog
+    Calls -- "Synced with Calendar" --> L
+    L -- "reconcileLogs" --> D
+```
+
+
 
 ### Lineup Instance Identity and Updates
 
@@ -168,7 +216,7 @@ Below notes are incomplete
 - merge status notes from ROADMAP.md
 - `SyncStatus`: current state/result of a row.
    `Possible Duplicate` is a review status, not an automatic command. It should trigger a decision
-   `Delete Pending` was originally a way for the user to request deletion. this may need reconsidered. 
+   `Delete Pending` is the explicit user request for deletion. Parent and Lineup rows use their season-aware ingest stages to apply it, with Lineup deletion previewed first. A Lineup tombstone in `idLog.LogDetails` prevents the same parent/date occurrence from being regenerated.
 - `Row.Exception` / `Behavior`: whether automatic mutation is allowed, based on applied status.
 
 **'ref.csv**

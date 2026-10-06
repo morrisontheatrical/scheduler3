@@ -568,6 +568,26 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
 
   const keepValues = parentData[keepRow];
   const duplicateValues = parentData[duplicateRow];
+  const duplicateSnapshot = {};
+  Object.keys(parentMap).forEach(field => {
+    const column = Engine.getColumnIndex(parentMap, field);
+    if (column >= 0) duplicateSnapshot[field] = duplicateValues[column];
+  });
+  const duplicateTitleCol = Engine.getColumnIndex(parentMap, "EventName");
+  const duplicateTitle = duplicateTitleCol >= 0 ? duplicateValues[duplicateTitleCol] : "";
+  const duplicateFingerprint = Engine.IO.serializeRow(duplicateSnapshot);
+  if (Engine.IDService && typeof Engine.IDService.upsert === "function") {
+    Engine.IDService.upsert(ctx, {
+      id: duplicateParentID,
+      type: pRole,
+      title: duplicateTitle,
+      parentId: duplicateParentID,
+      fingerprint: duplicateFingerprint,
+      location: `${parentSheet.getName()}!R${duplicateRow + 1}`,
+      status: "Active",
+      details: `Snapshot captured before merge into ${keepParentID}.`
+    });
+  }
   const sourceFields = [...new Set([
     "EventName", "Series", "Opening", "Range", "DatesAndTimes", "Venue", "Pricing", "Pit",
     ...Object.keys(parentMap).filter(fieldName => Engine.getSyncBehavior(ctx, pRole, fieldName) === "Source (Read-Only)")
@@ -720,6 +740,15 @@ Engine.Ingest.mergeParentDuplicate = function(ctx, keepParentID, duplicateParent
   }
 
   parentSheet.deleteRow(duplicateRow + 1);
+  if (Engine.IDService && typeof Engine.IDService.upsert === "function") {
+    Engine.IDService.upsert(ctx, {
+      id: duplicateParentID,
+      fingerprint: duplicateFingerprint,
+      status: "Merged",
+      location: "",
+      details: `Merged into ParentID ${keepParentID}; pre-merge snapshot retained in Fingerprint.`
+    });
+  }
   Engine.Log.write(ctx, {
     stage: "INGEST",
     sheetName: pRole,
@@ -780,12 +809,23 @@ function goLineup() {
   }
   
   const pData = pSheet.getDataRange().getValues();
-  const lData = lSheet.getDataRange().getValues();
-
   pData.shift();
 
   const pCol = fieldName => Engine.getColumnIndex(pMap, fieldName);
   const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
+  Engine.Ingest.applyLineupDeletePending(ctx, lRole, lSheet, lMap);
+  const lData = lSheet.getDataRange().getValues();
+  const deletedOccurrenceKeys = new Set();
+  Object.keys(ctx.registry || {}).forEach(id => {
+    const registryEntry = ctx.registry[id];
+    const snapshot = registryEntry && registryEntry.Snapshot;
+    if (String(registryEntry && registryEntry.Status || "").trim().toUpperCase() !== "DELETED" ||
+        !String(registryEntry && registryEntry.LogDetails || "").includes("[LINEUP_DELETE_PENDING]") ||
+        !snapshot || !snapshot.parentID || !snapshot.Date) return;
+    const date = snapshot.Date instanceof Date ? snapshot.Date : new Date(snapshot.Date);
+    if (!isNaN(date.getTime())) deletedOccurrenceKeys.add(`${snapshot.parentID}|${date.getTime()}`);
+  });
+  let skippedDeletedOccurrences = 0;
   const lWidth = Math.max(...Object.keys(lMap).map(fieldName => lMap[fieldName]).filter(index => index >= 0)) + 1;
   const spanOverrideCol = pCol("SpanOverride");
   const sourceFields = Object.keys(lMap).filter(fieldName =>
@@ -904,6 +944,10 @@ function goLineup() {
     entries.forEach((entry, index) => {
       const lookupKey = `${parentID}|${entry.date.getTime()}`;
       const record = existingRecords[lookupKey];
+      if (!record && deletedOccurrenceKeys.has(lookupKey)) {
+        skippedDeletedOccurrences++;
+        return;
+      }
       const values = {};
       sourceFields.forEach(fieldName => {
         values[fieldName] = pRow[pCol(fieldName)];
@@ -974,6 +1018,13 @@ function goLineup() {
     });
   });
 
+  if (skippedDeletedOccurrences) {
+    Engine.Log.write(ctx, {
+      stage: "INGEST",
+      type: "DELETE_TOMBSTONES_RESPECTED",
+      details: `${skippedDeletedOccurrences} previously deleted Lineup occurrence(s) were not regenerated.`
+    });
+  }
   const utils = Engine.getLibraryModule("Utils");
   if (utils && typeof utils.notify === "function") utils.notify("Lineup Explosion Complete", "Success");
 }
@@ -1047,6 +1098,422 @@ Engine.Ingest.parseParentDatesAndTimes = function(rawDates) {
   result.dates = result.dateEntries.map(entry => entry.date);
   return result;
 };
+
+Engine.Ingest._snapshotAndDeleteLineupRow = function(ctx, params) {
+  const sheet = params.sheet;
+  const map = params.map;
+  const rowNumber = params.rowNumber;
+  const uuid = String(params.uuid || "").trim();
+  const uuidCol = Engine.getColumnIndex(map, "UUID");
+  if (!sheet || !map || rowNumber < 2 || rowNumber > sheet.getLastRow() || uuidCol < 0) {
+    throw new Error("Lineup row or UUID mapping is no longer available.");
+  }
+
+  const row = sheet.getRange(rowNumber, 1, 1, sheet.getLastColumn()).getValues()[0];
+  if (String(row[uuidCol] || "").trim() !== uuid) {
+    throw new Error(`Lineup UUID ${uuid} changed or moved before deletion.`);
+  }
+  if (params.requiredStatus) {
+    const statusCol = Engine.getColumnIndex(map, "SyncStatus");
+    if (statusCol < 0 || String(row[statusCol] || "").trim().toUpperCase() !== params.requiredStatus.toUpperCase()) {
+      throw new Error(`Lineup UUID ${uuid} is no longer marked "${params.requiredStatus}".`);
+    }
+  }
+
+  const rowObject = {};
+  Object.keys(map).forEach(field => {
+    const column = Engine.getColumnIndex(map, field);
+    if (column >= 0) rowObject[field] = row[column];
+  });
+  const titleCol = Engine.getColumnIndex(map, "EventName");
+  const parentIdCol = Engine.getColumnIndex(map, "parentID");
+  const title = params.title !== undefined ? params.title : (titleCol >= 0 ? row[titleCol] : "");
+  const parentID = params.parentID !== undefined ? params.parentID : (parentIdCol >= 0 ? row[parentIdCol] : "");
+  const fingerprint = Engine.IO.serializeRow(rowObject);
+  const location = `${sheet.getName()}!R${rowNumber}`;
+
+  Engine.IDService.upsert(ctx, {
+    id: uuid,
+    type: params.role,
+    title: title,
+    parentId: parentID,
+    fingerprint: fingerprint,
+    location: location,
+    status: "Active",
+    details: `Snapshot saved before deletion. ${params.details}`
+  });
+  Engine.Log.write(ctx, {
+    stage: params.stage,
+    sheetName: sheet.getName(),
+    rowIdx: rowNumber,
+    id: uuid,
+    type: params.logType,
+    details: params.details
+  });
+
+  sheet.deleteRow(rowNumber);
+  Engine.IDService.upsert(ctx, {
+    id: uuid,
+    status: "Deleted",
+    location: "",
+    details: `Deleted from ${sheet.getName()}. ${params.details}`
+  });
+  return { uuid: uuid, title: title, rowNumber: rowNumber };
+};
+
+Engine.Ingest._lineupDeletePendingCandidates = function(ctx, role, sheet, map) {
+  role = role || Engine.Roles.resolve(ctx, "LINEUP");
+  sheet = sheet || (role && Engine.getSheetByRole(ctx, role));
+  map = map || (role && ctx.getMap(role));
+  if (!role || !sheet || !map) throw new Error("Active Lineup sheet or map is missing.");
+
+  const statusCol = Engine.getColumnIndex(map, "SyncStatus");
+  const uuidCol = Engine.getColumnIndex(map, "UUID");
+  const titleCol = Engine.getColumnIndex(map, "EventName");
+  const parentIdCol = Engine.getColumnIndex(map, "parentID");
+  if (statusCol < 0 || uuidCol < 0) {
+    throw new Error("Lineup must map SyncStatus and UUID before Delete Pending rows can be processed.");
+  }
+
+  const rows = sheet.getDataRange().getValues();
+  const uuidCounts = {};
+  rows.slice(1).forEach(row => {
+    const uuid = String(row[uuidCol] || "").trim();
+    if (uuid) uuidCounts[uuid] = (uuidCounts[uuid] || 0) + 1;
+  });
+  const candidates = [];
+  rows.forEach((row, index) => {
+    if (index === 0 || String(row[statusCol] || "").trim().toUpperCase() !== "DELETE PENDING") return;
+    const uuid = String(row[uuidCol] || "").trim();
+    const eligible = !!uuid && uuidCounts[uuid] === 1;
+    candidates.push({
+      rowNumber: index + 1,
+      uuid: uuid,
+      title: titleCol >= 0 ? row[titleCol] : "",
+      parentID: parentIdCol >= 0 ? row[parentIdCol] : "",
+      eligible: eligible,
+      reason: !uuid ? "Lineup row has no UUID." : eligible ? "" : `Lineup UUID ${uuid} is not unique.`
+    });
+  });
+  const idMap = ctx.getMap("ID_LOG") || {};
+  const idLogSheet = Engine.getSheetByRole(ctx, "ID_LOG");
+  const canSnapshot = !!idLogSheet &&
+    Engine.getColumnIndex(idMap, "UniqueID") >= 0 &&
+    Engine.getColumnIndex(idMap, "SheetLocation") >= 0 &&
+    (Engine.getColumnIndex(idMap, "Fingerprint") >= 0 || Engine.getColumnIndex(idMap, "SyncHash") >= 0);
+  if (!canSnapshot) {
+    candidates.forEach(candidate => {
+      if (candidate.eligible) {
+        candidate.eligible = false;
+        candidate.reason = "idLog must map UniqueID, SheetLocation, and Fingerprint (or legacy SyncHash) to retain a pre-delete snapshot.";
+      }
+    });
+  }
+  return { role: role, sheet: sheet, map: map, candidates: candidates };
+};
+
+Engine.Ingest.previewLineupDeletePending = function(ctx) {
+  const report = this._lineupDeletePendingCandidates(ctx);
+  const eligible = report.candidates.filter(item => item.eligible).length;
+  const result = {
+    eligible: eligible,
+    blocked: report.candidates.length - eligible,
+    candidates: report.candidates
+  };
+  Engine.Log.write(ctx, {
+    stage: "INGEST",
+    sheetName: report.sheet.getName(),
+    type: "DELETE_PENDING_PREVIEW",
+    details: JSON.stringify(result)
+  });
+  return result;
+};
+
+Engine.Ingest.createLineupDeletionCleanupDecision = function(ctx, role, sheet, candidate) {
+  const season = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase();
+  const logRole = season === "DRAFT" ? "DRAFTCAL" : "CREWCAL";
+  const logSheet = Engine.getSheetByRole(ctx, logRole);
+  const logMap = ctx.getMap(logRole);
+  if (!logSheet || !logMap) {
+    Engine.Log.warn(ctx, "INGEST", `Cannot create calendar cleanup review for ${candidate.uuid}: ${logRole} sheet/map is missing.`);
+    return false;
+  }
+
+  const uuidCol = Engine.getColumnIndex(logMap, "UUID");
+  const sourceCol = Engine.getColumnIndex(logMap, "Source");
+  const titleCol = Engine.getColumnIndex(logMap, "Title");
+  const eventIdCol = Engine.getColumnIndex(logMap, "EventID");
+  if (uuidCol < 0) {
+    Engine.Log.warn(ctx, "INGEST", `Cannot create calendar cleanup review for ${candidate.uuid}: ${logRole}.UUID is not mapped.`);
+    return false;
+  }
+
+  const matches = logSheet.getDataRange().getValues()
+    .map((row, index) => ({ row: row, rowNumber: index + 1 }))
+    .filter(item => item.rowNumber > 1 &&
+      String(item.row[uuidCol] || "").trim() === candidate.uuid &&
+      (sourceCol < 0 || String(item.row[sourceCol] || "").trim() === "Lineup"));
+  if (!matches.length) {
+    Engine.Log.write(ctx, {
+      stage: "INGEST",
+      sheetName: sheet.getName(),
+      id: candidate.uuid,
+      type: "LINEUP_DELETE_NO_CALENDAR_LOG",
+      details: `Lineup row was deleted; no linked ${logRole} row requires a cleanup decision.`
+    });
+    return false;
+  }
+  if (matches.length !== 1) {
+    Engine.Log.warn(ctx, "INGEST", `Cannot create calendar cleanup review for ${candidate.uuid}: found ${matches.length} matching ${logRole} rows.`);
+    return false;
+  }
+
+  if (!Engine.Decisions || typeof Engine.Decisions.addPending !== "function") {
+    throw new Error("Decision engine is unavailable; cannot queue the calendar cleanup review.");
+  }
+  const match = matches[0];
+  const eventID = eventIdCol >= 0 ? String(match.row[eventIdCol] || "").trim() : "";
+  const canMarkCalendarDelete = logRole === "CREWCAL" && !!eventID;
+  const suggestedAction = "KEEP_CALENDAR";
+  const reviewID = Engine.Decisions.stableReviewID(
+    "LINEUP_DELETE_CLEANUP",
+    candidate.uuid,
+    candidate.uuid,
+    `${logRole}|${eventID}`
+  );
+  return Engine.Decisions.addPending(ctx, {
+    ReviewID: reviewID,
+    ReviewType: "LINEUP_DELETE_CLEANUP",
+    SourceSheet: sheet.getName(),
+    SourceID: candidate.uuid,
+    CandidateSheet: logSheet.getName(),
+    CandidateRow: match.rowNumber,
+    CandidateID: candidate.uuid,
+    CandidateTitle: titleCol >= 0 ? match.row[titleCol] : candidate.title,
+    VenueEventID: eventID,
+    Evidence: `Lineup row ${candidate.uuid} was deleted. Linked ${logRole} row ${match.rowNumber} remains${eventID ? ` with EventID ${eventID}` : " without an EventID"}.`,
+    SuggestedAction: suggestedAction,
+    SuggestionReason: canMarkCalendarDelete
+      ? "Default is to keep calendar data unchanged. A reviewer may choose MARK_CALENDAR_DELETE to mark the log row for the normal, permission-gated calendar sync."
+      : logRole !== "CREWCAL"
+        ? `This ${logRole} is a staging log; choose KEEP_CALENDAR. Calendar-event deletion is not available through the current sync path.`
+        : "The linked CREWCAL row has no EventID; choose KEEP_CALENDAR because there is no calendar event to delete.",
+    Decision: "PENDING"
+  });
+};
+
+Engine.Ingest.applyLineupCalendarCleanup = function(ctx, decision, action) {
+  if (String(decision.ReviewType || "") !== "LINEUP_DELETE_CLEANUP") {
+    throw new Error("Calendar cleanup actions are only supported for LINEUP_DELETE_CLEANUP reviews.");
+  }
+  if (action === "KEEP_CALENDAR") {
+    return "Calendar log and event retained per reviewer decision.";
+  }
+  if (action !== "MARK_CALENDAR_DELETE") {
+    throw new Error(`Unsupported Lineup calendar cleanup action: ${action}`);
+  }
+
+  const season = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase();
+  const role = season === "DRAFT" ? "DRAFTCAL" : "CREWCAL";
+  const sheet = Engine.getSheetByRole(ctx, role);
+  const map = ctx.getMap(role);
+  if (role !== "CREWCAL") {
+    throw new Error("Calendar-event deletion is currently supported only for CREWCAL; DRAFTCAL is a staging log.");
+  }
+  if (!sheet || !map || sheet.getName() !== String(decision.CandidateSheet || "")) {
+    throw new Error(`Calendar cleanup target does not match active role ${role}.`);
+  }
+  const uuidCol = Engine.getColumnIndex(map, "UUID");
+  const sourceCol = Engine.getColumnIndex(map, "Source");
+  const statusCol = Engine.getColumnIndex(map, "SyncStatus");
+  const eventIdCol = Engine.getColumnIndex(map, "EventID");
+  const uuid = String(decision.CandidateID || "").trim();
+  if (!uuid || uuidCol < 0 || statusCol < 0 || eventIdCol < 0) {
+    throw new Error(`${role} must map UUID, SyncStatus, and EventID for calendar cleanup.`);
+  }
+
+  const matches = sheet.getDataRange().getValues()
+    .map((row, index) => ({ row: row, rowNumber: index + 1 }))
+    .filter(item => item.rowNumber > 1 &&
+      String(item.row[uuidCol] || "").trim() === uuid &&
+      (sourceCol < 0 || String(item.row[sourceCol] || "").trim() === "Lineup"));
+  if (matches.length !== 1) {
+    throw new Error(`Expected one linked ${role} row for ${uuid}; found ${matches.length}.`);
+  }
+  const match = matches[0];
+  if (!String(match.row[eventIdCol] || "").trim()) {
+    throw new Error(`Linked ${role} row for ${uuid} has no EventID to delete.`);
+  }
+  Engine.Status.apply(ctx, role, match.rowNumber, "To Delete on calendar", {
+    stage: "DECISION",
+    id: uuid,
+    details: `Marked for calendar-event deletion after Lineup row deletion (review ${decision.ReviewID}).`
+  });
+  Engine.Log.write(ctx, {
+    stage: "DECISION",
+    sheetName: sheet.getName(),
+    rowIdx: match.rowNumber,
+    id: uuid,
+    type: "CALENDAR_DELETE_MARKED",
+    details: "Calendar event marked for deletion by the permission-gated calendar sync; calendar-log row retained."
+  });
+  return `Marked ${uuid} in ${sheet.getName()} as To Delete on calendar; the log row remains for the normal calendar sync.`;
+};
+
+Engine.Ingest.applyLineupDeletePending = function(ctx, role, sheet, map) {
+  const report = this._lineupDeletePendingCandidates(ctx, role, sheet, map);
+  const candidates = report.candidates.slice().sort((a, b) => b.rowNumber - a.rowNumber);
+  if (candidates.some(candidate => candidate.eligible)) {
+    if (!Engine.Decisions || typeof Engine.Decisions.ensureSchema !== "function") {
+      throw new Error("Decision engine is unavailable; refusing Lineup deletion without a calendar cleanup review path.");
+    }
+    Engine.Decisions.ensureSchema(ctx);
+  }
+  let deleted = 0;
+  let blocked = 0;
+  candidates.forEach(candidate => {
+    if (!candidate.eligible) {
+      blocked++;
+      Engine.Log.write(ctx, {
+        stage: "INGEST",
+        sheetName: report.sheet.getName(),
+        rowIdx: candidate.rowNumber,
+        id: candidate.uuid,
+        type: "DELETE_PENDING_BLOCKED",
+        details: candidate.reason
+      });
+      return;
+    }
+    const details = `[LINEUP_DELETE_SNAPSHOT] [LINEUP_DELETE_PENDING] Lineup row deleted per user status Delete Pending. ${candidate.title || ""}`.trim();
+    this._snapshotAndDeleteLineupRow(ctx, {
+      role: report.role,
+      sheet: report.sheet,
+      map: report.map,
+      rowNumber: candidate.rowNumber,
+      uuid: candidate.uuid,
+      title: candidate.title,
+      parentID: candidate.parentID,
+      requiredStatus: "Delete Pending",
+      stage: "INGEST",
+      logType: "DELETE_PENDING_APPLIED",
+      details: details
+    });
+    this.createLineupDeletionCleanupDecision(ctx, report.role, report.sheet, candidate);
+    deleted++;
+  });
+  if (deleted) {
+    Engine.IDService.syncAll(ctx);
+    ctx.registry = Engine.IDService.loadRegistry(ctx);
+  }
+  if (candidates.length) {
+    Engine.Log.write(ctx, {
+      stage: "INGEST",
+      sheetName: report.sheet.getName(),
+      type: "DELETE_PENDING_SUMMARY",
+      details: `${deleted} Lineup Delete Pending row(s) deleted; ${blocked} blocked.`
+    });
+  }
+  return { deleted: deleted, blocked: blocked };
+};
+
+Engine.Ingest.previewLineupOrphanDeletion = function(ctx, decision) {
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const lMap = ctx.getMap(lRole);
+  const pMap = ctx.getMap(pRole);
+  if (!lSheet || !pSheet || !lMap || !pMap) {
+    return { eligible: false, reason: "Active Parent or Lineup sheet/map is missing." };
+  }
+  if (String(decision.ReviewType || "") !== "LINEUP_ORPHAN") {
+    return { eligible: false, reason: "MARK_DELETE is only supported for LINEUP_ORPHAN reviews." };
+  }
+  if (String(decision.CandidateSheet || "") !== lSheet.getName()) {
+    return { eligible: false, reason: "Decision does not target the active season's Lineup sheet." };
+  }
+
+  const uuid = String(decision.CandidateID || "").trim();
+  const uuidCol = Engine.getColumnIndex(lMap, "UUID");
+  const parentIdCol = Engine.getColumnIndex(lMap, "parentID");
+  const eventNameCol = Engine.getColumnIndex(lMap, "EventName");
+  const parentKeyCol = Engine.getColumnIndex(pMap, "parentID");
+  if (!uuid || uuidCol < 0 || parentIdCol < 0 || parentKeyCol < 0) {
+    return { eligible: false, reason: "Decision UUID or identity fields are missing." };
+  }
+
+  const matchingRows = lSheet.getDataRange().getValues()
+    .map((row, index) => ({ row, rowNumber: index + 1 }))
+    .filter(item => item.rowNumber > 1 && String(item.row[uuidCol] || "").trim() === uuid);
+  if (matchingRows.length !== 1) {
+    return {
+      eligible: false,
+      reason: matchingRows.length === 0
+        ? `Lineup UUID ${uuid} no longer exists.`
+        : `Lineup UUID ${uuid} is not unique (${matchingRows.length} matching rows).`,
+      uuid: uuid
+    };
+  }
+
+  const match = matchingRows[0];
+  const parentID = String(match.row[parentIdCol] || "").trim();
+  const parentIDs = new Set(pSheet.getDataRange().getValues().slice(1)
+    .map(row => String(row[parentKeyCol] || "").trim())
+    .filter(Boolean));
+  if (!parentID || parentIDs.has(parentID)) {
+    return {
+      eligible: false,
+      reason: `Lineup UUID ${uuid} is no longer an orphan of the active Parent sheet.`,
+      uuid: uuid,
+      rowNumber: match.rowNumber,
+      parentID: parentID,
+      title: eventNameCol >= 0 ? match.row[eventNameCol] : ""
+    };
+  }
+
+  return {
+    eligible: true,
+    uuid: uuid,
+    rowNumber: match.rowNumber,
+    parentID: parentID,
+    title: eventNameCol >= 0 ? match.row[eventNameCol] : ""
+  };
+};
+
+Engine.Ingest.deleteLineupOrphan = function(ctx, decision) {
+  const preview = Engine.Ingest.previewLineupOrphanDeletion(ctx, decision);
+  if (!preview.eligible) throw new Error(preview.reason);
+
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const lSheet = Engine.getSheetByRole(ctx, lRole);
+  const lMap = ctx.getMap(lRole);
+  const details = `[LINEUP_DELETE_SNAPSHOT] Deleting orphan Lineup row "${preview.title}" per reviewed decision ${decision.ReviewID}; complete pre-delete row snapshot saved in idLog.Fingerprint.`;
+  const result = this._snapshotAndDeleteLineupRow(ctx, {
+    role: lRole,
+    sheet: lSheet,
+    map: lMap,
+    rowNumber: preview.rowNumber,
+    uuid: preview.uuid,
+    title: preview.title,
+    parentID: preview.parentID,
+    stage: "DECISION",
+    logType: "ROW_DELETE_APPROVED",
+    details: details
+  });
+  Engine.IDService.syncAll(ctx);
+  this.createLineupDeletionCleanupDecision(ctx, lRole, lSheet, {
+    uuid: preview.uuid,
+    title: preview.title,
+    rowNumber: preview.rowNumber
+  });
+  return result;
+};
+
+function previewLineupDeletePending() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Preview Lineup Delete Pending");
+  return Engine.Ingest.previewLineupDeletePending(ctx);
+}
 
 Engine.Ingest.syncLineupToLog = function(ctx, options) {
   options = options || {};
@@ -1184,6 +1651,9 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   if (changedRows.length > 0) {
     patchRows(targetRole, changedRows, ctx);
   }
+
+  Engine.IO.sortLogByDate(ctx, targetRole);
+  Engine.IDService.syncAll(ctx);
 
   Engine.Log.write(ctx, {
     stage: "INGEST",

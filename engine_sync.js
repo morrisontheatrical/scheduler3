@@ -29,28 +29,8 @@ Engine.Sync = {
       details: `Starting sync in mode: ${activeMode} (SyncMode: ${syncMode})`
     });
   
-    // 3. LOAD REGISTRY into Context (Crucial for Drift Detection)
-    // This builds a map of { sourceID: { SyncHash, Location } }
-    ctx.registry = {};
-    const regData = ctx.sheets.ID_LOG.getDataRange().getValues();
-    const uniqueIdCol = ctx.getCol("ID_LOG", "UniqueID");
-    const syncHashCol = ctx.getCol("ID_LOG", "Fingerprint") >= 0
-      ? ctx.getCol("ID_LOG", "Fingerprint")
-      : ctx.getCol("ID_LOG", "SyncHash");
-    const sheetLocationCol = ctx.getCol("ID_LOG", "SheetLocation");
-    const mergedIdsCol = ctx.getCol("ID_LOG", "MergedIDs") >= 0
-      ? ctx.getCol("ID_LOG", "MergedIDs")
-      : ctx.getCol("ID_LOG", "Merged IDs");
-    for (let i = 1; i < regData.length; i++) {
-      const sId = regData[i][uniqueIdCol];
-      if (sId) {
-        ctx.registry[sId] = {
-          SyncHash: syncHashCol >= 0 ? regData[i][syncHashCol] : "N/A",
-          Location: sheetLocationCol >= 0 ? regData[i][sheetLocationCol] : "N/A",
-          MergedIDs: mergedIdsCol >= 0 ? regData[i][mergedIdsCol] : ""
-        };
-      }
-    }
+    // Reload after decision application, which may have changed identity rows.
+    ctx.registry = Engine.IDService.loadRegistry(ctx);
 
     Engine.Log.write(ctx, { stage: "SYNC_START", details: "Initiating Master Sync" });
 
@@ -148,6 +128,8 @@ Engine.Sync = {
       
       // batchWrite handles the rest
       batchWrite(role, allVenueEvents, ctx);
+      Engine.IO.sortLogByDate(ctx, role);
+      Engine.IDService.syncAll(ctx);
       Engine.Log.info(ctx, "PULL", `Successfully mirrored ${allVenueEvents.length} events.`);
     } else {
       // Surface the zero-result case instead of failing silently.
@@ -406,16 +388,18 @@ Engine.Sync = {
 
   // Save changes (Status, EventIDs, Hashes) back to the sheet
   patchRows(role, crewEvents, ctx);
+  Engine.IO.sortLogByDate(ctx, role);
+  Engine.IDService.syncAll(ctx);
 },
 
   /**
-   * COMPARE: Reads the live "Draft" calendar and checks each Crew_Calendar_Log row
+   * COMPARE: Reads the live "Draft" calendar and checks each Draft_Season_Log row
    * against it. Updates SyncStatus/LastSynced per row and logs any events found on
    * the calendar that have no matching row in the log (orphans).
    * Read-only against the calendar; only the log sheet is updated.
    */
   compareDraftCalendar: function(ctx) {
-    const role = "CREWCAL";
+    const role = "DRAFTCAL";
     const targetCalId = this._getCrewDraftCalendarId(ctx);
     if (!targetCalId) {
       Engine.Log.error(ctx, "PULL_DRAFT", "No Target Calendar ID found in ControlPanel or the Calendars sheet.");
@@ -518,19 +502,21 @@ Engine.Sync = {
           stage: "PULL_DRAFT",
           type: "DUPLICATE_EVENT",
           ...linkContext,
-          details: `${group.ids.length} events on Draft 26-27 for "${group.title}" at ${group.start}. ${crewRow ? "A Crew_Calendar_Log row exists at this title/start." : "No unique Crew_Calendar_Log match exists."} IDs: ${group.ids.join(", ")}.`
+          details: `${group.ids.length} events on Draft 26-27 for "${group.title}" at ${group.start}. ${crewRow ? "A Draft_Season_Log row exists at this title/start." : "No unique Draft_Season_Log match exists."} IDs: ${group.ids.join(", ")}.`
         });
       } else {
         Engine.Log.write(ctx, {
           stage: "PULL_DRAFT",
           type: "ORPHAN_EVENT",
           ...linkContext,
-          details: `Event on Draft 26-27: "${group.title}" at ${group.start}. ${crewRow ? "A Crew_Calendar_Log row exists at this title/start." : "No unique Crew_Calendar_Log match exists."} Event ID: ${group.ids[0]}.`
+          details: `Event on Draft 26-27: "${group.title}" at ${group.start}. ${crewRow ? "A Draft_Season_Log row exists at this title/start." : "No unique Draft_Season_Log match exists."} Event ID: ${group.ids[0]}.`
         });
       }
     });
 
     patchRows(role, crewEvents, ctx);
+    Engine.IO.sortLogByDate(ctx, role);
+    Engine.IDService.syncAll(ctx);
     Engine.Log.write(ctx, {
       stage: "PULL_DRAFT",
       type: "PULL_DRAFT_COMPLETE",

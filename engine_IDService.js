@@ -15,6 +15,7 @@ Engine.IDService = {
     const fingerprintCol = ctx.getCol("ID_LOG", "Fingerprint") >= 0
       ? ctx.getCol("ID_LOG", "Fingerprint")
       : ctx.getCol("ID_LOG", "SyncHash");
+    if (uniqueIdCol < 0) throw new Error("idLog UniqueID field is not mapped.");
     
     // Search for existing ID
     let rowIdx = -1;
@@ -35,7 +36,7 @@ Engine.IDService = {
       if (ctx.getCol("ID_LOG", "RecordType") >= 0) newRow[ctx.getCol("ID_LOG", "RecordType")] = entry.type;
       if (ctx.getCol("ID_LOG", "Title") >= 0) newRow[ctx.getCol("ID_LOG", "Title")] = entry.title;
       if (ctx.getCol("ID_LOG", "ParentID") >= 0) newRow[ctx.getCol("ID_LOG", "ParentID")] = entry.parentId || "N/A";
-      if (fingerprintCol >= 0) newRow[fingerprintCol] = entry.hash || entry.fingerprint || "N/A";
+      if (fingerprintCol >= 0 && entry.fingerprint) newRow[fingerprintCol] = entry.fingerprint;
       if (ctx.getCol("ID_LOG", "SheetLocation") >= 0) newRow[ctx.getCol("ID_LOG", "SheetLocation")] = entry.location || "N/A";
       if (ctx.getCol("ID_LOG", "SyncStatus") >= 0) newRow[ctx.getCol("ID_LOG", "SyncStatus")] = entry.status || "Active";
       if (ctx.getCol("ID_LOG", "Timestamp") >= 0) newRow[ctx.getCol("ID_LOG", "Timestamp")] = now;
@@ -52,11 +53,70 @@ Engine.IDService = {
       const locCol = ctx.getCol("ID_LOG", "SheetLocation");
       const updatedCol = ctx.getCol("ID_LOG", "LastUpdated");
       const detailsCol = ctx.getCol("ID_LOG", "LogDetails");
-      if (locCol >= 0) sheet.getRange(rowIdx, locCol + 1).setValue(entry.location);
-      if (fingerprintCol >= 0) sheet.getRange(rowIdx, fingerprintCol + 1).setValue(entry.hash || entry.fingerprint || "N/A");
+      const statusCol = ctx.getCol("ID_LOG", "SyncStatus");
+      const titleCol = ctx.getCol("ID_LOG", "Title");
+      const oldDetails = detailsCol >= 0 ? String(data[rowIdx - 1][detailsCol] || "") : "";
+      let details = entry.details;
+      ["[LINEUP_DELETE_SNAPSHOT]", "[LINEUP_DELETE_PENDING]"].forEach(marker => {
+        if (oldDetails.includes(marker) && !String(details || "").includes(marker)) {
+          details = `${marker} ${details || oldDetails}`;
+        }
+      });
+      if (locCol >= 0 && entry.location !== undefined) sheet.getRange(rowIdx, locCol + 1).setValue(entry.location);
+      if (fingerprintCol >= 0 && entry.fingerprint) sheet.getRange(rowIdx, fingerprintCol + 1).setValue(entry.fingerprint);
       if (updatedCol >= 0) sheet.getRange(rowIdx, updatedCol + 1).setValue(now);
-      if (entry.details && detailsCol >= 0) sheet.getRange(rowIdx, detailsCol + 1).setValue(entry.details);
+      if (statusCol >= 0 && entry.status) sheet.getRange(rowIdx, statusCol + 1).setValue(entry.status);
+      if (titleCol >= 0 && entry.title) sheet.getRange(rowIdx, titleCol + 1).setValue(entry.title);
+      if (details && detailsCol >= 0) sheet.getRange(rowIdx, detailsCol + 1).setValue(details);
+      if (entry.location === "" && uniqueIdCol >= 0) {
+        sheet.getRange(rowIdx, uniqueIdCol + 1).setValue(entry.id);
+      }
     }
+  },
+
+  loadRegistry: function(ctx) {
+    const sheet = ctx.sheets.ID_LOG || ctx.ss.getSheetByName("idLog");
+    if (!sheet) return {};
+    const data = sheet.getDataRange().getValues();
+    const map = ctx.maps.ID_LOG || (ctx.sheetDefs.ID_LOG && ctx.sheetDefs.ID_LOG.map) || {};
+    const idCol = Engine.getColumnIndex(map, "UniqueID");
+    const fingerprintCol = Engine.getColumnIndex(map, "Fingerprint") >= 0
+      ? Engine.getColumnIndex(map, "Fingerprint")
+      : Engine.getColumnIndex(map, "SyncHash");
+    const locationCol = Engine.getColumnIndex(map, "SheetLocation");
+    const statusCol = Engine.getColumnIndex(map, "SyncStatus");
+    const detailsCol = Engine.getColumnIndex(map, "LogDetails");
+    const mergedCol = Engine.getColumnIndex(map, "MergedIDs") >= 0
+      ? Engine.getColumnIndex(map, "MergedIDs")
+      : Engine.getColumnIndex(map, "Merged IDs");
+    if (idCol < 0) throw new Error("idLog UniqueID field is not mapped.");
+
+    const registry = {};
+    data.slice(1).forEach(row => {
+      const id = row[idCol];
+      if (!id) return;
+      const fingerprint = fingerprintCol >= 0 ? String(row[fingerprintCol] || "") : "";
+      let snapshot = null;
+      if (fingerprint.charAt(0) === "{") {
+        try {
+          snapshot = Engine.IO.deserializeRow(fingerprint);
+        } catch (error) {
+          Engine.Log.warn(ctx, "ID_SERVICE", `Could not read Fingerprint snapshot for ${id}: ${error.message}`);
+        }
+      }
+      registry[id] = {
+        SyncHash: snapshot
+          ? (snapshot.SyncHash || "N/A")
+          : (fingerprint || "N/A"),
+        Fingerprint: fingerprint || "N/A",
+        Location: locationCol >= 0 ? row[locationCol] : "",
+        Status: statusCol >= 0 ? row[statusCol] : "",
+        LogDetails: detailsCol >= 0 ? String(row[detailsCol] || "") : "",
+        Snapshot: snapshot,
+        MergedIDs: mergedCol >= 0 ? (row[mergedCol] || "") : ""
+      };
+    });
+    return registry;
   },
   /**
  * BATCH SYNC: Scans all sheets and reconciles with idLog.
@@ -76,6 +136,11 @@ Engine.IDService = {
         ? Engine.getColumnIndex(idLogMap, "Fingerprint")
         : Engine.getColumnIndex(idLogMap, "SyncHash");
       const lastUpdatedCol = Engine.getColumnIndex(idLogMap, "LastUpdated");
+      const registryStatusCol = Engine.getColumnIndex(idLogMap, "SyncStatus");
+      const registryDetailsCol = Engine.getColumnIndex(idLogMap, "LogDetails");
+      if (uniqueIdCol < 0 || fingerprintCol < 0 || sheetLocationCol < 0) {
+        throw new Error("idLog must map UniqueID, Fingerprint, and SheetLocation before registry sync.");
+      }
       for (let i = 1; i < registryData.length; i++) {
         const id = registryData[i][uniqueIdCol];
         if (id) registry.set(id, { rowIdx: i + 1, data: registryData[i] });
@@ -105,29 +170,43 @@ Engine.IDService = {
           const id = row[Engine.getColumnIndex(sheetMap, idKey)];
           if (!id || id === "" || id === "N/A") continue;
 
-          const location = `${sheetName}!R${i + 1}`;
-          const hashCol = Engine.getColumnIndex(sheetMap, "SyncHash");
+          const location = `${sheet.getName()}!R${i + 1}`;
           const titleCol = Engine.getColumnIndex(sheetMap, "Title");
           const eventNameCol = Engine.getColumnIndex(sheetMap, "EventName");
           const parentIdCol = Engine.getColumnIndex(sheetMap, "ParentID") >= 0
             ? Engine.getColumnIndex(sheetMap, "ParentID")
             : Engine.getColumnIndex(sheetMap, "parentID");
-          const hash = hashCol >= 0 ? row[hashCol] : "N/A";
           const title = titleCol >= 0 ? row[titleCol] : eventNameCol >= 0 ? row[eventNameCol] : (row[0] || "No Title");
           const parentId = parentIdCol >= 0 ? row[parentIdCol] : "";
+          const rowObject = {};
+          Object.keys(sheetMap).forEach(field => {
+            const column = Engine.getColumnIndex(sheetMap, field);
+            if (column >= 0) rowObject[field] = row[column];
+          });
+          const fingerprint = Engine.IO.serializeRow(rowObject);
 
           if (registry.has(id)) {
-            // UPDATE: Check if location or hash drifted
+            // Keep the row snapshot and source location current, including after log sorting.
             const existing = registry.get(id);
             const oldLoc = existing.data[sheetLocationCol];
-            const oldHash = existing.data[fingerprintCol];
-
-            // Keep a real source location; idLog!R... is registry self-location, never source metadata.
-            const replaceLocation = !oldLoc || String(oldLoc).indexOf("idLog!R") === 0;
-            if (replaceLocation || (fingerprintCol >= 0 && oldHash !== hash)) {
-              if (replaceLocation) idLogSheet.getRange(existing.rowIdx, sheetLocationCol + 1).setValue(location);
-              if (fingerprintCol >= 0) idLogSheet.getRange(existing.rowIdx, fingerprintCol + 1).setValue(hash);
-              idLogSheet.getRange(existing.rowIdx, lastUpdatedCol + 1).setValue(now);
+            const oldFingerprint = fingerprintCol >= 0 ? existing.data[fingerprintCol] : "";
+            const preservesLineupTombstone =
+              registryStatusCol >= 0 &&
+              String(existing.data[registryStatusCol] || "").trim().toUpperCase() === "DELETED" &&
+              registryDetailsCol >= 0 &&
+              String(existing.data[registryDetailsCol] || "").includes("[LINEUP_DELETE_SNAPSHOT]");
+            if (oldLoc !== location || (!preservesLineupTombstone && oldFingerprint !== fingerprint)) {
+              if (sheetLocationCol >= 0) idLogSheet.getRange(existing.rowIdx, sheetLocationCol + 1).setValue(location);
+              if (fingerprintCol >= 0 && !preservesLineupTombstone) {
+                idLogSheet.getRange(existing.rowIdx, fingerprintCol + 1).setValue(fingerprint);
+              }
+              if (lastUpdatedCol >= 0) idLogSheet.getRange(existing.rowIdx, lastUpdatedCol + 1).setValue(now);
+              const recordTypeCol = Engine.getColumnIndex(idLogMap, "RecordType");
+              const titleIdCol = Engine.getColumnIndex(idLogMap, "Title");
+              const parentIdLogCol = Engine.getColumnIndex(idLogMap, "ParentID");
+              if (recordTypeCol >= 0) idLogSheet.getRange(existing.rowIdx, recordTypeCol + 1).setValue(role);
+              if (titleIdCol >= 0) idLogSheet.getRange(existing.rowIdx, titleIdCol + 1).setValue(title);
+              if (parentIdLogCol >= 0) idLogSheet.getRange(existing.rowIdx, parentIdLogCol + 1).setValue(parentId);
             }
           } else {
             // REGISTER: Queue new entry
@@ -139,7 +218,7 @@ Engine.IDService = {
             if (Engine.getColumnIndex(idLogMap, "RecordType") >= 0) entry[Engine.getColumnIndex(idLogMap, "RecordType")] = role;
             if (Engine.getColumnIndex(idLogMap, "Title") >= 0) entry[Engine.getColumnIndex(idLogMap, "Title")] = title;
             if (Engine.getColumnIndex(idLogMap, "ParentID") >= 0) entry[Engine.getColumnIndex(idLogMap, "ParentID")] = parentId;
-            if (fingerprintCol >= 0) entry[fingerprintCol] = hash;
+            if (fingerprintCol >= 0) entry[fingerprintCol] = fingerprint;
             if (sheetLocationCol >= 0) entry[sheetLocationCol] = location;
             if (Engine.getColumnIndex(idLogMap, "SyncStatus") >= 0) entry[Engine.getColumnIndex(idLogMap, "SyncStatus")] = "Active";
             if (Engine.getColumnIndex(idLogMap, "Timestamp") >= 0) entry[Engine.getColumnIndex(idLogMap, "Timestamp")] = now;
@@ -212,6 +291,8 @@ Engine.IDService = {
             linkedCount++;
           }
         }
+      } else if (uniqueId) {
+        idLogSheet.getRange(rowNum, uniqueIdCol + 1).setValue(uniqueId);
       }
 
       // 2. Link ParentID to Parent Lineup if available

@@ -5,23 +5,83 @@ Engine.IO = Engine.IO || {};
  * Serializes a row object into a JSON string for snapshotting/auditing.
  */
 Engine.IO.serializeRow = function(obj) {
-  if (!obj || typeof obj !== "object") return "";
-  // Remove internal properties like _rowNum before serializing
-  const { _rowNum, ...serializable } = obj;
-  return JSON.stringify(serializable);
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new TypeError("serializeRow expects a row object.");
+  }
+
+  const encode = value => {
+    if (value instanceof Date) {
+      if (isNaN(value.getTime())) throw new TypeError("Cannot serialize an invalid Date.");
+      return { __scheduler3Type: "Date", value: value.toISOString() };
+    }
+    if (Array.isArray(value)) return value.map(encode);
+    if (value && typeof value === "object") {
+      const result = {};
+      Object.keys(value).forEach(key => { result[key] = encode(value[key]); });
+      return result;
+    }
+    return value;
+  };
+
+  const serializable = {};
+  Object.keys(obj).forEach(key => {
+    if (key !== "_rowNum") serializable[key] = obj[key];
+  });
+  return JSON.stringify(encode(serializable));
 };
 
 /**
  * Deserializes a JSON string back into a row object.
  */
 Engine.IO.deserializeRow = function(jsonString, rowNum) {
-  if (!jsonString) return null;
-  try {
-    const obj = JSON.parse(jsonString);
-    return rowNum !== undefined ? { ...obj, _rowNum: rowNum } : obj;
-  } catch (e) {
-    return null;
+  if (typeof jsonString !== "string" || !jsonString.trim()) {
+    throw new TypeError("deserializeRow expects a non-empty JSON string.");
   }
+  if (rowNum !== undefined && (!Number.isInteger(rowNum) || rowNum < 1)) {
+    throw new RangeError("deserializeRow rowNum must be a positive integer.");
+  }
+
+  const decode = value => {
+    if (Array.isArray(value)) return value.map(decode);
+    if (value && typeof value === "object") {
+      if (value.__scheduler3Type === "Date" && typeof value.value === "string") {
+        const date = new Date(value.value);
+        if (isNaN(date.getTime())) throw new TypeError(`Invalid serialized Date: ${value.value}`);
+        return date;
+      }
+      const result = {};
+      Object.keys(value).forEach(key => { result[key] = decode(value[key]); });
+      return result;
+    }
+    return value;
+  };
+
+  const obj = decode(JSON.parse(jsonString));
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    throw new TypeError("deserializeRow JSON must describe a row object.");
+  }
+  return rowNum !== undefined ? { ...obj, _rowNum: rowNum } : obj;
+};
+
+Engine.IO.sortLogByDate = function(ctx, role) {
+  const sheet = Engine.getSheetByRole(ctx, role);
+  const map = ctx.getMap(role);
+  if (!sheet || !map) throw new Error(`Cannot sort calendar log: sheet or map missing for role "${role}".`);
+  const dateCol = Engine.getColumnIndex(map, "Date");
+  const startCol = Engine.getColumnIndex(map, "Start");
+  if (dateCol < 0) throw new Error(`Cannot sort calendar log role "${role}": Date field is not mapped.`);
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 3 || lastCol < 1) return 0;
+
+  const sortSpecs = [{ column: dateCol + 1, ascending: true }];
+  if (startCol >= 0 && startCol !== dateCol) {
+    sortSpecs.push({ column: startCol + 1, ascending: true });
+  }
+  sheet.getRange(2, 1, lastRow - 1, lastCol).sort(sortSpecs);
+  Engine.Log.info(ctx, "SORT", `Sorted ${role} by Date${startCol >= 0 && startCol !== dateCol ? " and Start" : ""}.`);
+  return lastRow - 1;
 };
 
 /**

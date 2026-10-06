@@ -269,6 +269,33 @@ Engine.Decisions = {
 
     this.pending(ctx).forEach(decision => {
       const reviewType = String(decision.ReviewType || "");
+      if (reviewType === "LINEUP_DELETE_CLEANUP") {
+        const sheetName = String(decision.CandidateSheet || "");
+        const cleanupSheet = sheetName ? ctx.ss.getSheetByName(sheetName) : null;
+        const cleanupMap = sheetName ? ctx.getMap(sheetName) : null;
+        const uuidCol = Engine.getColumnIndex(cleanupMap, "UUID");
+        const sourceCol = Engine.getColumnIndex(cleanupMap, "Source");
+        const matches = cleanupSheet && uuidCol >= 0
+          ? cleanupSheet.getDataRange().getValues()
+            .map((row, index) => ({ row: row, rowNumber: index + 1 }))
+            .filter(item => item.rowNumber > 1 &&
+              String(item.row[uuidCol] || "").trim() === String(decision.CandidateID || "").trim() &&
+              (sourceCol < 0 || String(item.row[sourceCol] || "").trim() === "Lineup"))
+          : [];
+        if (matches.length === 1) {
+          const match = matches[0];
+          table.sheet.getRange(decision._rowNumber, candidateRowCol + 1).setValue(match.rowNumber);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateIdCol, sheetName, match.rowNumber, decision.CandidateID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateTitleCol, sheetName, match.rowNumber, decision.CandidateTitle);
+          linked++;
+        } else {
+          if (candidateRowCol >= 0) table.sheet.getRange(decision._rowNumber, candidateRowCol + 1).clearContent();
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateIdCol, sheetName, null, decision.CandidateID);
+          this._setLinkedValue(ctx, table.sheet, decision._rowNumber, candidateTitleCol, sheetName, null, decision.CandidateTitle);
+          cleared++;
+        }
+        return;
+      }
       const isParentDuplicate = reviewType === "PARENT_DUPLICATE";
       const isParentLineupCandidate = [parentSheetName, "Parent Lineup"].includes(String(decision.CandidateSheet || ""));
       if (!isParentDuplicate && !isParentLineupCandidate) return;
@@ -432,6 +459,32 @@ Engine.Decisions = {
     return { stamped: stamped };
   },
 
+  previewApprovedDeletes: function(ctx) {
+    const candidates = this.pending(ctx)
+      .filter(decision =>
+        String(decision.Decision || "").trim().toUpperCase() === "ACCEPT" &&
+        String(decision.RequestedAction || "").trim().toUpperCase() === "MARK_DELETE"
+      )
+      .map(decision => {
+        const target = Engine.Ingest.previewLineupOrphanDeletion(ctx, decision);
+        return {
+          reviewID: decision.ReviewID,
+          uuid: target.uuid || decision.CandidateID || "",
+          title: target.title || decision.CandidateTitle || "",
+          rowNumber: target.rowNumber || "",
+          eligible: target.eligible,
+          reason: target.reason || ""
+        };
+      });
+    const eligible = candidates.filter(candidate => candidate.eligible).length;
+    Engine.Log.write(ctx, {
+      stage: "DECISION",
+      type: "DELETE_PREVIEW",
+      details: JSON.stringify({ eligible: eligible, blocked: candidates.length - eligible, candidates: candidates })
+    });
+    return { eligible: eligible, blocked: candidates.length - eligible, candidates: candidates };
+  },
+
   applyPending: function(ctx) {
     const table = this.ensureSchema(ctx);
     this.stampManualReviews(ctx);
@@ -481,7 +534,7 @@ Engine.Decisions = {
             results.skipped++;
             return;
           }
-        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "MARK_DELETE", "REVIEW_DATE_SPAN"].includes(action)) {
+        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
@@ -500,6 +553,16 @@ Engine.Decisions = {
           if (!keepID || !duplicateID) throw new Error("MERGE_PARENT requires KeepParentID and DuplicateParentID");
           const mergeResult = Engine.Ingest.mergeParentDuplicate(ctx, keepID, duplicateID);
           actionDetails = `Merged ${duplicateID} into ${keepID}; copied ${mergeResult.copiedFields.join(", ") || "no"} source fields`;
+        } else if (["KEEP_CALENDAR", "MARK_CALENDAR_DELETE"].includes(action)) {
+          if (userDecision !== "ACCEPT") throw new Error(`${action} requires Decision=ACCEPT`);
+          if (!Engine.Ingest || typeof Engine.Ingest.applyLineupCalendarCleanup !== "function") {
+            throw new Error("Lineup calendar cleanup handler is unavailable.");
+          }
+          actionDetails = Engine.Ingest.applyLineupCalendarCleanup(ctx, decision, action);
+        } else if (action === "MARK_DELETE") {
+          if (userDecision !== "ACCEPT") throw new Error("MARK_DELETE requires Decision=ACCEPT");
+          const deleted = Engine.Ingest.deleteLineupOrphan(ctx, decision);
+          actionDetails = `Deleted orphan Lineup row ${deleted.uuid} ("${deleted.title}") after saving its row snapshot in idLog.Fingerprint.`;
         } else if (action === "SYNC_PARENT_TO_LINEUP") {
           if (!["ACCEPT", "SYNC"].includes(userDecision)) throw new Error("SYNC_PARENT_TO_LINEUP requires Decision=ACCEPT");
           const lRole = Engine.Roles.resolve(ctx, "LINEUP");
@@ -579,6 +642,19 @@ function applyPendingDecisions() {
   Engine.Log.command(ctx, "Apply Reviewed Decisions");
   const results = Engine.Decisions.applyPending(ctx);
   Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Apply Reviewed Decisions", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+function previewApprovedDeletes() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Preview Approved Deletes");
+  const results = Engine.Decisions.previewApprovedDeletes(ctx);
+  Engine.Log.write(ctx, {
+    stage: "USER_COMMAND",
+    id: "Preview Approved Deletes",
+    type: "COMMAND_COMPLETE",
+    details: JSON.stringify({ eligible: results.eligible, blocked: results.blocked })
+  });
   return results;
 }
 

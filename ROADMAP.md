@@ -26,8 +26,9 @@
   — done: `Bypassed` blocks via status behavior; `Delete Pending` is applied in `goParent`; `Possible Duplicate` is handled by verify.
   - see parent https://github.com/morrisontheatrical/scheduler3/issues/9
 
-6. Create/Revise a method to compress whole rows/events into a single "snapshot" cell, and back into "row". It should be able to easily be parsed for comparison. Check fingerprint/hashing functions first. This way a removed duplicate can have its fields saved in the audit_log or idLog before merge/deletion 
-  - in progress https://github.com/morrisontheatrical/scheduler3/issues/8
+6. ~~Serialize and deserialize row snapshots for recovery and comparison.~~
+  - `Engine.IO.serializeRow()` / `deserializeRow()` now preserve Dates, and `idLog.Fingerprint` stores full row snapshots; merge/delete paths save the row before removal.
+  - implementation addresses [#8](https://github.com/morrisontheatrical/scheduler3/issues/8); broader helper integration remains tracked under [#18](https://github.com/morrisontheatrical/scheduler3/issues/18). Manual Apps Script verification remains.
 
 7. Normalize `Status`, `ref`, behavior values, decisions, and requested actions. --done? Status and Mode_Config could likely use another pass
   - see parent https://github.com/morrisontheatrical/scheduler3/issues/9
@@ -91,9 +92,8 @@
   - Normalize Branch
   - see agent-notes/normalizeTitle-0829.md
 
-25. Wire `idLog.Fingerprint` to `Engine.IO.serializeRow()` as the intended full-row JSON snapshot mechanism (item 6 above). **Decision confirmed**: `Fingerprint` (JSON snapshot on `idLog`) and `SyncHash` (compact hash on data sheets) remain two distinct mechanisms. `Fingerprint` captures complete row state for recovery/audit; `SyncHash` is a fast drift-detection hash of key identity fields.
-  - see https://github.com/morrisontheatrical/scheduler3/issues/18
-  - see https://github.com/morrisontheatrical/scheduler3/issues/8
+25. ~~Wire `idLog.Fingerprint` to `Engine.IO.serializeRow()` as a full-row JSON snapshot, distinct from operational `SyncHash`.~~
+  - implemented in `Engine.IDService`; legacy compact Fingerprint values are upgraded on registry sync. See [#8](https://github.com/morrisontheatrical/scheduler3/issues/8); wider JSON helper integration remains under [#18](https://github.com/morrisontheatrical/scheduler3/issues/18).
 
 
 26. Add a `Dept` column to `Calls` to match the existing `Lookup.Dept` dropdown list (Lights, Sound, Props, Scenic, Costumes, Video, etc.) — the list currently has no destination field to populate.
@@ -119,7 +119,7 @@
   - see 
 
 33. Sync ID Registry Error (Issue #28): Open range exception bug caused by `SyncHash` vs. `Fingerprint` column lookup mismatch in `Engine.IDService.syncAll()` and `upsert()`.
-  - in progress — `engine_IDService.js` and `engine_sync.js` now resolve `Fingerprint` first with `SyncHash` fallback; pending manual confirmation that the live sheet header is `Fingerprint`.
+  - code-side lookup now resolves `Fingerprint` first with `SyncHash` fallback; Apps Script verification against the live sheet is still pending, so the GitHub issue remains open until confirmed.
   - see [#28](https://github.com/morrisontheatrical/scheduler3/issues/28)
   - `SyncHash` vs. `Fingerprint` distinction now documented in ARCHITECTURE.md.
 
@@ -239,7 +239,7 @@ Reference-only (not part of the `SyncStatus` state machine above — see `ARCHIT
 - `SheetRole` in `Sheet_Settings` is the canonical reference for sheet access; scripts must never hardcode sheet names.
 - `idLog` contains a `Merged IDs` column to preserve historical identity lineage and support cascading foreign key updates.
 - `decision_log` is strictly an active task queue. Applied decisions are recorded in `Audit_Log` and removed from `decision_log` immediately; `SUPERSEDED` rows stay in `decision_log` for reference until `Archive Superseded Decisions` removes them (logged to `Audit_Log` first).
-- Parent Lineup statuses (`Bypassed`, `Delete Pending`, `Possible Duplicate`) override default automated sync behavior. `Delete Pending` is executed by `Ingest Season`.
+- Parent Lineup statuses (`Bypassed`, `Delete Pending`, `Possible Duplicate`) override default automated sync behavior. Parent `Delete Pending` is executed by `Ingest Season`; Lineup `Delete Pending` is previewed and applied by `Explode Dates` with a snapshot retained in `idLog.Fingerprint`, a tombstone preventing regeneration of the same parent/date occurrence, and a follow-up cleanup decision that defaults to leaving calendar data unchanged.
 - `REVIEW_PARENT_ONLY` is a non-mutating review: `ACCEPT` / `NOT_DUPLICATE` / `REJECTED` close the decision with no data change (there is no import row to copy from).
 - Import→Parent drift acceptance is governed by the active mode's `ImportUpdatePolicy` (`MANUAL_REVIEW` queues a decision; `AUTO_UPDATE` applies + summary log; `AUTO_UPDATE_AND_LOG` applies + per-field logs). The decision-apply path always bypasses the gate via `force: true`.
 - `Verify Import vs Parent Lineup` writes one semantic audit entry per flagged row (e.g. `PARENT_ONLY`, `DRIFT_DETECTED`); the status paint no longer logs a duplicate row.
@@ -248,10 +248,12 @@ Reference-only (not part of the `SyncStatus` state machine above — see `ARCHIT
 - **(2026-08-28)** `Field Name` casing must match exactly across sheets for the same concept (`parentID`, not `ParentID`) since lookups are exact-string today; `Draft_Season_Log.ParentID` was corrected to `parentID`.
 - **(2026-08-28)** `repairMapRegistry()` intentionally skips any `Sheet_Settings.isProtected` sheet (`import`, `Lookup`, `Status`, `ref`) — cleanup of stale/duplicate rows on those sheets requires a manual pass, this is not a bug.
 - **(2026-08-28)** `draft_Lineup`, `draft_Parent`, and `Draft_Season_Log` `Map_Registry` rows now exist (added to make `Sheet_Settings` operational) and are fully typed. They still need `Sheet_Settings` role assignment (`LINEUPDRAFT`/`PARENTDRAFT`) before `Engine.Roles.resolve()` can rely on them.
-- **(2026-08-28)** `idLog.Fingerprint` is intended to become a full-row JSON snapshot via `Engine.IO.serializeRow()` (distinct from `SyncHash`'s hash-based approach) — not yet implemented; its physical header was reverted from an auto-drifted "SyncHash" back to "Fingerprint" to avoid confusing the two mechanisms.
+- **(2026-08-28)** At the time, `idLog.Fingerprint` had not yet been wired to full-row JSON snapshots; that implementation was completed on 2026-10-05. Its physical header was reverted from an auto-drifted "SyncHash" back to "Fingerprint" to keep it distinct from operational hashes.
 - **(2026-10-05)** **`SyncHash` vs. `Fingerprint` distinction confirmed**: `SyncHash` is an operational compact hash (MD5/SHA-256 of `Title|Date|Time|Venue`) on data sheets for fast drift detection. `Fingerprint` is an `idLog`-owned full-row JSON snapshot via `Engine.IO.serializeRow()` for post-merge/post-delete recovery and audit. Historically, `Fingerprint` originated as a human-readable pipe-delimited string in legacy scripts (`createFingerprint()`). Code must never query `idLog` for `SyncHash`; always use `Fingerprint` for the `idLog` column. See ARCHITECTURE.md.
 - **(2026-10-05)** **Unparseable dates flag `Manual Review`**: When `parseParentDatesAndTimes` returns zero dates and zero spans, the Parent Lineup row is flagged `Manual Review` with the raw date text in `UpdateDetails` — restoring legacy behavior where parse failures were always visible on the sheet, not just logged to `Audit_Log`.
 - **(2026-10-05)** **`EndDate` flows downstream**: Multi-day `Lineup` rows (from `MULTI_DAY` span policy) carry `EndDate`. Sync to `Crew_Calendar_Log` / Google Calendar should create multi-day events. `EndDate` may also be backfilled from calendar logs when events are associated with Lineup rows.
+- **(2026-10-05)** **Approved orphan deletes require explicit review**: `Preview Approved Deletes` is available to inspect accepted `MARK_DELETE` decisions; applying one deletes only the unique, still-orphaned Lineup row identified by its UUID and active season. A pre-delete snapshot is retained in `idLog.Fingerprint`, and any surviving linked calendar log triggers a follow-up cleanup decision.
+- **(2026-10-05)** **Calendar log ordering**: `Venue_Cal_Log`, `Crew_Calendar_Log`, and `Draft_Season_Log` are sorted ascending by `Date`, then `Start`, after their respective sync writes. `idLog.SheetLocation` and links are refreshed after sort operations.
 
 ## Deferred Recovery
 --UPDATE THIS WHEN WE RECOVER 
@@ -274,8 +276,7 @@ Promote code into `scriptLib` only after it is stable and reused outside schedul
 - **Decision Queue Lifecycle:** Implemented immediate queue deletion for applied decisions, retention of `SUPERSEDED` rows for audit trail, and bulk archiving via `archiveSupersededDecisions()`.
 - **Parent Lineup Status Overrides:** Built engine handling for user flags in Parent Lineup:
   - `Bypassed`: completely ignored in drift/duplicate runs.
-  - `Delete Pending`: cleanly removed during `goParent` with downstream audit records.
+  - `Delete Pending`: Parent rows are removed during `goParent`; active-season Lineup rows are previewed, then removed during `goLineup`, with snapshots, registry refresh, and tombstones to prevent regeneration of the same parent/date occurrence.
   - `Possible Duplicate`: triggers targeted duplicate and drift verification.
 - **Cascading Merge Repointing:** Implemented `mergeParentDuplicate()` to cascade surviving `parentID` keys across child sheets (`Lineup`, `Crew_Calendar_Log`, etc.) and log merged aliases into `idLog`.
 - **Import Drift Policy Engine:** Integrated `ImportUpdatePolicy` (`MANUAL_REVIEW`, `AUTO_UPDATE`, `AUTO_UPDATE_AND_LOG`) to regulate automated field updates vs queuing manual review decisions.
-

@@ -162,6 +162,34 @@ ActionStatus: PENDING
 
 Run `Apply Reviewed Decisions` only after checking IDs and notes. Successful or explicitly rejected rows are copied to `Audit_Log` with their decision and action details, then removed from `decision_log`. Deferred, incomplete, and failed rows remain in `decision_log` so they can be revisited, corrected, or retried.
 
+For accepted `MARK_DELETE` decisions on `LINEUP_ORPHAN` reviews, run
+`Preview Approved Deletes` first and inspect each UUID, title, active-season row,
+and eligibility reason in `Audit_Log`. The preview is read-only. Applying the
+decision deletes only the unique Lineup row that still has no Parent row in the
+active season; a missing, duplicate, or no-longer-orphan UUID fails and remains
+available for correction. The deleted row snapshot is retained in
+`idLog.Fingerprint`. If a linked calendar-log row remains, a follow-up
+`LINEUP_DELETE_CLEANUP` decision is queued. Other `MARK_DELETE` review types
+are not applied as row deletions.
+
+For Lineup rows manually marked `SyncStatus=Delete Pending`, run
+`Preview Lineup Delete Pending` and inspect the UUIDs, titles, and any blocked
+duplicate/missing identities in `Audit_Log`. The next `Explode Dates` run
+deletes only eligible rows from the active season's Lineup sheet, saves each
+pre-delete snapshot in `idLog.Fingerprint`, marks the registry entry `Deleted`,
+and refreshes registry locations. Rows that cannot be uniquely identified or
+snapshotted remain in place and are logged as blocked. A deleted occurrence is
+not regenerated from its Parent row while that same parent/date pair remains;
+changing the source date creates a new occurrence.
+
+The resulting `LINEUP_DELETE_CLEANUP` review defaults to `KEEP_CALENDAR`.
+Reviewers may choose `MARK_CALENDAR_DELETE` for an active `CREWCAL` entry;
+after accepting and applying that decision, the linked log row is marked
+`To Delete on calendar`. The existing calendar sync removes the event only
+when its write permissions allow it, and retains the log row as history.
+`DRAFTCAL` is a staging log and does not currently support calendar-event
+deletion through that sync path.
+
 The `Scheduler > 4. Sync Calendars` command applies reviewed decisions first, then runs the sync pipeline. Individual sync test wrappers do not automatically apply decisions unless they explicitly pass `runtime.applyDecisions: true`.
 
 ## Calendar Controls
@@ -170,15 +198,19 @@ Development wrappers must use `allowCalendarWrites: false`. Use pull-only or rec
 
 `Crew_Calendar_Log.EventID` identifies the Google Calendar event. `UUID` identifies the associated Lineup/Crew row. `Venue_Cal_Log.EventID` identifies the venue event; its `UUID` is the explicit cross-sheet association.
 
+After syncing, `Venue_Cal_Log`, `Crew_Calendar_Log`, and `Draft_Season_Log`
+are sorted ascending by `Date`, then `Start`. The ID registry's sheet locations
+and links are refreshed after each sort.
+
 ## Recovery
 
 If a destructive reset is required, use a Developer Override after confirming the target sheet, operation, and row count. Do not use ordinary sync or verification functions as reset tools.
-## Parent Lineup Manual Action Handling
+## Parent and Lineup Manual Action Handling
 
 Users can set operational statuses in `Parent Lineup` to dictate engine behavior during `ingest` and `verify` runs:
 
 * **`Bypassed`:** The engine completely skips this row during drift and duplicate checks. No `decision_log` items will be generated.
-* **`Delete Pending`:** `Ingest Season` (`goParent`) removes the row from `Parent Lineup`, supersedes any `decision_log` items referencing that `parentID`, and writes a `DELETE_PENDING_APPLIED` audit entry. The run summary reports `deletedPending`.
+* **`Delete Pending`:** `Ingest Season` (`goParent`) removes the row from `Parent Lineup` and writes an audit entry. For Lineup rows, first use `Preview Lineup Delete Pending`; `Explode Dates` (`goLineup`) then removes uniquely identified rows, saves snapshots to `idLog.Fingerprint`, marks registry entries `Deleted`, refreshes row locations, and logs blocked rows. The Parent and Lineup workflows are season-aware.
 * **`Possible Duplicate`:** The `verify` script explicitly scans this row against `Parent Lineup` and `import`. If a match is found, it creates a `PARENT_DUPLICATE` task. If no automated match is found, it generates a `REVIEW_PARENT_ONLY` task with the note: *"Flagged as Possible Duplicate by user, but no automated match found."*
 
 ## Season Promotion Protocol (Role Swapping)

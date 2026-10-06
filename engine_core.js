@@ -752,30 +752,10 @@ var Engine = {
    * Loads the idLog into memory for fast identity/drift checks.
    */
   loadRegistry: function(ctx) {
-    const sheet = ctx.sheets.ID_LOG || ctx.ss.getSheetByName("idLog");
-    if (!sheet) return {};
-    
-    const data = sheet.getDataRange().getValues();
-    const headers = data.shift() || [];
-    const idIdx = headers.indexOf("UniqueID");
-    const hashIdx = headers.indexOf("Fingerprint") >= 0
-      ? headers.indexOf("Fingerprint")
-      : headers.indexOf("SyncHash");
-    const mergedIdx = headers.indexOf("MergedIDs") >= 0
-      ? headers.indexOf("MergedIDs")
-      : headers.indexOf("Merged IDs");
-    
-    let registry = {};
-    data.forEach(row => {
-      const id = row[idIdx];
-      if (id) {
-        registry[id] = {
-          SyncHash: hashIdx >= 0 ? (row[hashIdx] || "N/A") : "N/A",
-          MergedIDs: mergedIdx >= 0 ? (row[mergedIdx] || "") : ""
-        };
-      }
-    });
-    return registry;
+    if (Engine.IDService && typeof Engine.IDService.loadRegistry === "function") {
+      return Engine.IDService.loadRegistry(ctx);
+    }
+    return {};
   }
 
 
