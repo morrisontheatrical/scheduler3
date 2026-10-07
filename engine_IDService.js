@@ -188,6 +188,12 @@ Engine.IDService = {
           if (registry.has(id)) {
             // Keep the row snapshot and source location current, including after log sorting.
             const existing = registry.get(id);
+            if (existing.rowIdx === null) {
+              // Same UUID seen earlier in this pass (e.g. Lineup + Crew Cal) and still queued for append: refresh the queued row, no sheet write yet.
+              existing.data[sheetLocationCol] = location;
+              if (fingerprintCol >= 0) existing.data[fingerprintCol] = fingerprint;
+              continue;
+            }
             const oldLoc = existing.data[sheetLocationCol];
             const oldFingerprint = fingerprintCol >= 0 ? existing.data[fingerprintCol] : "";
             const preservesLineupTombstone =

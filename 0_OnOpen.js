@@ -57,7 +57,31 @@ function onOpen() {
     .addItem('Verify Parent Lineup vs Lineup', 'goVerifyParentToLineup')
     .addSeparator()
     .addItem('View Audit Log', 'openAuditLog')
+    .addItem('Custom Runtime', 'goCustomRuntime')
     .addToUi();
+
+    ui.createMenu('Calendar')
+      .addItem('Sync All Calendars', 'goSync') //by mode, pull reconcile push
+      .addItem('Verify All Calendars', 'verifyAllCalendars') //log/decide only
+      .addSeparator()
+      .addItem('Pull Venue Calendars', 'pullVenueCalendars')
+      .addItem('Pull Draft Season Calendar', 'pullDraftSeasonCalendar')
+      .addItem('Pull Crew Calendar', 'pullCrewCalendar')
+      .addSeparator()
+      .addItem('Verify Venue Calendars', 'verifyVenueCalendars')
+      .addItem('Verify Draft Season Calendar', 'verifyDraftSeasonCalendar')
+      .addItem('Verify Crew Calendar', 'verifyCrewCalendar')
+      .addSeparator()  
+      .addItem('Push Draft Season Calendar', 'pushDraftSeasonCalendar')
+      .addItem('Push Crew Calendar', 'pushCrewCalendar')
+      .addSeparator()
+      .addItem('Refresh Adoption Suggestions', 'refreshAdoptionSuggestions')
+      .addItem('Accept Adoption Suggestions', 'acceptAdoptionSuggestions')
+      .addSubMenu(ui.createMenu('Wipe Calendars') //Dev only, will remove this menu in production
+        .addItem('Wipe Draft Season Calendar', 'wipeDraftSeasonCalendar')
+        .addItem('Wipe Crew Calendar', 'wipeCrewCalendar')
+      )
+      .addToUi();
 }
 
 function goSync() {
@@ -120,6 +144,102 @@ function test_SyncIDRegistry() {
 function test_RefreshDropdowns() {
   const ctx = Engine.getContext();
   return Engine.Maintenance.applyDropdowns(ctx);
+}
+
+function verifyAllCalendars() {
+  const ctx = Engine.getContext();
+  return Engine.Sync.reconcileLogs(ctx);
+}
+
+function pullVenueCalendars() {
+  const ctx = Engine.getContext({ runtime: { forceMirror: true } });
+  return Engine.Sync.mirrorVenues(ctx);
+}
+
+function verifyDraftSeasonCalendar() {
+  const ctx = Engine.getContext();
+  return Engine.Sync.compareDraftCalendar(ctx);
+}
+
+function pushCrewCalendar() {
+  const ctx = Engine.getContext();
+  return Engine.Sync.syncCrewCalendar(ctx);
+}
+
+function pullDraftSeasonCalendar() {
+  showCalendarActionUnavailable('Pull Draft Season Calendar');
+}
+
+function pullCrewCalendar() {
+  showCalendarActionUnavailable('Pull Crew Calendar');
+}
+
+function verifyVenueCalendars() {
+  showCalendarActionUnavailable('Verify Venue Calendars');
+}
+
+function verifyCrewCalendar() {
+  showCalendarActionUnavailable('Verify Crew Calendar');
+}
+
+function pushDraftSeasonCalendar() {
+  showCalendarActionUnavailable('Push Draft Season Calendar');
+}
+
+function refreshAdoptionSuggestions() {
+  showCalendarActionUnavailable('Refresh Adoption Suggestions');
+}
+
+function acceptAdoptionSuggestions() {
+  showCalendarActionUnavailable('Accept Adoption Suggestions');
+}
+
+function wipeDraftSeasonCalendar() {
+  return confirmAndWipeCalendar('draft_season', 'Draft Season Calendar');
+}
+
+function wipeCrewCalendar() {
+  return confirmAndWipeCalendar('crew_calls', 'Crew Calendar');
+}
+
+/**
+ * Dev-only: previews, confirms, then wipes the calendar with the given CalendarRole.
+ */
+function confirmAndWipeCalendar(calendarRole, label) {
+  const ui = SpreadsheetApp.getUi();
+  const ctx = Engine.getContext();
+  const preview = Engine.Calendar.previewWipe(ctx, calendarRole);
+
+  if (!preview.ok) {
+    ui.alert(`Cannot wipe ${label}`, preview.reason, ui.ButtonSet.OK);
+    return;
+  }
+  if (preview.events.length === 0) {
+    ui.alert(`No events found on "${preview.cal.getName()}" in the sync window to delete.`);
+    return;
+  }
+
+  const response = ui.alert(
+    'Warning!',
+    `Are you sure you want to delete ALL ${preview.events.length} events from "${preview.cal.getName()}" ` +
+    `between ${preview.range.start.toDateString()} and ${preview.range.end.toDateString()}? This cannot be undone.`,
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) {
+    ui.alert("Operation cancelled.");
+    return;
+  }
+
+  const result = Engine.Calendar.wipeCalendar(ctx, calendarRole);
+  ui.alert(`${result.deleted} events removed from ${result.calendarName || label}` +
+    (result.failed ? ` (${result.failed} could not be deleted; see Audit_Log).` : "."));
+  return result;
+}
+
+function showCalendarActionUnavailable(action) {
+  SpreadsheetApp.getUi().alert(
+    `${action} is not implemented yet. No calendar or sheet changes were made.`
+  );
 }
 
 function test_LookupListDiagnostics() {

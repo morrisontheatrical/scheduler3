@@ -434,6 +434,9 @@ var Engine = {
     if (calSheet) {
       const calData = calSheet.getDataRange().getValues();
       calData.shift(); // Remove headers
+      const calMap = ctx.getMap("CALENDARS");
+      const roleIdx = calMap ? Engine.getColumnIndex(calMap, "CalendarRole") : -1;
+      const writeIdx = calMap ? Engine.getColumnIndex(calMap, "allowCalendarWrites") : -1;
       calData.forEach(row => {
         const calId = row[1];
         const venueName = row[2];
@@ -442,7 +445,9 @@ var Engine = {
           lookups.calendars.push({ 
             id: calId, 
             venueName: venueName, 
-            displayName: row[0] 
+            displayName: row[0],
+            role: roleIdx !== -1 ? String(row[roleIdx] || "").trim().toLowerCase() : "",
+            allowWrites: writeIdx !== -1 ? this.coerceBoolean(row[writeIdx]) : false
           });
         }
       });
