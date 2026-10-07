@@ -1990,6 +1990,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
         Description: eventOfTotal ? `Auto-synced from Lineup (${eventOfTotal})` : "Auto-synced from Lineup",
         Source: "Lineup",
         UUID: uuid,
+        parentID: lRow[lCol("parentID")] || "",
         SyncStatus: "Manual Review",
         LastUpdated: new Date(),
         LastSynced: new Date()
@@ -2003,6 +2004,13 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
     if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS")) {
       skippedLocked++;
       return;
+    }
+
+    // Backfill the Parent link on rows created before parentID was written.
+    const lineupParentID = lRow[lCol("parentID")];
+    if (lineupParentID && !existing.parentID) {
+      existing.parentID = lineupParentID;
+      changedRows.push(existing);
     }
 
     const comparison = Engine.IO.compare(ctx, {
@@ -2027,7 +2035,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
         details: "Lineup changed since the last sync.",
         targetObj: existing
       });
-      changedRows.push(existing);
+      if (!changedRows.includes(existing)) changedRows.push(existing);
     }
   });
 

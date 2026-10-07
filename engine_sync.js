@@ -152,7 +152,43 @@ Engine.Sync = {
    * RECONCILE: Compares Crew_Calendar_Log against Venue_Cal_Log.
    * Identifies Venue Adoptions and flags Location Conflicts.
    */
- reconcileLogs: function(ctx) {
+ /**
+   * Fuzzy "same show?" check for a venue-calendar title vs a Lineup/crew title.
+   * Venue titles routinely differ by typos, smart punctuation, line breaks, or an added/dropped subtitle.
+   * Matches when one title's distinctive words are all found in the other, or at least 60% of the
+   * shorter title's words (min. 2) are. Words match exactly or within one typo/transposition.
+   */
+  _titlesLikelyMatch: function(a, b) {
+    const stop = new Set(["the", "an", "of", "and", "with", "featuring", "in", "at", "presents", "tribute", "concert", "experience", "musical", "show", "live", "official", "performance"]);
+    const tokens = text => String(text || "")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(t => t.length > 1 && !stop.has(t));
+    const close = (x, y) => {
+      if (x === y) return true;
+      if (x.length < 4 || y.length < 4 || Math.abs(x.length - y.length) > 1) return false;
+      if (x.length === y.length) {
+        const diff = [];
+        for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) diff.push(i);
+        return diff.length === 1 || (diff.length === 2 && diff[1] === diff[0] + 1 && x[diff[0]] === y[diff[1]] && x[diff[1]] === y[diff[0]]);
+      }
+      const [shorter, longer] = x.length < y.length ? [x, y] : [y, x];
+      for (let i = 0; i < longer.length; i++) {
+        if (longer.slice(0, i) + longer.slice(i + 1) === shorter) return true;
+      }
+      return false;
+    };
+
+    const ta = tokens(a);
+    const tb = tokens(b);
+    if (!ta.length || !tb.length) return String(a || "").trim() !== "" && String(a || "").trim() === String(b || "").trim();
+    const [small, large] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+    const matched = small.filter(t => large.some(u => close(t, u))).length;
+    return matched === small.length || (matched >= 2 && matched / small.length >= 0.6);
+  },
+
+  reconcileLogs: function(ctx) {
     const lineupToCrew = this.verifyLineupToCrewLog(ctx);
     const crewEvents = scanSheet('CREWCAL', ctx);
     const venueEvents = scanSheet('VENUECAL', ctx);
@@ -167,7 +203,10 @@ Engine.Sync = {
     crewEvents.forEach(crewRow => {
       const statusDef = ctx.status[crewRow.SyncStatus];
       const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
-      if (behaviors.includes("LOCKED") || behaviors.includes("BYPASS") || crewRow.Options === "Bypass") return;
+      // "Location Conflict" is engine-assigned and locks the row, so it must be re-evaluated here
+      // or a false conflict (e.g. a typo'd venue title) could never clear itself.
+      const reevaluable = crewRow.SyncStatus === "Location Conflict" && crewRow.Options !== "Bypass";
+      if (!reevaluable && (behaviors.includes("LOCKED") || behaviors.includes("BYPASS") || crewRow.Options === "Bypass")) return;
 
       const key = `${new Date(crewRow.Date).toISOString()}|${crewRow.Location}`;
       const physicalMatches = venueMap[key] || [];
@@ -176,7 +215,7 @@ Engine.Sync = {
       // Exact title match, or a human manually flagged "Prefer Venue Event": treat as the same
       // show rather than a conflict, even if the titles don't match verbatim.
       // TODO: remove eventID fallback once Venue_Cal_Log's Map_Registry field is capitalized.
-      const titleMatch = physicalMatches.find(v => v.Title && crewRow.Title && v.Title.trim() === crewRow.Title.trim());
+      const titleMatch = physicalMatches.find(v => this._titlesLikelyMatch(v.Title, crewRow.Title));
       if (titleMatch || crewRow.Options === "Prefer Venue Event") {
         const match = titleMatch || physicalMatches[0];
         if (!crewRow.EventID) {
