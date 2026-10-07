@@ -124,8 +124,8 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
   - see 
 
 33. Findings from the 2026-10-06 review (`Test-Results/review 10-6-26`), still open:
-  - `MARK_DELETE` on `PARENT_ONLY` reviews is unsupported (only `LINEUP_ORPHAN`); decide whether to add a Parent-row delete path.
-  - `PARENT_ONLY` accept-import/merge fails when the parent row has no import candidate; draft verify appends a second row with an existing `parentID` instead of updating it.
+  - ~~`MARK_DELETE` on `PARENT_ONLY` reviews is unsupported~~ — implemented as Parent `Delete Pending`; retain via `ACCEPT`/`MARK_BYPASS` (`Bypassed`). Verify in the sheet.
+  - Duplicated `parentID` rows are now detected by verify (`PARENT_ID_DUPLICATE`); source of the original append is not found in code (`goParent` only mints new IDs, now collision-checked) — re-check after testing whether any path still creates them.
   - `LINEUP_DELETE_CLEANUP` evidence repeats "CREWCAL row remains without an EventID" even when the row has an `EventID`.
   - `LINEUP_ORPHAN` review ID is not written to `Audit_Log`.
   - Log mode changes and `Lookup list diagnostics` to `Audit_Log`.
@@ -176,6 +176,7 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
 - `REJECT_MATCH`
 - `MARK_BYPASS`
 - `MARK_DELETE`
+- `REASSIGN_PARENT_ID` (new; add to `ref`, along with ReviewType `PARENT_ID_DUPLICATE`)
 - `REVIEW_DATE_SPAN`
 - `REVIEW_IMPORT_DRIFT`
 - `REVIEW_PARENT_ONLY`
@@ -258,7 +259,7 @@ Reference-only (not part of the `SyncStatus` state machine above — see `ARCHIT
 - `idLog` contains a `Merged IDs` column to preserve historical identity lineage and support cascading foreign key updates.
 - `decision_log` is strictly an active task queue. Applied decisions are recorded in `Audit_Log` and removed from `decision_log` immediately; `SUPERSEDED` rows stay in `decision_log` for reference until `Archive Superseded Decisions` removes them (logged to `Audit_Log` first).
 - Parent Lineup statuses (`Bypassed`, `Delete Pending`, `Possible Duplicate`) override default automated sync behavior. Parent `Delete Pending` is executed by `Ingest Season`; Lineup `Delete Pending` is previewed and applied by `Explode Dates` with a snapshot retained in `idLog.Fingerprint`, a tombstone preventing regeneration of the same parent/date occurrence, and a follow-up cleanup decision for linked `CREWCAL` rows with EventIDs.
-- `REVIEW_PARENT_ONLY` is a non-mutating review: `ACCEPT` / `NOT_DUPLICATE` / `REJECTED` close the decision with no data change (there is no import row to copy from).
+- `REVIEW_PARENT_ONLY` closes with `ACCEPT` / `NOT_DUPLICATE` by retaining the row as `Bypassed` (verification skips it afterward); `REJECTED` makes no data change. `MARK_DELETE` marks the Parent row `Delete Pending` for the next `Ingest Season`. `PARENT_ID_DUPLICATE` reviews use `REASSIGN_PARENT_ID` or `MARK_DELETE`.
 - Import→Parent drift acceptance is governed by the active mode's `ImportUpdatePolicy` (`MANUAL_REVIEW` queues a decision; `AUTO_UPDATE` applies + summary log; `AUTO_UPDATE_AND_LOG` applies + per-field logs). The decision-apply path always bypasses the gate via `force: true`.
 - `Verify Import vs Parent Lineup` writes one semantic audit entry per flagged row (e.g. `PARENT_ONLY`, `DRIFT_DETECTED`); the status paint no longer logs a duplicate row.
 - **(2026-08-28 registry review)** `Map_Registry.Field Name` must be unique within a sheet. Two leftover "xlookup helper" rows (`Parent Lineup` and `draft_Parent`, both duplicating `EventName`/`DatesAndTimes` at columns 19/20) were silently shadowing the real column mappings since `assembleSheetMap()` indexes by Field Name and a later duplicate row wins. Physical columns were deleted by Seth; the stale registry rows were removed manually since `repairMapRegistry()` never auto-deletes.

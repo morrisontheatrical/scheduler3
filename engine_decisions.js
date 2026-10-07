@@ -512,7 +512,9 @@ Engine.Decisions = {
         String(decision.RequestedAction || "").trim().toUpperCase() === "MARK_DELETE"
       )
       .map(decision => {
-        const target = Engine.Ingest.previewLineupOrphanDeletion(ctx, decision);
+        const target = String(decision.ReviewType || "") === "LINEUP_ORPHAN"
+          ? Engine.Ingest.previewLineupOrphanDeletion(ctx, decision)
+          : Engine.Ingest.previewParentDeletion(ctx, decision);
         return {
           reviewID: decision.ReviewID,
           uuid: target.uuid || decision.CandidateID || "",
@@ -572,15 +574,15 @@ Engine.Decisions = {
           // disposition and the decision row should be closed out.
           if (userDecision === "REJECTED") {
             actionDetails = "Parent-only row rejected for retention; no data change.";
-          } else if (userDecision === "NOT_DUPLICATE") {
-            actionDetails = "Reviewer confirmed parent-only row is not a duplicate; retained as-is.";
-          } else if (userDecision === "ACCEPT") {
-            actionDetails = "Parent-only row retained (no import source); decision closed.";
+          } else if (userDecision === "NOT_DUPLICATE" || userDecision === "ACCEPT") {
+            // Keep the row: Bypassed status stops later verify passes from asking again.
+            const kept = Engine.Ingest.retainParentRow(ctx, decision);
+            actionDetails = `Parent row ${kept.parentID} ("${kept.title}") retained without an import source and set to Bypassed.`;
           } else {
             results.skipped++;
             return;
           }
-        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "REVIEW_DATE_SPAN"].includes(action)) {
+        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
@@ -605,10 +607,23 @@ Engine.Decisions = {
             throw new Error("Lineup calendar cleanup handler is unavailable.");
           }
           actionDetails = Engine.Ingest.applyLineupCalendarCleanup(ctx, decision, action);
+        } else if (action === "MARK_BYPASS") {
+          if (userDecision !== "ACCEPT") throw new Error("MARK_BYPASS requires Decision=ACCEPT");
+          const kept = Engine.Ingest.retainParentRow(ctx, decision);
+          actionDetails = `Parent row ${kept.parentID} ("${kept.title}") set to Bypassed; verification will not flag it again.`;
+        } else if (action === "REASSIGN_PARENT_ID") {
+          if (userDecision !== "ACCEPT") throw new Error("REASSIGN_PARENT_ID requires Decision=ACCEPT");
+          const reassigned = Engine.Ingest.reassignParentID(ctx, decision);
+          actionDetails = `Row ${reassigned.rowNumber} ("${reassigned.title}") reassigned from duplicated ${reassigned.oldID} to new parentID ${reassigned.newID}.`;
         } else if (action === "MARK_DELETE") {
           if (userDecision !== "ACCEPT") throw new Error("MARK_DELETE requires Decision=ACCEPT");
-          const deleted = Engine.Ingest.deleteLineupOrphan(ctx, decision);
-          actionDetails = `Deleted orphan Lineup row ${deleted.uuid} ("${deleted.title}") after saving its row snapshot in idLog.Fingerprint.`;
+          if (String(decision.ReviewType || "") === "LINEUP_ORPHAN") {
+            const deleted = Engine.Ingest.deleteLineupOrphan(ctx, decision);
+            actionDetails = `Deleted orphan Lineup row ${deleted.uuid} ("${deleted.title}") after saving its row snapshot in idLog.Fingerprint.`;
+          } else {
+            const marked = Engine.Ingest.markParentDelete(ctx, decision);
+            actionDetails = `Parent row ${marked.parentID} ("${marked.title}") marked Delete Pending; it is removed on the next Ingest Season run.`;
+          }
         } else if (action === "SYNC_PARENT_TO_LINEUP") {
           if (!["ACCEPT", "SYNC"].includes(userDecision)) throw new Error("SYNC_PARENT_TO_LINEUP requires Decision=ACCEPT");
           const lRole = Engine.Roles.resolve(ctx, "LINEUP");

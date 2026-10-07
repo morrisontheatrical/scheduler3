@@ -84,6 +84,7 @@ function goParent() {
     if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
   });
 
+  const usedParentIDs = new Set(pData.map(row => String(row[pCol("parentID")] || "").trim()).filter(Boolean));
   let created = 0, updated = 0, flaggedForReview = 0;
  
   iData.forEach(iRow => {
@@ -118,7 +119,12 @@ function goParent() {
       sourceFields.forEach(fieldName => {
         rowArray[pCol(fieldName)] = iRow[iCol(fieldName)];
       });
-      rowArray[pCol("parentID")] = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
+      let newParentID = "";
+      do {
+        newParentID = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
+      } while (usedParentIDs.has(newParentID));
+      usedParentIDs.add(newParentID);
+      rowArray[pCol("parentID")] = newParentID;
       rowArray[pCol("SyncStatus")] = "Active";
       if (pCol("LastSynced") >= 0) rowArray[pCol("LastSynced")] = new Date();
       if (pCol("LastUpdated") >= 0) rowArray[pCol("LastUpdated")] = new Date();
@@ -1587,6 +1593,105 @@ Engine.Ingest.deleteLineupOrphan = function(ctx, decision) {
   return result;
 };
 
+// Resolves exactly one Parent row for a review. parentID may be duplicated, so CandidateRow/CandidateTitle disambiguate.
+Engine.Ingest._resolveParentTarget = function(ctx, decision) {
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const pMap = ctx.getMap(pRole);
+  if (!pSheet || !pMap) throw new Error("Active Parent sheet/map is missing.");
+  const idCol = Engine.getColumnIndex(pMap, "parentID");
+  const titleCol = Engine.getColumnIndex(pMap, "EventName");
+  if (idCol < 0) throw new Error("Parent sheet must map parentID.");
+
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
+  const type = String(decision.ReviewType || "");
+  const parentID = String((type === "PARENT_DUPLICATE" ? decision.DuplicateParentID : decision.ExistingParentID) || decision.CandidateID || "").trim();
+  if (!parentID) throw new Error("Review has no parentID to act on.");
+
+  const data = pSheet.getDataRange().getValues();
+  let matches = data
+    .map((row, index) => ({ row: row, rowNumber: index + 1 }))
+    .filter(item => item.rowNumber > 1 && String(item.row[idCol] || "").trim() === parentID);
+  if (!matches.length) throw new Error(`Parent row ${parentID} no longer exists.`);
+
+  if (matches.length > 1) {
+    const hinted = Number(decision.CandidateRow);
+    if (String(decision.CandidateSheet || "") === pSheet.getName() && matches.some(item => item.rowNumber === hinted)) {
+      matches = matches.filter(item => item.rowNumber === hinted);
+    }
+  }
+  if (matches.length > 1 && titleCol >= 0 && decision.CandidateTitle) {
+    const wanted = normalize(decision.CandidateTitle);
+    const byTitle = matches.filter(item => normalize(item.row[titleCol]) === wanted);
+    if (byTitle.length) matches = byTitle;
+  }
+  if (matches.length > 1) {
+    throw new Error(`parentID ${parentID} is used by ${matches.length} Parent rows; resolve it with a PARENT_ID_DUPLICATE review first.`);
+  }
+
+  const match = matches[0];
+  return {
+    role: pRole,
+    sheet: pSheet,
+    map: pMap,
+    rowNumber: match.rowNumber,
+    parentID: parentID,
+    title: titleCol >= 0 ? match.row[titleCol] : ""
+  };
+};
+
+Engine.Ingest.previewParentDeletion = function(ctx, decision) {
+  try {
+    const target = this._resolveParentTarget(ctx, decision);
+    return { eligible: true, uuid: target.parentID, title: target.title, rowNumber: target.rowNumber };
+  } catch (error) {
+    return { eligible: false, reason: error.message };
+  }
+};
+
+// Delete Pending is applied (with decision supersede + audit entry) by the next Ingest Season run.
+Engine.Ingest.markParentDelete = function(ctx, decision) {
+  const target = this._resolveParentTarget(ctx, decision);
+  Engine.Status.apply(ctx, target.role, target.rowNumber, "Delete Pending", {
+    stage: "DECISION",
+    id: target.parentID,
+    details: `Marked for deletion per reviewed decision ${decision.ReviewID}.`
+  });
+  return target;
+};
+
+// Bypassed rows are skipped by verification so a retained row is not queued again.
+Engine.Ingest.retainParentRow = function(ctx, decision) {
+  const target = this._resolveParentTarget(ctx, decision);
+  Engine.Status.apply(ctx, target.role, target.rowNumber, "Bypassed", {
+    stage: "DECISION",
+    id: target.parentID,
+    details: `Retained per reviewed decision ${decision.ReviewID}; no matching import row required.`
+  });
+  return target;
+};
+
+Engine.Ingest.reassignParentID = function(ctx, decision) {
+  const target = this._resolveParentTarget(ctx, decision);
+  const idCol = Engine.getColumnIndex(target.map, "parentID");
+  const taken = new Set(target.sheet.getDataRange().getValues().slice(1).map(row => String(row[idCol] || "").trim()));
+  let newID = "";
+  do {
+    newID = "P-" + Utilities.getUuid().split("-")[0].toUpperCase();
+  } while (taken.has(newID));
+
+  target.sheet.getRange(target.rowNumber, idCol + 1).setValue(newID);
+  Engine.Status.apply(ctx, target.role, target.rowNumber, "Active", {
+    stage: "DECISION",
+    id: newID,
+    details: `parentID reassigned from duplicated ${target.parentID} per reviewed decision ${decision.ReviewID}.`
+  });
+  Engine.IDService.syncAll(ctx);
+  ctx.registry = Engine.IDService.loadRegistry(ctx);
+  return { rowNumber: target.rowNumber, title: target.title, oldID: target.parentID, newID: newID };
+};
+
 function previewLineupDeletePending() {
   const ctx = Engine.getContext();
   Engine.Log.command(ctx, "Preview Lineup Delete Pending");
@@ -1931,6 +2036,8 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
 
   const applyReviewStatus = (rowIdx, parentID, statusName, details, decisionValues) => {
     const currentStatus = pSheet.getRange(rowIdx, pCol("SyncStatus") + 1).getValue();
+    // A reviewer already decided these rows (retain / delete); do not queue them again.
+    if (["Bypassed", "Delete Pending"].includes(String(currentStatus || "").trim())) return false;
     if (Engine.Status.blocksWrite(ctx, currentStatus)) {
       Engine.Log.write(ctx, {
         stage: "VERIFY_IMPORT",
@@ -2114,9 +2221,69 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     }
   });
 
+  // Rows sharing a parentID: the import-matched (else first) row keeps the ID; the rest get a review.
+  const idRows = {};
+  pData.forEach((row, idx) => {
+    const id = String(row[pCol("parentID")] || "").trim();
+    if (id) (idRows[id] = idRows[id] || []).push(idx + 2);
+  });
+  const duplicateSecondary = {};
+  let duplicateParentIDs = 0;
+  Object.keys(idRows).filter(id => idRows[id].length > 1).forEach(id => {
+    const rows = idRows[id];
+    const primary = rows.find(rowNum => matchedParentRows[rowNum]) || rows[0];
+    rows.filter(rowNum => rowNum !== primary).forEach(rowNum => {
+      const row = pData[rowNum - 2];
+      const status = String(row[pCol("SyncStatus")] || "").trim();
+      if (["Bypassed", "Delete Pending"].includes(status)) return;
+      duplicateSecondary[rowNum] = true;
+      duplicateParentIDs++;
+      const title = row[pCol("EventName")] || "";
+      const matchedImport = Boolean(matchedParentRows[rowNum]);
+      const suggested = matchedImport ? "REASSIGN_PARENT_ID" : "MARK_DELETE";
+      Engine.Status.apply(ctx, pRole, rowNum, "Duplicate (ID Match)", {
+        stage: "VERIFY_IMPORT",
+        id: id,
+        details: `parentID ${id} is also used by row ${primary}.`,
+        suppressLog: true
+      });
+      addDecision({
+        ReviewID: Engine.Decisions.stableReviewID("PARENT_ID_DUPLICATE", id, title, title),
+        ReviewType: "PARENT_ID_DUPLICATE",
+        SourceSheet: pSheetName,
+        SourceRow: rowNum,
+        SourceID: id,
+        CandidateSheet: pSheetName,
+        CandidateRow: rowNum,
+        CandidateID: id,
+        CandidateTitle: title,
+        ParentTitle: title,
+        ExistingParentID: id,
+        Evidence: `parentID ${id} is used by rows ${rows.join(", ")}. Row ${rowNum} "${title}" ${matchedImport ? "also matches an import row" : "has no import match"}; row ${primary} keeps the ID.`,
+        Confidence: "HIGH",
+        SuggestedAction: suggested,
+        SuggestionReason: matchedImport
+          ? "Both rows are live events; give this row its own parentID."
+          : "Leftover row with no import match; mark it for deletion, or choose MARK_BYPASS to keep it.",
+        RequestedAction: suggested,
+        Decision: "PENDING",
+        ActionStatus: "PENDING"
+      });
+      Engine.Log.write(ctx, {
+        stage: "VERIFY_IMPORT",
+        sheetName: pSheetName,
+        rowIdx: rowNum,
+        id: id,
+        type: "DUPLICATE_PARENT_ID",
+        details: `parentID ${id} is also used by row ${primary}.`
+      });
+    });
+  });
+
   pData.forEach((pRow, index) => {
     const rowIdx = index + 2;
-    if (matchedParentRows[rowIdx]) return;
+    if (matchedParentRows[rowIdx] || duplicateSecondary[rowIdx]) return;
+    if (String(pRow[pCol("SyncStatus")] || "").trim() === "Bypassed") return;
     parentOnly++;
     const likelyMatches = likelyParentMatches(pRow);
     const bestMatch = likelyMatches[0];
@@ -2194,7 +2361,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   Engine.Log.write(ctx, {
     stage: "VERIFY_IMPORT",
     type: "VERIFY_IMPORT_COMPLETE",
-    details: `Checked ${iData.length} import rows.\n${flagged} flagged (${renamedCandidate} possible rename)\n${importOnly} import-only\n${parentOnly} Parent Lineup-only\n${parentDuplicateSuggestions.created} Parent duplicate suggestions created`
+    details: `Checked ${iData.length} import rows.\n${flagged} flagged (${renamedCandidate} possible rename)\n${importOnly} import-only\n${parentOnly} Parent Lineup-only\n${parentDuplicateSuggestions.created} Parent duplicate suggestions created\n${duplicateParentIDs} duplicated parentID row(s)`
   });
 
   return {
@@ -2203,7 +2370,8 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     renamedCandidate: renamedCandidate,
     importOnly: importOnly,
     parentOnly: parentOnly,
-    parentDuplicateSuggestions: parentDuplicateSuggestions.created
+    parentDuplicateSuggestions: parentDuplicateSuggestions.created,
+    duplicateParentIDs: duplicateParentIDs
   };
 };
 

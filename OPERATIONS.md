@@ -128,7 +128,7 @@ Verification may update status and `LastSynced` when the current behavior allows
 * **Applied rows:** When a review item is applied, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
 * **No re-prompt after apply:** If a later verification produces the same stable `ReviewID`, the engine checks `Audit_Log` and suppresses it when that review was already applied; any stale pending copy of that same ID is removed.
 * **Superseded rows:** `Refresh Resolved Parent-Only Reviews` and `Refresh Stale Parent Duplicate Reviews` mark resolved items `SUPERSEDED` (with a reason in `ActionDetails`) but keep the row for reference. Use `Archive Superseded Decisions` to delete all `SUPERSEDED` rows from `decision_log` (each is logged to `Audit_Log` first).
-* **`REVIEW_PARENT_ONLY` + `ACCEPT`:** a Parent-only review has no automatic mutation. Reviewing it `ACCEPT` (retain), `NOT_DUPLICATE` (retain as confirmed non-duplicate), or `REJECTED` (dropped) closes the decision and removes the row; there is no import row to copy from.
+* **`REVIEW_PARENT_ONLY` + `ACCEPT`:** retains the Parent row with no import source by setting it to `Bypassed`, so verification stops flagging it. `NOT_DUPLICATE` does the same. `REJECTED` closes the decision with no data change. To remove the row instead, set `RequestedAction=MARK_DELETE` with `Decision=ACCEPT`.
 * **`REVIEW_IMPORT_DRIFT` / `ACCEPT_IMPORT`:** applies the import values over the Parent Lineup row. Requires the matching `import` row to still exist — if the import row was deleted upstream, the apply fails with "Import row could not be resolved" and the row stays `FAILED` for retry.
 
 For a Parent-to-Parent duplicate, compare `ParentTitle` (the proposed keeper)
@@ -189,7 +189,11 @@ available for correction. The deleted row snapshot is retained in
 `idLog.Fingerprint`. If a linked `CREWCAL` row has an `EventID`, a follow-up
 `LINEUP_DELETE_CLEANUP` decision is queued. Rows without an `EventID` and
 `DRAFTCAL` staging rows are retained and audited without a non-actionable
-review. Other `MARK_DELETE` review types are not applied as row deletions.
+review. `MARK_DELETE` on a Parent-targeted review (`PARENT_ONLY`, `IMPORT_DRIFT`, `IMPORT_RENAME`, `PARENT_ID_DUPLICATE`, `PARENT_DUPLICATE`'s duplicate row) does not delete immediately: it sets the Parent row to `Delete Pending`, and the next `Ingest Season` run removes it, supersedes related reviews, and logs it. `Preview Approved Deletes` also reports these targets.
+
+**Keeping a Parent row without an import source:** accept a `PARENT_ONLY` review (or choose `MARK_BYPASS` on any Parent-targeted review). The row's status becomes `Bypassed`, the decision is logged to `Audit_Log`, and later verification passes skip the row instead of asking again. Clear the status to put the row back under verification.
+
+**Duplicated `parentID`s:** `Verify Import vs Parent Lineup` keeps the ID on the import-matched row (else the first row) and gives every other row a `PARENT_ID_DUPLICATE` review plus the `Duplicate (ID Match)` status. Suggested action is `REASSIGN_PARENT_ID` (assign a new `parentID`; both rows are live events) when the row also matches import, otherwise `MARK_DELETE`. The apply step identifies the row by `CandidateRow` and title, never by the shared ID alone, and refuses to act when the row cannot be isolated.
 
 For Lineup rows manually marked `SyncStatus=Delete Pending`, run
 `Preview Lineup Delete Pending` and inspect the UUIDs, titles, and any blocked
