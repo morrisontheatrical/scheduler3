@@ -358,19 +358,63 @@ Engine.Decisions = {
     const auditSheet = Engine.getSheetByRole(ctx, "AUDIT");
     const auditMap = ctx.getMap("AUDIT");
     const idCol = Engine.getColumnIndex(auditMap, "UniqueID");
+    const detailsCol = Engine.getColumnIndex(auditMap, "LogDetails");
     const typeCol = Engine.getColumnIndex(auditMap, "Type") >= 0
       ? Engine.getColumnIndex(auditMap, "Type")
       : Engine.getColumnIndex(auditMap, "RecordType");
     const applied = new Set();
+    ctx.appliedReviewOutcomes = {};
     if (auditSheet && idCol >= 0 && typeCol >= 0) {
       auditSheet.getDataRange().getValues().slice(1).forEach(row => {
         if (String(row[typeCol] || "").trim().toUpperCase() === "DECISION_APPLIED" && row[idCol]) {
-          applied.add(String(row[idCol]).trim());
+          const id = String(row[idCol]).trim();
+          applied.add(id);
+          // Audit_Log is newest-first, so the first outcome seen is the latest.
+          if (detailsCol >= 0 && !(id in ctx.appliedReviewOutcomes)) ctx.appliedReviewOutcomes[id] = String(row[detailsCol] || "");
         }
+      });
+    }
+    // idLog is the durable history: Applied entries survive Audit_Log trimming.
+    const idSheet = Engine.getSheetByRole(ctx, "ID_LOG");
+    const idMap = ctx.getMap("ID_LOG");
+    const logIdCol = Engine.getColumnIndex(idMap, "UniqueID");
+    const logStatusCol = Engine.getColumnIndex(idMap, "SyncStatus");
+    const logDetailsCol = Engine.getColumnIndex(idMap, "LogDetails");
+    if (idSheet && logIdCol >= 0 && logStatusCol >= 0) {
+      idSheet.getDataRange().getValues().slice(1).forEach(row => {
+        if (String(row[logStatusCol] || "").trim() !== "Applied" || !row[logIdCol]) return;
+        const id = String(row[logIdCol]).trim();
+        applied.add(id);
+        if (!(id in ctx.appliedReviewOutcomes) && logDetailsCol >= 0) ctx.appliedReviewOutcomes[id] = String(row[logDetailsCol] || "");
       });
     }
     ctx.appliedReviewIDs = applied;
     return applied;
+  },
+
+  appliedReviewOutcome: function(ctx, reviewID) {
+    this.appliedReviewIDs(ctx);
+    return (ctx.appliedReviewOutcomes || {})[String(reviewID || "").trim()] || "";
+  },
+
+  // Deletes and merges always get a durable idLog record; other decisions only update an entry Sync ID Registry already made.
+  _recordInIdLog: function(ctx, decision, action, details) {
+    const reviewID = String(decision.ReviewID || "").trim();
+    if (!reviewID) return;
+    const durable = ["MARK_DELETE", "MERGE_PARENT", "MARK_CALENDAR_DELETE"].includes(action);
+    if (!durable && !(ctx.registry && ctx.registry[reviewID])) return;
+    const snapshot = {};
+    Object.keys(decision).forEach(key => { if (key !== "_rowNumber") snapshot[key] = decision[key]; });
+    Engine.IDService.upsert(ctx, {
+      id: reviewID,
+      type: "DECISIONS",
+      title: decision.CandidateTitle || decision.ParentTitle || "",
+      parentId: decision.ExistingParentID || "",
+      fingerprint: Engine.IO.serializeRow(snapshot),
+      location: "",
+      status: "Applied",
+      details: details
+    });
   },
 
   addPending: function(ctx, values) {
@@ -512,9 +556,12 @@ Engine.Decisions = {
         String(decision.RequestedAction || "").trim().toUpperCase() === "MARK_DELETE"
       )
       .map(decision => {
-        const target = String(decision.ReviewType || "") === "LINEUP_ORPHAN"
+        const reviewType = String(decision.ReviewType || "");
+        const target = reviewType === "LINEUP_ORPHAN"
           ? Engine.Ingest.previewLineupOrphanDeletion(ctx, decision)
-          : Engine.Ingest.previewParentDeletion(ctx, decision);
+          : reviewType === "LINEUP_EXTRA_PERFORMANCE"
+            ? Engine.Ingest.previewLineupRowDeletion(ctx, decision)
+            : Engine.Ingest.previewParentDeletion(ctx, decision);
         return {
           reviewID: decision.ReviewID,
           uuid: target.uuid || decision.CandidateID || "",
@@ -555,7 +602,12 @@ Engine.Decisions = {
       let actionDetails = "";
       try {
         if (userDecision === "REJECTED") {
-          actionDetails = `Decision rejected by reviewer; no data change for ${decision.ReviewID}`;
+          if (String(decision.ReviewType || "") === "PARENT_ONLY") {
+            const kept = Engine.Ingest.retainParentRow(ctx, decision);
+            actionDetails = `Parent-only review rejected; row ${kept.parentID} ("${kept.title}") set to Retained.`;
+          } else {
+            actionDetails = `Decision rejected by reviewer; no data change for ${decision.ReviewID}`;
+          }
         } else if (userDecision === "DEFERRED") {
           results.skipped++;
           return;
@@ -577,7 +629,7 @@ Engine.Decisions = {
           } else if (userDecision === "NOT_DUPLICATE" || userDecision === "ACCEPT") {
             // Keep the row: Bypassed status stops later verify passes from asking again.
             const kept = Engine.Ingest.retainParentRow(ctx, decision);
-            actionDetails = `Parent row ${kept.parentID} ("${kept.title}") retained without an import source and set to Bypassed.`;
+            actionDetails = `Parent row ${kept.parentID} ("${kept.title}") retained without an import source and set to Retained.`;
           } else {
             results.skipped++;
             return;
@@ -610,7 +662,7 @@ Engine.Decisions = {
         } else if (action === "MARK_BYPASS") {
           if (userDecision !== "ACCEPT") throw new Error("MARK_BYPASS requires Decision=ACCEPT");
           const kept = Engine.Ingest.retainParentRow(ctx, decision);
-          actionDetails = `Parent row ${kept.parentID} ("${kept.title}") set to Bypassed; verification will not flag it again.`;
+          actionDetails = `Parent row ${kept.parentID} ("${kept.title}") set to Retained; verification will not flag it again.`;
         } else if (action === "REASSIGN_PARENT_ID") {
           if (userDecision !== "ACCEPT") throw new Error("REASSIGN_PARENT_ID requires Decision=ACCEPT");
           const reassigned = Engine.Ingest.reassignParentID(ctx, decision);
@@ -620,31 +672,17 @@ Engine.Decisions = {
           if (String(decision.ReviewType || "") === "LINEUP_ORPHAN") {
             const deleted = Engine.Ingest.deleteLineupOrphan(ctx, decision);
             actionDetails = `Deleted orphan Lineup row ${deleted.uuid} ("${deleted.title}") after saving its row snapshot in idLog.Fingerprint.`;
+          } else if (String(decision.ReviewType || "") === "LINEUP_EXTRA_PERFORMANCE") {
+            const marked = Engine.Ingest.markLineupDelete(ctx, decision);
+            actionDetails = `Lineup row ${marked.uuid} marked Delete Pending; Explode Dates removes it with a snapshot.`;
           } else {
             const marked = Engine.Ingest.markParentDelete(ctx, decision);
             actionDetails = `Parent row ${marked.parentID} ("${marked.title}") marked Delete Pending; it is removed on the next Ingest Season run.`;
           }
         } else if (action === "SYNC_PARENT_TO_LINEUP") {
           if (!["ACCEPT", "SYNC"].includes(userDecision)) throw new Error("SYNC_PARENT_TO_LINEUP requires Decision=ACCEPT");
-          const lRole = Engine.Roles.resolve(ctx, "LINEUP");
-          const lSheet = Engine.getSheetByRole(ctx, lRole);
-          const lMap = ctx.getMap(lRole);
-          const uuid = decision.CandidateID;
-          if (lSheet && lMap && uuid) {
-            const lData = lSheet.getDataRange().getValues();
-            const uuidCol = Engine.getColumnIndex(lMap, "UUID");
-            const rowIdx = lData.findIndex((r, idx) => idx > 0 && String(r[uuidCol]).trim() === String(uuid).trim());
-            if (rowIdx > 0) {
-              const statusCol = Engine.getColumnIndex(lMap, "SyncStatus");
-              const lastSyncedCol = Engine.getColumnIndex(lMap, "LastSynced");
-              if (statusCol >= 0) lSheet.getRange(rowIdx + 1, statusCol + 1).setValue("Synced");
-              if (lastSyncedCol >= 0) lSheet.getRange(rowIdx + 1, lastSyncedCol + 1).setValue(new Date());
-              Engine.Status.paint(ctx, lRole, rowIdx + 1, "Synced");
-              actionDetails = `Synced Lineup ${uuid} to Parent schedule.`;
-            } else {
-              actionDetails = `Lineup row for UUID ${uuid} not found; decision closed.`;
-            }
-          }
+          const synced = Engine.Ingest.syncParentToLineup(ctx, decision);
+          actionDetails = `Synced Lineup ${synced.uuid} from Parent Lineup: ${synced.fields.join(", ")}.`;
         } else if (action === "EXPLODE_LINEUP") {
           if (!["ACCEPT", "EXPLODE"].includes(userDecision)) throw new Error("EXPLODE_LINEUP requires Decision=ACCEPT");
           if (Engine.Ingest && typeof Engine.Ingest.goLineup === "function") {
@@ -678,9 +716,18 @@ Engine.Decisions = {
         if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(actionDetails);
         Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_APPLIED", details: actionDetails });
         this.appliedReviewIDs(ctx).add(String(decision.ReviewID || "").trim());
+        ctx.appliedReviewOutcomes[String(decision.ReviewID || "").trim()] = actionDetails;
+        this._recordInIdLog(ctx, decision, action, actionDetails);
         table.sheet.deleteRow(decision._rowNumber);
         results.applied++;
       } catch (error) {
+        if (error.supersede) {
+          // The target is gone, so there is nothing left to decide; retire the review instead of failing it.
+          this.markSuperseded(ctx, decision.ReviewID, error.message);
+          Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_SUPERSEDED", details: error.message });
+          results.skipped++;
+          return;
+        }
         if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("FAILED");
         if (actionedAtCol >= 0) table.sheet.getRange(decision._rowNumber, actionedAtCol + 1).setValue(new Date());
         if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(error.message);

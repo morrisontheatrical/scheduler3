@@ -1,6 +1,19 @@
 var Engine = Engine || {};
 Engine.IO = Engine.IO || {};
 
+Engine.IO.isDate = function(value) {
+  // Duck-typed: Dates created in scriptLib fail `instanceof Date` in this project's realm.
+  return Object.prototype.toString.call(value) === "[object Date]";
+};
+
+// Compact display form for evidence text (e.g. "Sat 3/20/2027 7:30 PM").
+Engine.IO.formatValue = function(ctx, value) {
+  if (Engine.IO.isDate(value) && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, ctx.timeZone, "EEE M/d/yyyy h:mm a");
+  }
+  return value === undefined || value === null ? "" : String(value);
+};
+
 /**
  * Serializes a row object into a JSON string for snapshotting/auditing.
  */
@@ -10,7 +23,7 @@ Engine.IO.serializeRow = function(obj) {
   }
 
   const encode = value => {
-    if (value instanceof Date) {
+    if (Engine.IO.isDate(value)) {
       if (isNaN(value.getTime())) throw new TypeError("Cannot serialize an invalid Date.");
       return { __scheduler3Type: "Date", value: value.toISOString() };
     }
@@ -139,7 +152,7 @@ Engine.IO.compare = function(ctx, params) {
   // Value → comparison string. A field without type metadata retains the
   // complete instant so the generic fallback never loses a year or time.
   const comparisonForm = function(value, mode) {
-    if (!(value instanceof Date) || isNaN(value.getTime())) {
+    if (!Engine.IO.isDate(value) || isNaN(value.getTime())) {
       return utils.normalize(value, { collapse: true, fold: true });
     }
     if (mode === "date") return Utilities.formatDate(value, ctx.timeZone, "yyyy-MM-dd");

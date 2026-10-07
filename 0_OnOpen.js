@@ -13,6 +13,7 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Verification')
       .addItem('Verify import vs Parent Lineup', 'goVerifyImportToParent')
       .addItem('Verify Parent Lineup vs Lineup', 'goVerifyParentToLineup')
+      .addItem('Reconcile Logs (Lineup / Crew / Venue)', 'test_ReconcileLogs')
       .addItem('Compare Draft Calendar vs Crew Log', 'test_CompareDraftCalendar'))
     .addSubMenu(ui.createMenu('Maintenance')
       .addItem('Repair Map Registry', 'repairMapRegistry')

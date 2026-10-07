@@ -339,7 +339,7 @@ Engine.Sync = {
           const parentId = lRow[lCol("parentID")] || "";
           const changedFields = comparison.changed.map(change => change.field);
           const evidence = comparison.changed.map(change =>
-            `${change.field}: Lineup="${change.source}" | ${crewRole}="${change.destination}"`
+            `${change.field}: Lineup="${Engine.IO.formatValue(ctx, change.source)}" | ${crewRole}="${Engine.IO.formatValue(ctx, change.destination)}"`
           ).join(" | ");
           Engine.Log.warn(ctx, "RECONCILE", `Lineup row ${uuid} differs from ${crewRole}: ${changedFields.join(", ")}.`);
           if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {

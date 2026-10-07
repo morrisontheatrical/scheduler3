@@ -50,3 +50,25 @@
     - no audit_log entries appeared. 
 9. Applied reviewed decisions
     - 2 applied, 9 failed, 98 skipped
+
+------------------------
+------------------------
+
+1. Some of the decision rows that failed to mark delete no longer had parent rows to apply to. I tried to reject them and accept/mark bypass and they don't have a way to leave the decision list. Shouldn't this be supereseeded instead?
+2. I am deleting most of the decision log (aside from the ones mentioned above) to test again. This sheet is so messy. I wish it weren't such a pain to redesign a sheet. 
+3. Dev / Test > Verification > Verify Import vs Parent Lineup
+    - ParentOnly: 8 - but I don't see them in decision log. I assume these are the ones I have already reviewed.
+    - There are 5 rows that were the parent only rows that still have a status of manual review. I think that means checking them against lineup is bypassed, so maybe another status would be appropriate. 
+    - I see rows that were marked delete from decisions. 
+4. Dev / Test > Verification > Verify Parent Lineup vs Lineup
+    - PARENT_LINEUP_DRIFT - ChangedFields: Date. THERE IS NO DISCERNIBLE DIFFERENCE IN THE DATES PRESENTED AS EVIDENCE. The suggested action is to sync parent to lineup. This should not be prompting a decision. They appear to be in sync. 
+    - It appears to have changed a row that was marked delete back to manual review. This is not acceptable. 
+    - Some lineup update details read "Confirmed current with Parent Lineup." despite prompting a decision. 
+5. I am wondering if we also said we would log decisions to idLog at somepoint, there are some entries there. 
+
+------------------------
+------------------------
+
+PARENT_ONLY_NONE_P-C9C5F9B3_c97bacae53
+{"ReviewID":"PARENT_ONLY_NONE_P-C9C5F9B3_c97bacae53","ReviewType":"PARENT_ONLY","SourceSheet":"","SourceRow":"","SourceID":"","SourceLink":"","CandidateSheet":"Parent Lineup","CandidateRow":65,"CandidateID":"P-C9C5F9B3","CandidateLink":"","ImportTitle":"","ParentTitle":"Partners in Education Workshop:\nTBA (2 of 4)","ExistingParentID":"P-C9C5F9B3","DuplicateParentID":"","VenueEventID":"","VenueUUID":"","MatchedFields":"","ChangedFields":"","ChangedDetails":"","Evidence":"","Confidence":"LOW","SuggestedAction":"REVIEW_PARENT_ONLY","SuggestionReason":"No matching import row found; review before deleting or merging.","SuggestedKeepID":"P-C9C5F9B3","CandidateIDs":"","AffectedRows":"","Decision":"ACCEPT","RequestedAction":"MARK_DELETE","KeepChoice":"KEEP_EXISTING","KeepParentID":"P-C9C5F9B3","ReviewNotes":"Manual decision: ACCEPT","ReviewedBy":"Manual reviewer","ReviewedAt":{"__scheduler3Type":"Date","value":"2026-10-06T02:01:28.669Z"},"ActionStatus":"FAILED","ActionedAt":{"__scheduler3Type":"Date","value":"2026-10-07T00:36:27.966Z"},"ActionDetails":"MARK_DELETE is only supported for LINEUP_ORPHAN reviews.","CandidateTitle":"Partners in Education Workshop:\nTBA (2 of 4)"}
+Parent-only review PARENT_ONLY_NONE_P-C9C5F9B3_c97bacae53 was already applied; row retained. (The decision was mark delete. It just never got ingested before overwriting)
