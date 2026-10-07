@@ -359,9 +359,7 @@ Engine.Decisions = {
     const auditMap = ctx.getMap("AUDIT");
     const idCol = Engine.getColumnIndex(auditMap, "UniqueID");
     const detailsCol = Engine.getColumnIndex(auditMap, "LogDetails");
-    const typeCol = Engine.getColumnIndex(auditMap, "Type") >= 0
-      ? Engine.getColumnIndex(auditMap, "Type")
-      : Engine.getColumnIndex(auditMap, "RecordType");
+    const typeCol = Engine.getColumnIndex(auditMap, "RecordType");
     const applied = new Set();
     ctx.appliedReviewOutcomes = {};
     if (auditSheet && idCol >= 0 && typeCol >= 0) {

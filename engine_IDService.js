@@ -35,7 +35,7 @@ Engine.IDService = {
       if (uniqueIdCol >= 0) newRow[uniqueIdCol] = entry.id;
       if (ctx.getCol("ID_LOG", "RecordType") >= 0) newRow[ctx.getCol("ID_LOG", "RecordType")] = entry.type;
       if (ctx.getCol("ID_LOG", "Title") >= 0) newRow[ctx.getCol("ID_LOG", "Title")] = entry.title;
-      if (ctx.getCol("ID_LOG", "ParentID") >= 0) newRow[ctx.getCol("ID_LOG", "ParentID")] = entry.parentId || "N/A";
+      if (ctx.getCol("ID_LOG", "parentID") >= 0) newRow[ctx.getCol("ID_LOG", "parentID")] = entry.parentId || "N/A";
       if (fingerprintCol >= 0 && entry.fingerprint) newRow[fingerprintCol] = entry.fingerprint;
       if (ctx.getCol("ID_LOG", "SheetLocation") >= 0) newRow[ctx.getCol("ID_LOG", "SheetLocation")] = entry.location || "N/A";
       if (ctx.getCol("ID_LOG", "SyncStatus") >= 0) newRow[ctx.getCol("ID_LOG", "SyncStatus")] = entry.status || "Active";
@@ -173,9 +173,7 @@ Engine.IDService = {
           const location = `${sheet.getName()}!R${i + 1}`;
           const titleCol = Engine.getColumnIndex(sheetMap, "Title");
           const eventNameCol = Engine.getColumnIndex(sheetMap, "EventName");
-          const parentIdCol = Engine.getColumnIndex(sheetMap, "ParentID") >= 0
-            ? Engine.getColumnIndex(sheetMap, "ParentID")
-            : Engine.getColumnIndex(sheetMap, "parentID");
+          const parentIdCol = Engine.getColumnIndex(sheetMap, "parentID");
           const title = titleCol >= 0 ? row[titleCol] : eventNameCol >= 0 ? row[eventNameCol] : (row[0] || "No Title");
           const parentId = parentIdCol >= 0 ? row[parentIdCol] : "";
           const rowObject = {};
@@ -209,7 +207,7 @@ Engine.IDService = {
               if (lastUpdatedCol >= 0) idLogSheet.getRange(existing.rowIdx, lastUpdatedCol + 1).setValue(now);
               const recordTypeCol = Engine.getColumnIndex(idLogMap, "RecordType");
               const titleIdCol = Engine.getColumnIndex(idLogMap, "Title");
-              const parentIdLogCol = Engine.getColumnIndex(idLogMap, "ParentID");
+              const parentIdLogCol = Engine.getColumnIndex(idLogMap, "parentID");
               if (recordTypeCol >= 0) idLogSheet.getRange(existing.rowIdx, recordTypeCol + 1).setValue(role);
               if (titleIdCol >= 0) idLogSheet.getRange(existing.rowIdx, titleIdCol + 1).setValue(title);
               if (parentIdLogCol >= 0) idLogSheet.getRange(existing.rowIdx, parentIdLogCol + 1).setValue(parentId);
@@ -223,7 +221,7 @@ Engine.IDService = {
             entry[uniqueIdCol] = id;
             if (Engine.getColumnIndex(idLogMap, "RecordType") >= 0) entry[Engine.getColumnIndex(idLogMap, "RecordType")] = role;
             if (Engine.getColumnIndex(idLogMap, "Title") >= 0) entry[Engine.getColumnIndex(idLogMap, "Title")] = title;
-            if (Engine.getColumnIndex(idLogMap, "ParentID") >= 0) entry[Engine.getColumnIndex(idLogMap, "ParentID")] = parentId;
+            if (Engine.getColumnIndex(idLogMap, "parentID") >= 0) entry[Engine.getColumnIndex(idLogMap, "parentID")] = parentId;
             if (fingerprintCol >= 0) entry[fingerprintCol] = fingerprint;
             if (sheetLocationCol >= 0) entry[sheetLocationCol] = location;
             if (Engine.getColumnIndex(idLogMap, "SyncStatus") >= 0) entry[Engine.getColumnIndex(idLogMap, "SyncStatus")] = "Active";
@@ -259,7 +257,7 @@ Engine.IDService = {
 
     const uniqueIdCol = Engine.getColumnIndex(idLogMap, "UniqueID");
     const sheetLocationCol = Engine.getColumnIndex(idLogMap, "SheetLocation");
-    const parentIdCol = Engine.getColumnIndex(idLogMap, "ParentID");
+    const parentIdCol = Engine.getColumnIndex(idLogMap, "parentID");
     if (uniqueIdCol < 0 || sheetLocationCol < 0) return { linked: 0 };
 
     // Build parentID to row lookup across Parent Lineup
