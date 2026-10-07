@@ -187,11 +187,37 @@ function pushDraftSeasonCalendar() {
 }
 
 function refreshAdoptionSuggestions() {
-  showCalendarActionUnavailable('Refresh Adoption Suggestions');
+  const ui = SpreadsheetApp.getUi();
+  const ctx = Engine.getContext();
+  Engine.Sync.reconcileLogs(ctx);
+  const preview = Engine.Sync.previewAdoptions(ctx);
+  const lines = preview.proposals.slice(0, 25).map(p => `• ${p.row.Title} (${new Date(p.row.Date).toDateString()})  →  ${p.venueTitle}`);
+  if (preview.proposals.length > 25) lines.push(`…and ${preview.proposals.length - 25} more`);
+  ui.alert(
+    `${preview.proposals.length} adoption suggestion(s), ${preview.skipped.length} skipped`,
+    (lines.join("\n") || "Nothing to adopt.") + "\n\nNo changes made. Use Accept Adoption Suggestions to apply.",
+    ui.ButtonSet.OK
+  );
+  return preview.proposals.length;
 }
 
 function acceptAdoptionSuggestions() {
-  showCalendarActionUnavailable('Accept Adoption Suggestions');
+  const ui = SpreadsheetApp.getUi();
+  const ctx = Engine.getContext();
+  const preview = Engine.Sync.previewAdoptions(ctx);
+  if (preview.proposals.length === 0) {
+    ui.alert("No adoption suggestions to accept. Run Refresh Adoption Suggestions first.");
+    return;
+  }
+  const response = ui.alert(
+    "Accept adoptions?",
+    `Link ${preview.proposals.length} Crew Calendar Log row(s) to their existing venue calendar events and mark them "Adopted from Venue"? This changes the sheet only, not any calendar.`,
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) return;
+  const result = Engine.Sync.acceptAdoptions(ctx);
+  ui.alert(`Adopted ${result.adopted} row(s); skipped ${result.skipped}.`);
+  return result;
 }
 
 function wipeDraftSeasonCalendar() {

@@ -123,7 +123,7 @@ Engine.Sync = {
       // Preserve manually/engine-assigned Lineup UUID links; the clear below would wipe them.
       const priorUuidByEventId = {};
       scanSheet(role, ctx).forEach(function(r) {
-        const eid = String(r.eventID || r.EventID || "").trim();
+        const eid = String(r.eventID || "").trim();
         const uuid = String(r.UUID || "").trim();
         if (eid && uuid) priorUuidByEventId[eid] = uuid;
       });
@@ -152,6 +152,77 @@ Engine.Sync = {
    * RECONCILE: Compares Crew_Calendar_Log against Venue_Cal_Log.
    * Identifies Venue Adoptions and flags Location Conflicts.
    */
+ /**
+   * ADOPTION PREVIEW: lists crew rows reconcile flagged "Possible Adoption" and the venue
+   * event each would link to. Read-only; accepting is a separate step (acceptAdoptions).
+   */
+  previewAdoptions: function(ctx) {
+    const crewEvents = scanSheet("CREWCAL", ctx);
+    const venueById = {};
+    scanSheet("VENUECAL", ctx).forEach(v => {
+      const id = String(v.eventID || "").trim();
+      if (id) venueById[id] = v;
+    });
+
+    const claimed = {};
+    crewEvents.forEach(r => {
+      const id = String(r.eventID || "").trim();
+      if (id) claimed[id] = true;
+    });
+
+    const proposals = [];
+    const skipped = [];
+    crewEvents.forEach(crewRow => {
+      if (crewRow.SyncStatus !== "Manual Review" || crewRow.eventID) return;
+      const m = /^Possible Adoption:\s*(\S+)/.exec(String(crewRow.UpdateDetails || ""));
+      if (!m) return;
+      const venueId = m[1];
+      const venueRow = venueById[venueId];
+      if (!venueRow) {
+        skipped.push({ row: crewRow, reason: "venue event no longer in Venue_Cal_Log" });
+      } else if (claimed[venueId]) {
+        skipped.push({ row: crewRow, reason: "venue event already linked to another crew row" });
+      } else {
+        claimed[venueId] = true;
+        proposals.push({ row: crewRow, venueId: venueId, venueRow: venueRow, venueTitle: venueRow.Title });
+      }
+    });
+    return { proposals: proposals, skipped: skipped, crewEvents: crewEvents };
+  },
+
+  /**
+   * ADOPT: links each proposed crew row to its venue event (EventID) and marks it
+   * "Adopted from Venue" (BYPASS), so a later push neither recreates nor edits the venue's event.
+   * Sheet-only; never writes to a calendar. Revert a row by clearing its EventID and status.
+   */
+  acceptAdoptions: function(ctx) {
+    const preview = this.previewAdoptions(ctx);
+    const venueTouched = [];
+    preview.proposals.forEach(p => {
+      p.row.eventID = p.venueId;
+      // Backfill the Lineup UUID onto the venue row so the association survives future venue pulls.
+      if (p.venueRow && String(p.venueRow.UUID || "").trim() !== String(p.row.UUID || "").trim()) {
+        p.venueRow.UUID = p.row.UUID;
+        venueTouched.push(p.venueRow);
+      }
+      Engine.Status.apply(ctx, "CREWCAL", null, "Adopted from Venue", {
+        details: `Linked to venue event ${p.venueId} ("${p.venueTitle}").`,
+        targetObj: p.row
+      });
+    });
+    if (preview.proposals.length > 0) patchRows("CREWCAL", preview.crewEvents, ctx);
+    if (venueTouched.length > 0) {
+      patchRows("VENUECAL", venueTouched, ctx);
+      Engine.IDService.syncAll(ctx);
+    }
+    Engine.Log.write(ctx, {
+      stage: "RECONCILE",
+      type: "ADOPTIONS_ACCEPTED",
+      details: `Adopted ${preview.proposals.length} crew row(s) from venue events (${venueTouched.length} venue row(s) given a UUID); skipped ${preview.skipped.length}.`
+    });
+    return { adopted: preview.proposals.length, skipped: preview.skipped.length };
+  },
+
  /**
    * Fuzzy "same show?" check for a venue-calendar title vs a Lineup/crew title.
    * Venue titles routinely differ by typos, smart punctuation, line breaks, or an added/dropped subtitle.
@@ -214,13 +285,12 @@ Engine.Sync = {
 
       // Exact title match, or a human manually flagged "Prefer Venue Event": treat as the same
       // show rather than a conflict, even if the titles don't match verbatim.
-      // TODO: remove eventID fallback once Venue_Cal_Log's Map_Registry field is capitalized.
       const titleMatch = physicalMatches.find(v => this._titlesLikelyMatch(v.Title, crewRow.Title));
       if (titleMatch || crewRow.Options === "Prefer Venue Event") {
         const match = titleMatch || physicalMatches[0];
-        if (!crewRow.EventID) {
+        if (!crewRow.eventID) {
           Engine.Status.apply(ctx, "CREWCAL", null, "Manual Review", {
-            details: `Possible Adoption: ${match.EventID || match.eventID}`,
+            details: `Possible Adoption: ${match.eventID}`,
             targetObj: crewRow
           });
 
@@ -232,7 +302,7 @@ Engine.Sync = {
       }
 
       // No title match at this date/location: something else genuinely has the room.
-      const trueConflicts = physicalMatches.filter(v => (v.EventID || v.eventID) !== crewRow.EventID);
+      const trueConflicts = physicalMatches.filter(v => v.eventID !== crewRow.eventID);
       if (trueConflicts.length > 0) {
         Engine.Status.apply(ctx, "CREWCAL", null, "Location Conflict", {
           details: `Room booked by: ${trueConflicts[0].Title}`,
@@ -474,9 +544,9 @@ Engine.Sync = {
 
     // 2. ACTION: DELETE (status-driven, or a manual "Delete from Calendar" trigger)
     if (crewRow.SyncStatus === "To Delete on calendar" || crewRow.Options === "Delete from Calendar") {
-      if (crewRow.EventID) {
+      if (crewRow.eventID) {
         if (canWrite && modeAllowsCalendarWrites) {
-          Engine.Calendar.deleteEvent(targetCalId, crewRow.EventID);
+          Engine.Calendar.deleteEvent(targetCalId, crewRow.eventID);
           crewRow.Options = "AutoSync"; // one-shot trigger resets itself
           Engine.Status.apply(ctx, role, null, "Deleted by Calendar", { targetObj: crewRow });
           Engine.IDService.upsert(ctx, { id: crewRow.UUID, status: "Deleted", details: "Removed from Cal" });
@@ -491,10 +561,10 @@ Engine.Sync = {
     const forcedPush = crewRow.Options === "Push to Calendar";
 
     // 3. ACTION: CREATE (No EventID exists)
-    if (!crewRow.EventID || crewRow.EventID === "") {
+    if (!crewRow.eventID || crewRow.eventID === "") {
       if (canWrite && modeAllowsCalendarWrites) {
         const newEventId = Engine.Calendar.createEvent(targetCalId, crewRow, ctx);
-        crewRow.EventID = newEventId;
+        crewRow.eventID = newEventId;
         if (forcedPush) crewRow.Options = "AutoSync";
         Engine.Status.apply(ctx, role, null, "Pushed to Calendar", { targetObj: crewRow });
         
@@ -513,7 +583,7 @@ Engine.Sync = {
     const registryEntry = ctx.registry[crewRow.UUID]; // Assuming ctx loaded registry
     if (forcedPush || (registryEntry && registryEntry.SyncHash !== crewRow.SyncHash)) {
       if (canWrite && modeAllowsCalendarWrites) {
-        Engine.Calendar.updateEvent(targetCalId, crewRow.EventID, crewRow);
+        Engine.Calendar.updateEvent(targetCalId, crewRow.eventID, crewRow);
         if (forcedPush) crewRow.Options = "AutoSync";
         Engine.Status.apply(ctx, role, null, "Pushed to Calendar", { targetObj: crewRow });
       }
@@ -577,9 +647,9 @@ Engine.Sync = {
     });
 
     crewEvents.forEach(crewRow => {
-      if (!crewRow.EventID) return; // Not yet linked to a calendar event; nothing to compare.
+      if (!crewRow.eventID) return; // Not yet linked to a calendar event; nothing to compare.
 
-      const calEvent = calMap[crewRow.EventID];
+      const calEvent = calMap[crewRow.eventID];
       if (!calEvent) {
         Engine.Status.apply(ctx, role, null, "Missing from Calendar", {
           details: "Log has an EventID but no matching event exists on the Draft calendar.",
@@ -588,7 +658,7 @@ Engine.Sync = {
         return;
       }
 
-      matchedIds[crewRow.EventID] = true;
+      matchedIds[crewRow.eventID] = true;
 
       const calTitle = calEvent.getTitle() || "";
       const calStart = calEvent.getStartTime();
@@ -598,7 +668,7 @@ Engine.Sync = {
         destinationRole: role,
         fields: ["Title", "Start"],
         comparisonModes: { Start: "timestamp" },
-        identifier: crewRow.UUID || crewRow.EventID
+        identifier: crewRow.UUID || crewRow.eventID
       });
 
       if (!comparison.equal) {
@@ -631,7 +701,7 @@ Engine.Sync = {
       const linkContext = crewRow ? {
         sheetName: role,
         rowIdx: crewRow._rowNum,
-        id: crewRow.UUID || crewRow.EventID
+        id: crewRow.UUID || crewRow.eventID
       } : {};
       orphanCount += group.ids.length;
       if (group.ids.length > 1) {

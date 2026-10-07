@@ -234,6 +234,15 @@ After syncing, `Venue_Cal_Log`, `Crew_Calendar_Log`, and `Draft_Season_Log`
 are sorted ascending by `Date`, then `Start`. The ID registry's sheet locations
 and links are refreshed after each sort.
 
+### Adopting Venue Events
+
+Reconcile flags a Crew log row as `Manual Review` / `Possible Adoption: <eventID>` when a venue calendar event looks like the same show (fuzzy title match on the same date and venue). Adoption is sheet-only and never writes to a calendar.
+
+1. `Calendar > Refresh Adoption Suggestions` runs reconcile and lists the proposed links without changing anything.
+2. `Calendar > Accept Adoption Suggestions` asks for confirmation, then sets each row's `EventID` to the venue event's ID and its status to `Adopted from Venue` (BYPASS), so pushing to the calendar neither recreates nor edits the venue's event. The Lineup `UUID` is also written to the matching `Venue_Cal_Log` row, and later venue pulls preserve it.
+
+To undo an adoption, clear that row's `EventID` and set its status back to `Manual Review`. Suggestions are skipped when the venue event is gone or already linked to another crew row.
+
 ## Recovery
 
 If a destructive reset is required, use a Developer Override after confirming the target sheet, operation, and row count. Do not use ordinary sync or verification functions as reset tools.

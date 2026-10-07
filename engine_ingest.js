@@ -1358,7 +1358,7 @@ Engine.Ingest.createLineupDeletionCleanupDecision = function(ctx, role, sheet, c
   const uuidCol = Engine.getColumnIndex(logMap, "UUID");
   const sourceCol = Engine.getColumnIndex(logMap, "Source");
   const titleCol = Engine.getColumnIndex(logMap, "Title");
-  const eventIdCol = Engine.getColumnIndex(logMap, "EventID");
+  const eventIdCol = Engine.getColumnIndex(logMap, "eventID");
   if (uuidCol < 0) {
     Engine.Log.warn(ctx, "INGEST", `Cannot create calendar cleanup review for ${candidate.uuid}: ${logRole}.UUID is not mapped.`);
     return false;
@@ -1451,7 +1451,7 @@ Engine.Ingest.applyLineupCalendarCleanup = function(ctx, decision, action) {
   const uuidCol = Engine.getColumnIndex(map, "UUID");
   const sourceCol = Engine.getColumnIndex(map, "Source");
   const statusCol = Engine.getColumnIndex(map, "SyncStatus");
-  const eventIdCol = Engine.getColumnIndex(map, "EventID");
+  const eventIdCol = Engine.getColumnIndex(map, "eventID");
   const uuid = String(decision.CandidateID || "").trim();
   if (!uuid || uuidCol < 0 || statusCol < 0 || eventIdCol < 0) {
     throw new Error(`${role} must map UUID, SyncStatus, and EventID for calendar cleanup.`);

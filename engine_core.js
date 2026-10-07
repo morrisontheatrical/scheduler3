@@ -666,7 +666,7 @@ var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
           stage: logContext.stage || "STATUS_UPDATE",
           sheetName: roleOrSheetName,
           rowIdx: rowIdx || (targetObj && targetObj._rowNum) || "N/A",
-          id: logContext.id || (targetObj && (targetObj.UUID || targetObj.EventID)) || "N/A",
+          id: logContext.id || (targetObj && (targetObj.UUID || targetObj.eventID)) || "N/A",
           type: statusName,
           details: logContext.details || `Status changed to ${statusName}`
         });
