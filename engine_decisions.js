@@ -473,6 +473,13 @@ Engine.Decisions = {
     return { keepID: resolvedKeepID, duplicateID: resolvedDuplicateID };
   },
 
+  // SourceRow is only an import row when the review's SourceSheet is the active import sheet.
+  _importRowHint: function(ctx, decision) {
+    const iSheet = Engine.getSeasonSheet(ctx, "IMPORT");
+    if (!iSheet || String(decision.SourceSheet || "").trim() !== iSheet.getName()) return null;
+    return decision.SourceRow;
+  },
+
   stampManualReviews: function(ctx) {
     const table = this.ensureSchema(ctx);
     const decisions = this.pending(ctx);
@@ -554,7 +561,7 @@ Engine.Decisions = {
           results.skipped++;
           return;
         } else if (action === "REVIEW_IMPORT_DRIFT" && ["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) {
-          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true })) {
+          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true, importRow: this._importRowHint(ctx, decision) })) {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
@@ -578,7 +585,7 @@ Engine.Decisions = {
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
           if (!decision.ExistingParentID) throw new Error("ACCEPT_IMPORT requires ExistingParentID");
-          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true })) {
+          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true, importRow: this._importRowHint(ctx, decision) })) {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;

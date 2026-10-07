@@ -2107,6 +2107,9 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
               Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Parent Lineup now cleanly matches import.");
             });
         }
+      } else if (!Engine.Status.blocksWrite(ctx, currentStatus) && pCol("LastSynced") >= 0) {
+        // Verified clean against import, so record that this pass confirmed the row.
+        pSheet.getRange(match.rowIdx, pCol("LastSynced") + 1).setValue(new Date());
       }
     }
   });
@@ -2191,7 +2194,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   Engine.Log.write(ctx, {
     stage: "VERIFY_IMPORT",
     type: "VERIFY_IMPORT_COMPLETE",
-    details: `Checked ${iData.length} import rows. ${flagged} flagged (${renamedCandidate} possible rename), ${importOnly} import-only, ${parentOnly} Parent Lineup-only, ${parentDuplicateSuggestions.created} Parent duplicate suggestions created.`
+    details: `Checked ${iData.length} import rows.\n${flagged} flagged (${renamedCandidate} possible rename)\n${importOnly} import-only\n${parentOnly} Parent Lineup-only\n${parentDuplicateSuggestions.created} Parent duplicate suggestions created`
   });
 
   return {
@@ -2524,14 +2527,15 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
           const statusCol = lCol("SyncStatus");
           if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Synced");
           Engine.Status.paint(ctx, lRole, child.rowIdx, "Synced");
+        }
 
-          if (uuid && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
-            Engine.Decisions.reviewable(ctx)
-              .filter(d => (d.CandidateID === uuid || d.SourceID === parentID) && d.ReviewType === "PARENT_LINEUP_DRIFT")
-              .forEach(d => {
-                Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Lineup performance cleanly matches Parent.");
-              });
-          }
+        // Supersede stale drift reviews for this performance even when its status is no longer Manual Review.
+        if (uuid && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
+          Engine.Decisions.reviewable(ctx)
+            .filter(d => d.CandidateID === uuid && d.ReviewType === "PARENT_LINEUP_DRIFT")
+            .forEach(d => {
+              Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Lineup performance cleanly matches Parent.");
+            });
         }
       }
     });
@@ -2667,7 +2671,15 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   iData.shift();
  
   const pName = normalize(pRow[pCol("EventName")]);
-  let importRowIdx = iData.findIndex(row => normalize(row[iCol("EventName")]) === pName);
+  let importRowIdx = -1;
+  // Prefer the exact import row recorded on the review; a renamed event cannot be found by name.
+  const hintedRow = Number(options.importRow);
+  if (Number.isInteger(hintedRow) && hintedRow >= 2 && hintedRow - 2 < iData.length) {
+    importRowIdx = hintedRow - 2;
+  }
+  if (importRowIdx === -1) {
+    importRowIdx = iData.findIndex(row => normalize(row[iCol("EventName")]) === pName);
+  }
 
   if (importRowIdx === -1) {
     // Same fallback used everywhere else: Opening+Range+Venue triple match.

@@ -123,6 +123,15 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
 32. make sure runHealthCheck logs the health check results.
   - see 
 
+33. Findings from the 2026-10-06 review (`Test-Results/review 10-6-26`), still open:
+  - `MARK_DELETE` on `PARENT_ONLY` reviews is unsupported (only `LINEUP_ORPHAN`); decide whether to add a Parent-row delete path.
+  - `PARENT_ONLY` accept-import/merge fails when the parent row has no import candidate; draft verify appends a second row with an existing `parentID` instead of updating it.
+  - `LINEUP_DELETE_CLEANUP` evidence repeats "CREWCAL row remains without an EventID" even when the row has an `EventID`.
+  - `LINEUP_ORPHAN` review ID is not written to `Audit_Log`.
+  - Log mode changes and `Lookup list diagnostics` to `Audit_Log`.
+  - Verify `draft_parent` Map_Registry column indexes (RangeRef shows `Row N` in draft mode).
+  - Re-run Verify Parent vs Lineup to confirm date-only `PARENT_LINEUP_DRIFT` rows supersede.
+
 33. Sync ID Registry Error (Issue #28): `Engine.IDService.syncAll()` and `upsert()` now resolve `Fingerprint` first with `SyncHash` fallback.
   - Code-side fix is in place; run `Sync ID Registry` on a controlled workbook and verify registry locations/snapshots before closing the issue.
   - see [#28](https://github.com/morrisontheatrical/scheduler3/issues/28)

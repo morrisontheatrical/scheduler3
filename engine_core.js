@@ -694,7 +694,10 @@ var Engine = {
       const auditSheet = ctx.sheets.AUDIT || ctx.ss.getSheetByName("Audit_Log"); 
       if (!auditSheet) return;
 
-      const { stage, sheetName, rowIdx, id, type, details } = params;
+      const { stage, id, type, details, sheetName, rowIdx } = params;
+      // Callers may pass a role code (e.g. "PARENTCURRENT"); the log should show the real sheet name.
+      const roleSheetName = ctx && ctx.roles && sheetName ? ctx.roles[sheetName] : "";
+      const displaySheetName = roleSheetName || sheetName;
       const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "MM/dd HH:mm:ss");
 
       // Turn RangeRef into a clickable link back to the exact row, when we can resolve one.
@@ -722,7 +725,7 @@ var Engine = {
         }
       }
 
-      const logRow = [timestamp, stage || "SYSTEM", sheetName || "N/A", rangeRefCell, id || "N/A", type || "INFO", details || ""];
+      const logRow = [timestamp, stage || "SYSTEM", displaySheetName || "N/A", rangeRefCell, id || "N/A", type || "INFO", details || ""];
 
       auditSheet.insertRowAfter(1);
       auditSheet.getRange(2, 1, 1, logRow.length).setValues([logRow]);
