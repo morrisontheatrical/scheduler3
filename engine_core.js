@@ -19,7 +19,7 @@ const S_SYS = {
 };
 
 
-var Engine = {
+var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
   /**
    * Initializes the context (ctx). 
    * This is called at the top of every main function.
@@ -779,7 +779,7 @@ var Engine = {
   }
 
 
-};
+});
 Engine.Roles = {
   resolve: function(ctx, base) {
     const season = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase();
