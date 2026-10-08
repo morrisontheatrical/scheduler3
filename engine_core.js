@@ -342,6 +342,17 @@ var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
     };
   },
 
+  // ControlPanel layout: Section | Setting Field | Key | Value. Located by header name so the
+  // loaders survive column additions; falls back to the legacy 3-column layout (Label | Key | Value).
+  _controlPanelColumns: function(headerRow) {
+    const headers = (headerRow || []).map(h => String(h).trim().toLowerCase());
+    const key = headers.indexOf("key");
+    const value = headers.indexOf("value");
+    if (key < 0 || value < 0) return { label: 0, key: 1, value: 2 };
+    const label = headers.indexOf("setting field");
+    return { label: label >= 0 ? label : 0, key: key, value: value };
+  },
+
   /**
    * Reads 'ControlPanel' to set global variables
    */
@@ -357,10 +368,11 @@ var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
     const data = sheet.getDataRange().getValues();
     let config = Object.assign({}, defaults);
 
+    const cols = this._controlPanelColumns(data[0]);
     data.forEach(row => {
-      const nam = row[0]; 
-      const key = row[1]; //added this as a code friendlier way to name and rename keys
-      const val = row[2];
+      const nam = row[cols.label];
+      const key = row[cols.key];
+      const val = row[cols.value];
       if (key === "Mode") config.mode = val;
       if (key === "StartSync") config.syncWindow.startDays = Number(val);
       if (key === "EndSync") config.syncWindow.endDays = Number(val);
@@ -383,11 +395,12 @@ var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
 
     const data = sheet.getDataRange().getValues();
     const settings = {};
+    const cols = this._controlPanelColumns(data[0]);
 
     data.forEach(row => {
-      const label = row[0];  //why is it label as opposed to name? In loadConfig, we use row[0] as 'nam' and row[1] as 'key'. Here, we treat row[0] as label and row[1] as key. This is an inconsistency to clean up.
-      const key = row[1] || row[0]; // Use key if available, otherwise fallback to label
-      const value = row[2];
+      const label = row[cols.label];
+      const key = row[cols.key] || row[cols.label]; // Use key if available, otherwise fallback to label
+      const value = row[cols.value];
       if (!key && value === undefined) return;
 
       const normalizedKey = String(key || label || "").trim();
