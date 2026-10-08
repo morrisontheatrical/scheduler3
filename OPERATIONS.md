@@ -241,6 +241,8 @@ Reconcile flags a Crew log row as `Manual Review` / `Possible Adoption: <eventID
 1. `Calendar > Refresh Adoption Suggestions` runs reconcile and lists the proposed links without changing anything.
 2. `Calendar > Accept Adoption Suggestions` asks for confirmation, then sets each row's `EventID` to the venue event's ID and its status to `Adopted from Venue` (BYPASS), so pushing to the calendar neither recreates nor edits the venue's event. The Lineup `UUID` is also written to the matching `Venue_Cal_Log` row, and later venue pulls preserve it.
 
+After adoption and every registry sync, `UUID`/`parentID`/`eventID` cells on the Crew, Draft, and Venue logs are hyperlinked to their source rows.
+
 To undo an adoption, clear that row's `EventID` and set its status back to `Manual Review`. Suggestions are skipped when the venue event is gone or already linked to another crew row.
 
 ## Recovery

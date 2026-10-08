@@ -16,6 +16,7 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
 
 2. Cross-Sheet Hyperlinking (Issues #6, #23, #26, #27).
   - **Implemented, needs live verification:** `refreshLinks()` links Import→Parent, Parent-only, and Parent-duplicate reviews (#6); `Engine.IDService.applyLinks()` links idLog `UniqueID` to its source and `ParentID` to Parent (#23).
+  - **Implemented, needs live verification (#27):** `Engine.IDService.applyLogLinks()` hyperlinks Crew/Draft log `UUID`→Lineup, `parentID`→Parent, `eventID`→Venue_Cal_Log (adopted events), and Venue_Cal_Log `UUID`→Lineup, `parentID`→Parent. It runs at the end of every registry sync because `patchRows()`/`batchWrite()` overwrite cells with plain values.
   - **Still open:** #26 asks for Audit_Log links to corresponding decision rows. #27's broader request remains for associated IDs in Calls, Lineup, Venue_Cal_Log, Crew_Calendar_Log, and Draft_Season_Log. New Lineup/Crew review types also need source/candidate links. Define linked fields and stable row-resolution behavior per sheet, including after sorting, before implementing.
 
 
@@ -54,6 +55,8 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
   - **Unpopulated Lineup Fields ([#25](https://github.com/morrisontheatrical/scheduler3/issues/25))**: `EventOfTotal`, `EndDate`, `AfterToday`, `WithinQuarter`, `WithinMonth`, `SyncStatus`, and `LastUpdated` are populated/refreshed by `goLineup()`; verify both new and updated rows in Apps Script.
   - **Theatrical Date Parsing & Unparseable Review ([#24](https://github.com/morrisontheatrical/scheduler3/issues/24))**: `TheatricalParser` and `Manual Review`/`UpdateDetails` on parse failure are implemented; test actual parser-library behavior with representative strings in Apps Script.
   - **Crew-log spans ([#13](https://github.com/morrisontheatrical/scheduler3/issues/13))**: `EndDate` now determines the crew-log `End` timestamp for multi-day Lineup entries; verify downstream calendar duration with writes disabled first.
+  - **Lineup → Crew log (2026-10-07 live run):** 144 Lineup rows are all present in `Crew_Calendar_Log` (0 missing, 0 drifted). `parentID` is now written on new crew rows and backfilled on existing ones. Reconcile uses fuzzy title matching (`Engine.Sync._titlesLikelyMatch`) and re-evaluates `Location Conflict` rows, so typo'd venue titles are no longer false conflicts. `Calendar > Refresh/Accept Adoption Suggestions` links a crew row to its venue event (`eventID`), sets `Adopted from Venue` (BYPASS), and writes the Lineup `UUID` onto the `Venue_Cal_Log` row; 71 crew rows were adopted in the first run. See [OPERATIONS.md](OPERATIONS.md#adopting-venue-events).
+  - **Open:** crew row `C-4C655F9E` is a stale legacy row with no Lineup match (reported as an orphan on every reconcile); orphan crew rows are warned about but never resolved. 73 crew rows remain `Manual Review` with no `eventID`; they will be created on the first calendar push, which has not been run yet. Adoption currently covers `CREWCAL` only, not `DRAFTCAL`.
   - Apps Script/workbook validation remains outstanding across Current and Draft; code completion is not issue closure.
 
 
@@ -92,6 +95,8 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
 
 23. Add an optional auto-delete-stale-row mode to `Engine.Maintenance.repairMapRegistry()`. Today it only ever flags stale rows (`[STALE: no matching column]`) and never deletes them, by design — but that leaves a manual cleanup step every time a physical column is removed (see `Decisions Made` below for the bug this caused).
   - see 
+
+23a. **Registry field names must be used end to end (core tenet).** The 2026-10-07 audit found callers using the wrong field name (`EventID` vs registry `eventID`; `ParentID` vs `parentID` on idLog), which silently returned -1/undefined and broke calendar linking, idLog ParentID population, and Lineup-delete calendar cleanup. Fixed in `engine_sync.js`, `engine_ingest.js`, `engine_core.js`, `engine_IDService.js`, `engine_decisions.js`. Remaining: `Draft_Season_Log` registry rows may still carry `Row.Status`/`ParentID` as Field Names (verify in the live sheet); `loadBypassList` and the bootstrap loaders (`ControlPanel`, `Calendars`, `Status`, `Sheet_Settings`, `Mode_Config`) read by header/position — move the bootstrap loaders to GID lookups; legacy helpers in `0_helper.js` still use `CREWCALMAP` (see #21). Closely related to #2 (case-insensitive matching).
 
 24. Evaluate case-insensitive `Field Name` matching in `Engine.getColumnIndex`/`ctx.getMap`, so that things like `parentID` vs. `ParentID` can't silently diverge into two different keys again. Touches every `pCol`/`lCol`/`getCol`/`ctx.getMap` call site — needs a deliberate pass, not a quick patch.
   - in progress https://github.com/morrisontheatrical/scheduler3/issues/2

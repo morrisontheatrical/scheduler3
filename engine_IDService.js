@@ -241,6 +241,7 @@ Engine.IDService = {
       }
       
       this.applyLinks(ctx);
+      this.applyLogLinks(ctx);
       Engine.Log.info(ctx, "ID_SERVICE", `Registry Sync: ${newEntries.length} new IDs added.`);
     },
 
@@ -310,6 +311,67 @@ Engine.IDService = {
 
     return { linked: linkedCount };
   }
+};
+
+/**
+ * Hyperlinks associated (non-key) IDs on the calendar log sheets to their source rows (#27).
+ * Runs after every sort/write because patchRows/batchWrite overwrite cells with plain values.
+ * Only resolvable IDs are linked; anything else is left exactly as it was.
+ *   Crew/Draft log: UUID -> Lineup, parentID -> Parent, eventID -> Venue_Cal_Log (adopted events)
+ *   Venue log:      UUID -> Lineup, parentID -> Parent
+ */
+Engine.IDService.applyLogLinks = function(ctx) {
+  const buildIndex = (role, field) => {
+    const sheet = role && Engine.getSheetByRole(ctx, role);
+    const map = role && ctx.getMap(role);
+    const col = Engine.getColumnIndex(map, field);
+    if (!sheet || col < 0 || sheet.getLastRow() < 2) return null;
+    const index = new Map();
+    sheet.getRange(2, col + 1, sheet.getLastRow() - 1, 1).getValues().forEach((row, i) => {
+      const key = String(row[0] || "").trim();
+      if (key && !index.has(key)) index.set(key, i + 2);
+    });
+    return { gid: sheet.getSheetId(), index: index };
+  };
+
+  const targets = {
+    lineup: buildIndex(Engine.Roles.resolve(ctx, "LINEUP"), "UUID"),
+    parent: buildIndex(Engine.Roles.resolve(ctx, "PARENT"), "parentID"),
+    venue: buildIndex("VENUECAL", "eventID")
+  };
+  const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+  const specs = [
+    { role: isDraft ? "DRAFTCAL" : "CREWCAL", fields: [["UUID", "lineup"], ["parentID", "parent"], ["eventID", "venue"]] },
+    { role: "VENUECAL", fields: [["UUID", "lineup"], ["parentID", "parent"]] }
+  ];
+
+  let linked = 0;
+  specs.forEach(spec => {
+    const sheet = Engine.getSheetByRole(ctx, spec.role);
+    const map = ctx.getMap(spec.role);
+    if (!sheet || !map || sheet.getLastRow() < 2) return;
+    const rowCount = sheet.getLastRow() - 1;
+
+    spec.fields.forEach(([field, targetName]) => {
+      const target = targets[targetName];
+      const col = Engine.getColumnIndex(map, field);
+      if (!target || col < 0) return;
+      const range = sheet.getRange(2, col + 1, rowCount, 1);
+      const values = range.getValues();
+      const formulas = range.getFormulas();
+      let changed = false;
+      const output = values.map((row, i) => {
+        const id = String(row[0] || "").trim();
+        const targetRow = id && target.index.get(id);
+        if (!targetRow) return [formulas[i][0] || row[0]];
+        changed = true;
+        linked++;
+        return [`=HYPERLINK("#gid=${target.gid}&range=A${targetRow}","${id.replace(/"/g, '""')}")`];
+      });
+      if (changed) range.setFormulas(output);
+    });
+  });
+  return { linked: linked };
 };
 
 function refreshIDRegistryLinks() {
