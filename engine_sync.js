@@ -211,10 +211,9 @@ Engine.Sync = {
       });
     });
     if (preview.proposals.length > 0) patchRows("CREWCAL", preview.crewEvents, ctx);
-    if (venueTouched.length > 0) {
-      patchRows("VENUECAL", venueTouched, ctx);
-      Engine.IDService.syncAll(ctx);
-    }
+    if (venueTouched.length > 0) patchRows("VENUECAL", venueTouched, ctx);
+    // patchRows rewrites whole rows as values, so relink after any adoption, not only venue backfills.
+    if (preview.proposals.length > 0) Engine.IDService.syncAll(ctx);
     Engine.Log.write(ctx, {
       stage: "RECONCILE",
       type: "ADOPTIONS_ACCEPTED",
