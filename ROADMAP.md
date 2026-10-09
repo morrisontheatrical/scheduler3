@@ -7,7 +7,8 @@ Sequence work by operational risk: finish the Apps Script/live-workbook checks f
 2. **Complete end-to-end reconciliation validation** — issues #13, #24, and #25. Exercise Parent → Lineup → Crew Calendar in both seasons, including span dates, derived fields, pending deletes, and review queue behavior. Record concrete gaps before expanding the feature scope.
 3. **Finish reference-data normalization** — issue #9. `Engine.loadLookups()` now loads Lookup-owned lists and `REFRULES`-owned enums, and dropdown refresh skips empty sources. Verify the live mappings and dropdowns, then continue the separate Status/behavior/mode vocabulary cleanup.
 4. **Close out hyperlink scope** — #6's decision-row links and #23's idLog links are implemented; #26's Audit_Log-to-decision links and the remaining per-sheet links under #27 still need scoped implementation and verification.
-5. **After these gates**, prioritize schema/reference integrity (#2, #9, #12), then explicit sync modes and reporting (#11, #17, #19). Defer UI and maintenance enhancements (#14–16, #20–22) unless operational needs change.
+5. **Add a `previewPush` dry run (roadmap, not started)** — report create/update/delete counts for the crew/draft calendar push and confirm the target calendar (`_getCrewDraftCalendarId`, currently the Draft Season calendar) before the first calendar write. Follow the `previewWipe` pattern. Deferred while the feature freeze is in effect.
+6. **After these gates**, prioritize schema/reference integrity (#2, #9, #12), then explicit sync modes and reporting (#11, #17, #19). Defer UI and maintenance enhancements (#14–16, #20–22) unless operational needs change.
 
 <!-- Keep the detailed issue mapping below aligned with the current code and validation status. -->
 1. ~~Implement `getSheetByRole(role)` utility to decouple scripts from literal tab names.~~

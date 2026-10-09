@@ -320,7 +320,7 @@ Engine.IDService = {
  *   Crew/Draft log: UUID -> Lineup, parentID -> Parent, eventID -> Venue_Cal_Log (adopted events)
  *   Venue log:      UUID -> Lineup, parentID -> Parent
  */
-Engine.IDService.applyLogLinks = function(ctx) {
+Engine.IDService.applyLogLinks = function(ctx, onlyRole) {
   const buildIndex = (role, field) => {
     const sheet = role && Engine.getSheetByRole(ctx, role);
     const map = role && ctx.getMap(role);
@@ -348,6 +348,7 @@ Engine.IDService.applyLogLinks = function(ctx) {
 
   let linked = 0;
   specs.forEach(spec => {
+    if (onlyRole && spec.role !== onlyRole) return;
     const sheet = Engine.getSheetByRole(ctx, spec.role);
     const map = ctx.getMap(spec.role);
     if (!sheet || !map || sheet.getLastRow() < 2) return;
@@ -403,6 +404,42 @@ Engine.IDService.refreshAllLinks = function(ctx) {
     : null;
   return { registryLinked: registry.linked, logLinked: logs.linked, decisionLinks: decisions, repainted: repainted };
 };
+
+/**
+ * Links and colors for one sheet only. Audit_Log is intentionally excluded (append-only, high volume).
+ */
+Engine.IDService.refreshSheetLinks = function(ctx, role) {
+  const result = { role: role, linked: 0, repainted: 0 };
+  if (role === "ID_LOG") {
+    result.linked = Engine.IDService.applyLinks(ctx).linked;
+  } else if (role === "DECISIONS") {
+    result.decisionLinks = Engine.Decisions.refreshLinks(ctx);
+  } else {
+    result.linked = Engine.IDService.applyLogLinks(ctx, role).linked;
+    result.repainted = Engine.Status.repaintSheet(ctx, role);
+  }
+  return result;
+};
+
+function refreshActiveSheetLinks() {
+  const ctx = Engine.getContext();
+  const ui = SpreadsheetApp.getUi();
+  const active = ctx.ss.getActiveSheet();
+  const role = Object.keys(ctx.roles).find(key => ctx.roles[key] === active.getName());
+  if (!role) {
+    ui.alert(`"${active.getName()}" has no Sheet Role in Sheet_Settings, so it cannot be refreshed.`);
+    return null;
+  }
+  if (role === "AUDIT") {
+    ui.alert("Audit_Log is excluded from link refresh.");
+    return null;
+  }
+  Engine.Log.command(ctx, `Refresh Links: ${active.getName()}`);
+  const results = Engine.IDService.refreshSheetLinks(ctx, role);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: `Refresh Links: ${active.getName()}`, type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  ctx.ss.toast(`Linked ${results.linked || 0}, repainted ${results.repainted || 0} row(s).`, active.getName());
+  return results;
+}
 
 function refreshAllLinks() {
   const ctx = Engine.getContext();

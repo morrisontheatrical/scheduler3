@@ -85,7 +85,7 @@ function onOpen() {
       .addToUi();
       
       ui.createMenu('Sheet')
-        .addItem('Refresh All Links & Colors', 'refreshActiveSheetLinks')
+        .addItem('Refresh Links & Colors (this sheet)', 'refreshActiveSheetLinks')
         .addItem('Reset Headers', 'resetHeadersMenu') //just the active sheet
         .addSubMenu(ui.createMenu('Open Sheet')
           .addSubMenu(ui.createMenu('Active Season')
@@ -120,8 +120,7 @@ function onOpen() {
           .addItem('Open Status', 'openStatus')
           .addItem('Open Ref', 'openRef')
           .addItem('Open FieldNames', 'openFieldNames')
-          
-        )
+        ))
         .addToUi();
 }
 
@@ -335,14 +334,44 @@ function goHealthCheck() {
 }
 
 /**
- * HELPER: Simple UI jump to the Audit_Log sheet
+ * Menu navigation. Targets are Sheet_Settings role codes (e.g. "LINEUPDRAFT"), or a base name
+ * ("IMPORT", "PARENT", "LINEUP") that resolves through the active TargetSeason.
+ * Hidden sheets are shown before activating.
  */
-function openAuditLog() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName("Audit_Log");
-  if (sheet) {
-    ss.setActiveSheet(sheet);
-  } else {
-    SpreadsheetApp.getUi().alert("Audit Log not found.");
+function openSheet(target) {
+  const ctx = Engine.getContext();
+  const ui = SpreadsheetApp.getUi();
+  const wanted = String(target || "").trim();
+  const role = ctx.roles[wanted] ? wanted : Engine.Roles.resolve(ctx, wanted);
+  const sheet = role && Engine.getSheetByRole(ctx, role);
+  if (!sheet) {
+    ui.alert(`Sheet for "${wanted}" was not found. Check its Sheet Role in Sheet_Settings.`);
+    return null;
   }
+  if (sheet.isSheetHidden()) sheet.showSheet();
+  ctx.ss.setActiveSheet(sheet);
+  return sheet;
 }
+
+function openImport() { return openSheet("IMPORT"); }
+function openParentLineup() { return openSheet("PARENT"); }
+function openLineup() { return openSheet("LINEUP"); }
+function openDraftImport() { return openSheet("IMPORTDRAFT"); }
+function openDraftParent() { return openSheet("PARENTDRAFT"); }
+function openDraftLineup() { return openSheet("LINEUPDRAFT"); }
+function openCalls() { return openSheet("CALLS"); }
+function openDecisionLog() { return openSheet("DECISIONS"); }
+function openAuditLog() { return openSheet("AUDIT"); }
+function openIDLog() { return openSheet("ID_LOG"); }
+function openCrewCalendarLog() { return openSheet("CREWCAL"); }
+function openVenueCalendarLog() { return openSheet("VENUECAL"); }
+function openDraftSeasonLog() { return openSheet("DRAFTCAL"); }
+function openCalendars() { return openSheet("CALENDARS"); }
+function openControlPanel() { return openSheet("CONTROL"); }
+function openSheetSettings() { return openSheet("SETTINGS"); }
+function openMapRegistry() { return openSheet("REGISTRY"); }
+function openModeConfig() { return openSheet("MODES"); }
+function openLookup() { return openSheet("LOOKUP"); }
+function openStatus() { return openSheet("STATUS"); }
+function openRef() { return openSheet("REFRULES"); }
+function openFieldNames() { return openSheet("FIELDS"); }

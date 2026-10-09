@@ -746,12 +746,6 @@ function ensureDecisionLogSchema() {
   return Engine.Decisions.ensureSchema(ctx);
 }
 
-function openDecisionLog() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("decision_log");
-  if (sheet) SpreadsheetApp.getActiveSpreadsheet().setActiveSheet(sheet);
-  else SpreadsheetApp.getUi().alert("decision_log not found.");
-}
-
 function markDecisionReviewed(reviewID, decision, requestedAction, details) {
   return Engine.Decisions.markReviewed(Engine.getContext(), reviewID, decision, requestedAction, details);
 }
