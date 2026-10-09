@@ -170,6 +170,9 @@ Engine.Maintenance = {
       const map = sheetDef.map;
       const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
 
+      // A formula in row 1 (e.g. IMPORTRANGE) spills into the neighbouring header cells, which read
+      // as plain values; writing to any of them breaks the spill, so the whole sheet is skipped.
+      if (sheet.getRange(1, 1, 1, headers.length).getFormulas()[0].some(f => f)) return;
       let updated = false;
       Object.keys(map).forEach(fieldName => {
         const colIdx = Engine.getColumnIndex(map, fieldName);
@@ -306,6 +309,12 @@ Engine.Maintenance = {
       // Write only registered columns whose header actually differs. Unregistered gap columns keep
       // their existing headers, and blank values are never written (a table header cell must have a value).
       const existingHeaders = sheet.getRange(1, 1, 1, newHeaders.length).getValues()[0];
+      // A formula in row 1 (e.g. IMPORTRANGE) spills into the neighbouring header cells, which read
+      // as plain values; writing to any of them breaks the spill, so the whole sheet is skipped.
+      if (sheet.getRange(1, 1, 1, newHeaders.length).getFormulas()[0].some(f => f)) {
+        console.warn(`Maintenance: Skipping header reset for "${sheetName}" - row 1 contains a formula.`);
+        continue;
+      }
       newHeaders.forEach((header, colIdx) => {
         if (header === "" || String(existingHeaders[colIdx]) === String(header)) return;
         sheet.getRange(1, colIdx + 1).setValue(header);
