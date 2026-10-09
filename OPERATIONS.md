@@ -116,6 +116,8 @@ Protected sheets are skipped unless an explicit confirmation path is used.
 
 `Verify Parent Lineup vs Lineup` compares parsed Parent Lineup dates and venues to Lineup rows using the same comparator. It ignores Lineup rows marked `Delete Pending` or carrying a `BYPASS` status behavior while aligning each Parent schedule occurrence to its Lineup row; pending removals must not shift the date comparison for remaining performances. The Lineup `Date` field compares by calendar day, not hidden fractional-time precision. `Compare Draft Calendar vs Crew Log` likewise compares calendar title and full event start against the crew log.
 
+**Crew/Draft log deletes:** a log row with status `Delete Pending` / `To Delete on calendar`, or Options `Delete from Calendar`, is resolved by `Sync Lineup to Crew Log` and the crew calendar push. Rows with an EventID wait until calendar writes are enabled (the event is deleted first). If the Lineup row is gone, the row is snapshotted into `idLog.Fingerprint` (rows without a valid UUID snapshot into `Audit_Log`) and removed from the sheet. If the Lineup row still exists, the row is kept as a locked `Deleted` tombstone so it is not regenerated. Orphan crew rows raise `CREWLOG_ORPHAN` reviews (`MARK_CREW_DELETE` sets `Delete Pending`).
+
 Verification may update status and `LastSynced` when the current behavior allows it. `LOCKED` and `BYPASS` rows are not mutated, but detected differences are logged.
 
 ## Decision Workflow

@@ -1940,6 +1940,10 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   let skippedLocked = 0;
   let flaggedBadDate = 0;
 
+  // Resolve crew-log delete requests first so deleted rows are not regenerated or updated below.
+  const deleteResult = Engine.Sync.applyLogDeletes(ctx, targetRole, logRows, null);
+  deleteResult.changed.forEach(row => changedRows.push(row));
+
   lData.forEach(lRow => {
     const uuid = lRow[lCol("UUID")];
     if (requestedUUID && String(uuid || "").trim() !== requestedUUID) return;
@@ -2057,6 +2061,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   if (changedRows.length > 0) {
     patchRows(targetRole, changedRows, ctx);
   }
+  const removedRows = Engine.Sync.removeLogRows(ctx, targetRole, deleteResult.remove);
 
   Engine.IO.sortLogByDate(ctx, targetRole);
   Engine.IDService.syncAll(ctx);
@@ -2064,7 +2069,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   Engine.Log.write(ctx, {
     stage: "INGEST",
     type: "LINEUP_TO_LOG",
-    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s), flagged ${flaggedBadDate} row(s) with an unparseable date.`
+    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s), flagged ${flaggedBadDate} row(s) with an unparseable date, removed ${removedRows} row(s) and tombstoned ${deleteResult.tombstoned} per delete requests, ${deleteResult.needsCalendar} waiting on a calendar sync.`
   });
 
   return { added: newRows.length, updated: changedRows.length, skippedLocked: skippedLocked, flaggedBadDate: flaggedBadDate };

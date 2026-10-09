@@ -657,6 +657,10 @@ Engine.Decisions = {
             throw new Error("Lineup calendar cleanup handler is unavailable.");
           }
           actionDetails = Engine.Ingest.applyLineupCalendarCleanup(ctx, decision, action);
+        } else if (action === "MARK_CREW_DELETE") {
+          if (userDecision !== "ACCEPT") throw new Error("MARK_CREW_DELETE requires Decision=ACCEPT");
+          const marked = Engine.Sync.markCrewRowDeletePending(ctx, decision);
+          actionDetails = `Crew log row ${marked.rowNumber} ("${marked.title}") marked Delete Pending; the next sync marks it Deleted.`;
         } else if (action === "MARK_BYPASS") {
           if (userDecision !== "ACCEPT") throw new Error("MARK_BYPASS requires Decision=ACCEPT");
           const kept = Engine.Ingest.retainParentRow(ctx, decision);

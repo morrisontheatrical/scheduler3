@@ -484,21 +484,50 @@ Engine.Sync = {
 
     // Check for orphan crew rows (Source="Lineup" but UUID not in Lineup)
     let orphans = 0;
+    const orphanUUIDs = new Set();
     cData.forEach((cRow, idx) => {
       const source = String(cRow[cCol("Source")] || "").trim();
       const uuid = String(cRow[cCol("UUID")] || "").trim();
-      if (source === "Lineup" && uuid && !lineupUUIDs.has(uuid)) {
-        orphans++;
-        Engine.Log.warn(ctx, "RECONCILE", `Crew log row ${idx + 2} (${uuid}) references a Lineup UUID that no longer exists.`);
+      const status = String(cRow[cCol("SyncStatus")] || "").trim();
+      if (source !== "Lineup" || !uuid || lineupUUIDs.has(uuid)) return;
+      if (status === "Deleted" || status === "Delete Pending") return;
+      orphans++;
+      orphanUUIDs.add(uuid);
+      const title = cRow[cCol("Title")] || "";
+      Engine.Log.write(ctx, {
+        stage: "RECONCILE", sheetName: crewSheet.getName(), rowIdx: idx + 2, id: uuid, type: "WARN",
+        details: `Crew log row ${idx + 2} ("${title}", UUID ${uuid}) references a Lineup UUID that no longer exists.`
+      });
+      if (Engine.Decisions && typeof Engine.Decisions.addPending === "function" && !uuid.startsWith("#")) {
+        Engine.Decisions.addPending(ctx, {
+          ReviewID: Engine.Decisions.stableReviewID("CREWLOG_ORPHAN", uuid, uuid),
+          ReviewType: "CREWLOG_ORPHAN",
+          SourceSheet: crewSheet.getName(),
+          SourceRow: idx + 2,
+          SourceID: uuid,
+          CandidateSheet: crewSheet.getName(),
+          CandidateRow: idx + 2,
+          CandidateID: uuid,
+          CandidateTitle: title,
+          Evidence: `${crewRole} row ${idx + 2} ("${title}") has Source=Lineup but Lineup UUID ${uuid} no longer exists.`,
+          Confidence: "MEDIUM",
+          SuggestedAction: "MARK_CREW_DELETE",
+          RequestedAction: "MARK_CREW_DELETE",
+          SuggestionReason: "Marks the crew row Delete Pending; the next sync tombstones it as Deleted (and removes the calendar event only when calendar writes are enabled).",
+          Decision: "PENDING",
+          ActionStatus: "PENDING"
+        });
       }
     });
 
     if (Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
       Engine.Decisions.reviewable(ctx)
-        .filter(decision => ["CREWLOG_MISSING", "LINEUP_CREW_DRIFT"].includes(String(decision.ReviewType || "")))
+        .filter(decision => ["CREWLOG_MISSING", "LINEUP_CREW_DRIFT", "CREWLOG_ORPHAN"].includes(String(decision.ReviewType || "")))
         .forEach(decision => {
           const uuid = String(decision.CandidateID || decision.SourceID || "").trim();
-          const resolved = decision.ReviewType === "CREWLOG_MISSING"
+          const resolved = decision.ReviewType === "CREWLOG_ORPHAN"
+            ? !orphanUUIDs.has(uuid)
+            : decision.ReviewType === "CREWLOG_MISSING"
             ? crewByUUID.has(uuid) || !reviewableLineupUUIDs.has(uuid)
             : !reviewableLineupUUIDs.has(uuid) || (crewByUUID.has(uuid) && !driftUUIDs.has(uuid));
           if (resolved && Engine.Decisions.markSuperseded(
@@ -519,6 +548,161 @@ Engine.Sync = {
 
     return { crewRole: crewRole, checked: checked, missing: missing, drifted: drifted, orphans: orphans };
   },
+  markCrewRowDeletePending: function(ctx, decision) {
+    const sheet = ctx.ss.getSheetByName(String(decision.CandidateSheet || ""));
+    if (!sheet) throw new Error("Crew log sheet for this decision was not found.");
+    const role = Object.keys(ctx.roles || {}).find(key => ctx.roles[key] === sheet.getName());
+    const map = role && ctx.getMap(role);
+    const uuidCol = map ? Engine.getColumnIndex(map, "UUID") : -1;
+    const titleCol = map ? Engine.getColumnIndex(map, "Title") : -1;
+    if (uuidCol < 0) throw new Error("Crew log UUID field is not mapped.");
+    const uuid = String(decision.CandidateID || "").trim();
+    const hits = sheet.getDataRange().getValues()
+      .map((row, i) => ({ row: row, rowNumber: i + 1 }))
+      .filter(item => item.rowNumber > 1 && String(item.row[uuidCol] || "").trim() === uuid);
+    if (hits.length !== 1) {
+      const err = new Error(hits.length ? `Crew log UUID ${uuid} is not unique.` : `Crew log row ${uuid} no longer exists.`);
+      err.supersede = hits.length === 0;
+      throw err;
+    }
+    Engine.Status.apply(ctx, role, hits[0].rowNumber, "Delete Pending", {
+      details: `Orphan: marked for deletion per reviewed decision ${decision.ReviewID}.`
+    });
+    return { rowNumber: hits[0].rowNumber, title: titleCol >= 0 ? hits[0].row[titleCol] : "" };
+  },
+
+  _isDeleteRequested: function(row) {
+    const status = String(row.SyncStatus || "").trim();
+    if (status === "Deleted" || status === "Deleted by Calendar") return false;
+    return status === "Delete Pending" || status === "To Delete on calendar" ||
+      String(row.Options || "").trim() === "Delete from Calendar";
+  },
+
+  /**
+   * Resolves delete requests on a crew/draft log (status Delete Pending / To Delete on calendar,
+   * or Options "Delete from Calendar"). Rows with an EventID need the calendar event removed first,
+   * which only happens when calendar writes are enabled; otherwise they are left unchanged and counted.
+   *  - Lineup UUID no longer exists (or Source is not Lineup): the row is queued in `remove`; the caller
+   *    persists other changes with patchRows, then calls removeLogRows (snapshot to idLog, delete row).
+   *  - Lineup UUID still exists: the row is kept as a locked "Deleted" tombstone (in `changed`) so
+   *    Lineup sync cannot regenerate it.
+   */
+  applyLogDeletes: function(ctx, role, rows, calendar) {
+    const result = { changed: [], remove: [], tombstoned: 0, removed: 0, calendarDeleted: 0, needsCalendar: 0 };
+    const sheet = Engine.getSheetByRole(ctx, role);
+
+    const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+    const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+    const lMap = lRole && ctx.getMap(lRole);
+    const lUuidCol = lMap ? Engine.getColumnIndex(lMap, "UUID") : -1;
+    const lineupUUIDs = new Set();
+    if (lSheet && lUuidCol >= 0 && lSheet.getLastRow() > 1) {
+      lSheet.getRange(2, lUuidCol + 1, lSheet.getLastRow() - 1, 1).getValues()
+        .forEach(r => { const v = String(r[0] || "").trim(); if (v) lineupUUIDs.add(v); });
+    }
+
+    // Adopted rows carry a venue event's ID; that event is read-only and never ours to delete.
+    const venueEventIDs = new Set();
+    const vSheet = Engine.getSheetByRole(ctx, "VENUECAL");
+    const vMap = ctx.getMap("VENUECAL");
+    const vEventCol = vMap ? Engine.getColumnIndex(vMap, "eventID") : -1;
+    if (vSheet && vEventCol >= 0 && vSheet.getLastRow() > 1) {
+      vSheet.getRange(2, vEventCol + 1, vSheet.getLastRow() - 1, 1).getValues()
+        .forEach(r => { const v = String(r[0] || "").trim(); if (v) venueEventIDs.add(v); });
+    }
+
+    rows.forEach(row => {
+      if (!this._isDeleteRequested(row)) return;
+      const hadEvent = Boolean(row.eventID) && !venueEventIDs.has(String(row.eventID).trim());
+      if (hadEvent) {
+        if (!(calendar && calendar.canWrite && calendar.calId)) {
+          result.needsCalendar++;
+          Engine.Log.write(ctx, {
+            stage: "SYNC", sheetName: sheet && sheet.getName(), rowIdx: row._rowNum, id: row.UUID,
+            type: "WARN",
+            details: `Delete requested for "${row.Title}" but its calendar event cannot be removed (calendar writes off or no calendar); row left unchanged.`
+          });
+          return;
+        }
+        Engine.Calendar.deleteEvent(calendar.calId, row.eventID);
+        result.calendarDeleted++;
+      }
+      if (String(row.Options || "").trim() === "Delete from Calendar") row.Options = "AutoSync";
+      const uuid = String(row.UUID || "").trim();
+      const lineupStillHasIt = String(row.Source || "").trim() === "Lineup" && uuid && lineupUUIDs.has(uuid);
+
+      if (lineupStillHasIt) {
+        row.eventID = "";
+        Engine.Status.apply(ctx, role, null, "Deleted", {
+          targetObj: row,
+          details: hadEvent ? "Calendar event deleted per delete request." : "Delete requested; no calendar event existed."
+        });
+        Engine.Log.write(ctx, {
+          stage: "SYNC", sheetName: sheet && sheet.getName(), rowIdx: row._rowNum, id: uuid,
+          type: "LOG_DELETE_TOMBSTONE",
+          details: `"${row.Title}" kept as a Deleted tombstone because its Lineup row still exists.`
+        });
+        result.tombstoned++;
+        result.changed.push(row);
+      } else {
+        result.remove.push(row);
+      }
+    });
+    return result;
+  },
+
+  /**
+   * Snapshots each queued log row (idLog.Fingerprint when its UUID is a real ID, Audit_Log otherwise),
+   * then deletes it. Call AFTER patchRows so row numbers are still valid; deletes bottom-up.
+   */
+  removeLogRows: function(ctx, role, rows) {
+    const sheet = Engine.getSheetByRole(ctx, role);
+    const map = ctx.getMap(role);
+    if (!sheet || !map || !rows.length) return 0;
+    const titleCol = Engine.getColumnIndex(map, "Title");
+    const uuidCol = Engine.getColumnIndex(map, "UUID");
+    let removed = 0;
+    rows.slice().sort((a, b) => b._rowNum - a._rowNum).forEach(row => {
+      const rowNumber = row._rowNum;
+      if (!rowNumber || rowNumber < 2 || rowNumber > sheet.getLastRow()) return;
+      const current = sheet.getRange(rowNumber, 1, 1, sheet.getLastColumn()).getValues()[0];
+      const currentUuid = uuidCol >= 0 ? String(current[uuidCol] || "").trim() : "";
+      if (currentUuid !== String(row.UUID || "").trim()) {
+        Engine.Log.warn(ctx, "SYNC", `Row ${rowNumber} moved before deletion; "${row.Title}" was not removed.`);
+        return;
+      }
+      const rowObject = {};
+      Object.keys(row).forEach(key => { if (key.charAt(0) !== "_") rowObject[key] = row[key]; });
+      const snapshot = Engine.IO.serializeRow(rowObject);
+      const uuid = String(row.UUID || "").trim();
+      const title = titleCol >= 0 ? current[titleCol] : row.Title;
+      const details = `[LOG_DELETE_SNAPSHOT] ${sheet.getName()} row deleted per delete request. ${title || ""}`.trim();
+      const hasRealId = uuid && !uuid.startsWith("#");
+
+      if (hasRealId) {
+        Engine.IDService.upsert(ctx, {
+          id: uuid, type: role, title: title, parentId: row.parentID || "",
+          fingerprint: snapshot, location: `${sheet.getName()}!R${rowNumber}`, status: "Active",
+          details: `Snapshot saved before deletion. ${details}`
+        });
+      }
+      Engine.Log.write(ctx, {
+        stage: "SYNC", sheetName: sheet.getName(), rowIdx: rowNumber, id: hasRealId ? uuid : "N/A",
+        type: "LOG_DELETE_APPLIED",
+        details: hasRealId ? details : `${details} (no valid UUID; snapshot: ${snapshot})`
+      });
+      sheet.deleteRow(rowNumber);
+      if (hasRealId) {
+        Engine.IDService.upsert(ctx, {
+          id: uuid, status: "Deleted", location: "",
+          details: `Deleted from ${sheet.getName()}. ${details}`
+        });
+      }
+      removed++;
+    });
+    return removed;
+  },
+
   syncCrewCalendar: function(ctx) {
   const role = "CREWCAL";
   const crewEvents = scanSheet(role, ctx);
@@ -537,7 +721,12 @@ Engine.Sync = {
     return;
   }
 
+  // Delete requests are resolved before the BYPASS/LOCKED check (Delete Pending is itself BYPASS).
+  const deleteResult = this.applyLogDeletes(ctx, role, crewEvents, { canWrite: canWrite && modeAllowsCalendarWrites, calId: targetCalId });
+  const removeRows = new Set(deleteResult.remove);
+
   crewEvents.forEach(crewRow => {
+    if (removeRows.has(crewRow)) return;
     // 1. BEHAVIOR CHECK
     const statusDef = ctx.status[crewRow.SyncStatus];
     const behaviors = statusDef ? Engine.parseModeList(statusDef.behavior) : [];
@@ -596,7 +785,8 @@ Engine.Sync = {
   });
 
   // Save changes (Status, EventIDs, Hashes) back to the sheet
-  patchRows(role, crewEvents, ctx);
+  patchRows(role, crewEvents.filter(row => !removeRows.has(row)), ctx);
+  this.removeLogRows(ctx, role, deleteResult.remove);
   Engine.IO.sortLogByDate(ctx, role);
   Engine.IDService.syncAll(ctx);
 },

@@ -362,22 +362,33 @@ Engine.IDService.applyLogLinks = function(ctx) {
       const formulas = range.getFormulas();
       let changed = false;
       const output = values.map((row, i) => {
-        const id = String(row[0] || "").trim();
+        let id = String(row[0] || "").trim();
+        // Recover cells an earlier pass wrote as a bare "=<id>" formula (displays #ERROR!).
+        const broken = /^=([^()"\s]+)$/.exec(String(formulas[i][0] || ""));
+        if (id === "#ERROR!" && broken) {
+          id = broken[1];
+          changed = true;
+          const recovered = target.index.get(id);
+          if (!recovered) return [id];
+        }
         const targetRow = id && target.index.get(id);
         if (!targetRow) return [formulas[i][0] || row[0]];
         changed = true;
         linked++;
         return [`=HYPERLINK("#gid=${target.gid}&range=A${targetRow}","${id.replace(/"/g, '""')}")`];
       });
-      if (changed) range.setFormulas(output);
+      // setValues: unresolved IDs stay plain text; "=HYPERLINK(...)" strings still become formulas.
+      if (changed) range.setValues(output);
     });
   });
   return { linked: linked };
 };
 
 /**
- * One pass that re-links every hyperlinked ID column and repaints status colors on the
- * season's Parent, Lineup and crew/draft log sheets. Cheap enough to run on a timer.
+ * One pass that re-links every hyperlinked ID column (idLog, crew/draft/venue logs, Lineup,
+ * decision_log) and repaints status colors on the season's Parent, Lineup and crew/draft log
+ * sheets. Audit_Log is deliberately excluded: its links are written once per entry and the
+ * sheet is too large to rewrite on a timer.
  */
 Engine.IDService.refreshAllLinks = function(ctx) {
   const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
@@ -387,7 +398,10 @@ Engine.IDService.refreshAllLinks = function(ctx) {
   [Engine.Roles.resolve(ctx, "PARENT"), Engine.Roles.resolve(ctx, "LINEUP"), isDraft ? "DRAFTCAL" : "CREWCAL"].forEach(role => {
     if (role) repainted[role] = Engine.Status.repaintSheet(ctx, role);
   });
-  return { registryLinked: registry.linked, logLinked: logs.linked, repainted: repainted };
+  const decisions = Engine.Decisions && typeof Engine.Decisions.refreshLinks === "function"
+    ? Engine.Decisions.refreshLinks(ctx)
+    : null;
+  return { registryLinked: registry.linked, logLinked: logs.linked, decisionLinks: decisions, repainted: repainted };
 };
 
 function refreshAllLinks() {
