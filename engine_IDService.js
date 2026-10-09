@@ -342,7 +342,8 @@ Engine.IDService.applyLogLinks = function(ctx) {
   const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
   const specs = [
     { role: isDraft ? "DRAFTCAL" : "CREWCAL", fields: [["UUID", "lineup"], ["parentID", "parent"], ["eventID", "venue"]] },
-    { role: "VENUECAL", fields: [["UUID", "lineup"], ["parentID", "parent"]] }
+    { role: "VENUECAL", fields: [["UUID", "lineup"], ["parentID", "parent"]] },
+    { role: Engine.Roles.resolve(ctx, "LINEUP"), fields: [["parentID", "parent"]] }
   ];
 
   let linked = 0;
@@ -373,6 +374,45 @@ Engine.IDService.applyLogLinks = function(ctx) {
   });
   return { linked: linked };
 };
+
+/**
+ * One pass that re-links every hyperlinked ID column and repaints status colors on the
+ * season's Parent, Lineup and crew/draft log sheets. Cheap enough to run on a timer.
+ */
+Engine.IDService.refreshAllLinks = function(ctx) {
+  const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+  const registry = Engine.IDService.applyLinks(ctx);
+  const logs = Engine.IDService.applyLogLinks(ctx);
+  const repainted = {};
+  [Engine.Roles.resolve(ctx, "PARENT"), Engine.Roles.resolve(ctx, "LINEUP"), isDraft ? "DRAFTCAL" : "CREWCAL"].forEach(role => {
+    if (role) repainted[role] = Engine.Status.repaintSheet(ctx, role);
+  });
+  return { registryLinked: registry.linked, logLinked: logs.linked, repainted: repainted };
+};
+
+function refreshAllLinks() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Refresh All Links");
+  const results = Engine.IDService.refreshAllLinks(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Refresh All Links", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+// Installable trigger target: runs silently on a timer and only logs when something throws.
+function scheduledLinkRefresh() {
+  try {
+    Engine.IDService.refreshAllLinks(Engine.getContext());
+  } catch (e) {
+    Engine.Log.error(Engine.getContext(), "LINK_REFRESH", e.message);
+  }
+}
+
+function installLinkRefreshTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === "scheduledLinkRefresh")
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger("scheduledLinkRefresh").timeBased().everyHours(1).create();
+}
 
 function refreshIDRegistryLinks() {
   const ctx = Engine.getContext();

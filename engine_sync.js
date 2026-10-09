@@ -319,6 +319,8 @@ Engine.Sync = {
 
     // Use patchRows to update only the modified records
     patchRows('CREWCAL', crewEvents, ctx);
+    // patchRows rewrites whole rows as plain values, which drops hyperlinks; restore links and colors.
+    Engine.IDService.refreshAllLinks(ctx);
     Engine.Log.write(ctx, {
       stage: "RECONCILE",
       type: "RECONCILE_COMPLETE",

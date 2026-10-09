@@ -687,6 +687,32 @@ var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
     },
 
     /**
+     * Repaints every data row of a sheet from its SyncStatus value in one batch. Rows with a blank
+     * or unknown status are left as they are.
+     */
+    repaintSheet: function(ctx, roleOrSheetName) {
+      const sheet = ctx.roles[roleOrSheetName]
+        ? Engine.getSheetByRole(ctx, roleOrSheetName)
+        : ctx.sheets[roleOrSheetName];
+      const map = ctx.getMap(roleOrSheetName);
+      const statusCol = map ? Engine.getColumnIndex(map, "SyncStatus") : -1;
+      if (!sheet || statusCol < 0 || sheet.getLastRow() < 2) return 0;
+
+      const rowCount = sheet.getLastRow() - 1;
+      const width = sheet.getLastColumn();
+      const statuses = sheet.getRange(2, statusCol + 1, rowCount, 1).getValues();
+      let painted = 0;
+      const backgrounds = statuses.map(([status]) => {
+        const theme = ctx.status[String(status || "").trim()];
+        if (!theme || !theme.hex) return new Array(width).fill(null);
+        painted++;
+        return new Array(width).fill(theme.hex);
+      });
+      sheet.getRange(2, 1, rowCount, width).setBackgrounds(backgrounds);
+      return painted;
+    },
+
+    /**
      * Minimal paint-only helper for call sites that manage their own
      * SyncStatus/LastSynced writes and just need the row color applied
      * without re-routing through the full apply() write/log logic.

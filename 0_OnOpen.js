@@ -29,6 +29,7 @@ function onOpen() {
       .addItem('Validate Decision Log Schema', 'ensureDecisionLogSchema')
       .addItem('List Pending Decisions', 'listPendingDecisions')
       .addItem('Refresh Decision Row Links', 'refreshDecisionLinks')
+      .addItem('Refresh All Links & Colors', 'refreshAllLinks')
       .addItem('Generate Parent Duplicate Suggestions', 'generateParentDuplicateSuggestions')
       .addItem('Refresh Stale Parent Duplicate Reviews', 'refreshParentDuplicateDecisions')
       .addItem('Refresh Resolved Parent-Only Reviews', 'refreshParentOnlyDecisions')

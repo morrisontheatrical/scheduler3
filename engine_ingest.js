@@ -2816,6 +2816,9 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
 
     const parsedDates = Engine.Ingest.parseParentDatesAndTimes(rawDates);
     const expectedDates = parsedDates.dates;
+    // Span-only rows ("X through Y") parse fine; how they explode depends on the span policy, so there
+    // are no individual dates to align against.
+    if (expectedDates.length === 0 && parsedDates.spans.length > 0) return;
     if (expectedDates.length === 0) {
       const parentRowNum = pData.indexOf(pRow) + 2;
       // A reviewer-decided row (Bypassed / Delete Pending) must not be reset to Manual Review.
