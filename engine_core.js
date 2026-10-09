@@ -19,7 +19,7 @@ const S_SYS = {
 };
 
 
-var Engine = {
+var Engine = Object.assign(typeof Engine !== "undefined" ? Engine : {}, {
   /**
    * Initializes the context (ctx). 
    * This is called at the top of every main function.
@@ -55,17 +55,7 @@ var Engine = {
     ctx.settings.ControlPanel = this.loadControlPanelSettings(ss);
     ctx.status = this.loadStatusRules(ss);
     
-    // 3. Load Registry (Fast-lookup for Identity)
-    ctx.registry = this.loadRegistry(ctx);
-
-    // 4. Load Lookups (Now safe to use because maps are ready)
-    const lookupData = this.loadLookups(ctx);
-    ctx.lookup = lookupData      // This populates your lists
-    ctx.calendars = lookupData.calendars; // This populates your venue IDs
-
-    ctx.runtime.bypassList = this.loadBypassList(ctx);
-
-    // Helpers
+    // Helpers (must be attached before steps 3-4, which call ctx.getRole/getMap)
     ctx.get = (sheetName) => ss.getSheetByName(sheetName);
     ctx.getRole = function(roleName) {
       // 'this' refers to the active 'ctx' object
@@ -129,6 +119,15 @@ var Engine = {
       const sheetDef = this.sheetDefs[identifier] || this.schema[identifier];
       return (sheetDef && sheetDef.columns && sheetDef.columns[fieldName]) || null;
     };
+
+    // 3. Load Registry (Fast-lookup for Identity)
+    ctx.registry = this.loadRegistry(ctx);
+
+    // 4. Load Lookups and bypass list
+    const lookupData = this.loadLookups(ctx);
+    ctx.lookup = lookupData;
+    ctx.calendars = lookupData.calendars;
+    ctx.runtime.bypassList = this.loadBypassList(ctx);
 
     return ctx;
   },
@@ -343,6 +342,17 @@ var Engine = {
     };
   },
 
+  // ControlPanel layout: Section | Setting Field | Key | Value. Located by header name so the
+  // loaders survive column additions; falls back to the legacy 3-column layout (Label | Key | Value).
+  _controlPanelColumns: function(headerRow) {
+    const headers = (headerRow || []).map(h => String(h).trim().toLowerCase());
+    const key = headers.indexOf("key");
+    const value = headers.indexOf("value");
+    if (key < 0 || value < 0) return { label: 0, key: 1, value: 2 };
+    const label = headers.indexOf("setting field");
+    return { label: label >= 0 ? label : 0, key: key, value: value };
+  },
+
   /**
    * Reads 'ControlPanel' to set global variables
    */
@@ -358,10 +368,11 @@ var Engine = {
     const data = sheet.getDataRange().getValues();
     let config = Object.assign({}, defaults);
 
+    const cols = this._controlPanelColumns(data[0]);
     data.forEach(row => {
-      const nam = row[0]; 
-      const key = row[1]; //added this as a code friendlier way to name and rename keys
-      const val = row[2];
+      const nam = row[cols.label];
+      const key = row[cols.key];
+      const val = row[cols.value];
       if (key === "Mode") config.mode = val;
       if (key === "StartSync") config.syncWindow.startDays = Number(val);
       if (key === "EndSync") config.syncWindow.endDays = Number(val);
@@ -384,11 +395,12 @@ var Engine = {
 
     const data = sheet.getDataRange().getValues();
     const settings = {};
+    const cols = this._controlPanelColumns(data[0]);
 
     data.forEach(row => {
-      const label = row[0];  //why is it label as opposed to name? In loadConfig, we use row[0] as 'nam' and row[1] as 'key'. Here, we treat row[0] as label and row[1] as key. This is an inconsistency to clean up.
-      const key = row[1] || row[0]; // Use key if available, otherwise fallback to label
-      const value = row[2];
+      const label = row[cols.label];
+      const key = row[cols.key] || row[cols.label]; // Use key if available, otherwise fallback to label
+      const value = row[cols.value];
       if (!key && value === undefined) return;
 
       const normalizedKey = String(key || label || "").trim();
@@ -428,14 +440,16 @@ var Engine = {
    * 2. Loads Dropdown lists (Call Types, etc.)
    */
   loadLookups: function(ctx) {
-    let lookups = { calendars: [], lists: {} }; // Calendars is an array now
-    const ss = ctx.ss;
+    const lookups = { calendars: [], lists: {}, listSources: {} };
 
     // 1. Process Calendars
-    const calSheet = ctx.sheets.CALENDARS || ss.getSheetByName("Calendars");
+    const calSheet = Engine.getSheetByRole(ctx, "CALENDARS");
     if (calSheet) {
       const calData = calSheet.getDataRange().getValues();
       calData.shift(); // Remove headers
+      const calMap = ctx.getMap("CALENDARS");
+      const roleIdx = calMap ? Engine.getColumnIndex(calMap, "CalendarRole") : -1;
+      const writeIdx = calMap ? Engine.getColumnIndex(calMap, "allowCalendarWrites") : -1;
       calData.forEach(row => {
         const calId = row[1];
         const venueName = row[2];
@@ -444,35 +458,39 @@ var Engine = {
           lookups.calendars.push({ 
             id: calId, 
             venueName: venueName, 
-            displayName: row[0] 
+            displayName: row[0],
+            role: roleIdx !== -1 ? String(row[roleIdx] || "").trim().toLowerCase() : "",
+            allowWrites: writeIdx !== -1 ? this.coerceBoolean(row[writeIdx]) : false
           });
         }
       });
     }
 
-    // 2. Process Lookup Lists using ctx.sheets["Lookup"].map
-    //Shouldn't this also load the "ref" sheet??
-    const listSheet = ctx.sheets.LOOKUP || ss.getSheetByName("Lookup");
-    const lookupSheetDef = ctx.sheetDefs.LOOKUP || ctx.schema.LOOKUP || ctx.getMap("LOOKUP");
-    
-    if (listSheet && lookupSheetDef && lookupSheetDef.map) {
-      const listData = listSheet.getDataRange().getValues();
-      const map = lookupSheetDef.map;
-      let cleanColumn = null;
+    const lookupOwnedFields = new Set(["Venue", "CrewStaff", "CallType"]);
+    const loadLists = (role, preserveExisting) => {
+      const sheet = Engine.getSheetByRole(ctx, role);
+      const map = ctx.getMap(role);
+      if (!sheet || !map) return;
 
-      const utils = this.getLibraryModule("Utils");
-      if (utils && typeof utils.getCleanColumn === "function") cleanColumn = utils.getCleanColumn;
-      else if (typeof scriptLib !== "undefined" && typeof scriptLib.getCleanColumn === "function") cleanColumn = scriptLib.getCleanColumn;
-
+      const rows = sheet.getDataRange().getValues().slice(1);
       Object.keys(map).forEach(fieldName => {
-        const colIdx = this.getColumnIndex(map, fieldName);
+        if (preserveExisting && lookupOwnedFields.has(fieldName)) return;
+        const colIdx = Engine.getColumnIndex(map, fieldName);
         if (colIdx < 0) return;
-        lookups.lists[fieldName] = cleanColumn
-          ? cleanColumn(listData, colIdx)
-          : listData.map(row => row[colIdx]).filter(value => value !== "" && value !== null && value !== undefined);
+
+        const values = rows
+          .map(row => row[colIdx])
+          .filter(value => value !== "" && value !== null && value !== undefined &&
+            (typeof value !== "string" || value.trim() !== ""));
+        lookups.lists[fieldName] = values;
+        lookups.listSources[fieldName] = role;
       });
-    }
-    
+    };
+
+    // Lookup owns venue and operational lists; REFRULES owns shared enum lists.
+    loadLists("LOOKUP", false);
+    loadLists("REFRULES", true);
+
     return lookups;
   },
 
@@ -661,11 +679,37 @@ var Engine = {
           stage: logContext.stage || "STATUS_UPDATE",
           sheetName: roleOrSheetName,
           rowIdx: rowIdx || (targetObj && targetObj._rowNum) || "N/A",
-          id: logContext.id || (targetObj && (targetObj.UUID || targetObj.EventID)) || "N/A",
+          id: logContext.id || (targetObj && (targetObj.UUID || targetObj.eventID)) || "N/A",
           type: statusName,
           details: logContext.details || `Status changed to ${statusName}`
         });
       }
+    },
+
+    /**
+     * Repaints every data row of a sheet from its SyncStatus value in one batch. Rows with a blank
+     * or unknown status are left as they are.
+     */
+    repaintSheet: function(ctx, roleOrSheetName) {
+      const sheet = ctx.roles[roleOrSheetName]
+        ? Engine.getSheetByRole(ctx, roleOrSheetName)
+        : ctx.sheets[roleOrSheetName];
+      const map = ctx.getMap(roleOrSheetName);
+      const statusCol = map ? Engine.getColumnIndex(map, "SyncStatus") : -1;
+      if (!sheet || statusCol < 0 || sheet.getLastRow() < 2) return 0;
+
+      const rowCount = sheet.getLastRow() - 1;
+      const width = sheet.getLastColumn();
+      const statuses = sheet.getRange(2, statusCol + 1, rowCount, 1).getValues();
+      let painted = 0;
+      const backgrounds = statuses.map(([status]) => {
+        const theme = ctx.status[String(status || "").trim()];
+        if (!theme || !theme.hex) return new Array(width).fill(null);
+        painted++;
+        return new Array(width).fill(theme.hex);
+      });
+      sheet.getRange(2, 1, rowCount, width).setBackgrounds(backgrounds);
+      return painted;
     },
 
     /**
@@ -694,7 +738,10 @@ var Engine = {
       const auditSheet = ctx.sheets.AUDIT || ctx.ss.getSheetByName("Audit_Log"); 
       if (!auditSheet) return;
 
-      const { stage, sheetName, rowIdx, id, type, details } = params;
+      const { stage, id, type, details, sheetName, rowIdx } = params;
+      // Callers may pass a role code (e.g. "PARENTCURRENT"); the log should show the real sheet name.
+      const roleSheetName = ctx && ctx.roles && sheetName ? ctx.roles[sheetName] : "";
+      const displaySheetName = roleSheetName || sheetName;
       const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "MM/dd HH:mm:ss");
 
       // Turn RangeRef into a clickable link back to the exact row, when we can resolve one.
@@ -722,7 +769,7 @@ var Engine = {
         }
       }
 
-      const logRow = [timestamp, stage || "SYSTEM", sheetName || "N/A", rangeRefCell, id || "N/A", type || "INFO", details || ""];
+      const logRow = [timestamp, stage || "SYSTEM", displaySheetName || "N/A", rangeRefCell, id || "N/A", type || "INFO", details || ""];
 
       auditSheet.insertRowAfter(1);
       auditSheet.getRange(2, 1, 1, logRow.length).setValues([logRow]);
@@ -771,7 +818,7 @@ var Engine = {
   }
 
 
-};
+});
 Engine.Roles = {
   resolve: function(ctx, base) {
     const season = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase();

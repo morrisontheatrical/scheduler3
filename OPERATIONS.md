@@ -20,9 +20,23 @@
 
 `Run Health Check` validates each physical sheet once even though the context stores both physical-name and SheetRole aliases. Remaining header findings should be reviewed against `Map_Registry` before any repair operation. `Repair Map Registry` modifies registry metadata; use `previewMapRegistryRepair(sheetName)` first when a finding is not already understood.
 
+## Controlled Reconciliation and Identity Checks
+
+Use a disposable workbook copy for any flow that writes rows, IDs, statuses, or decisions. Keep calendar writes disabled. Do not close issues #1, #4, #7, #8, #10, #13, #24, #25, or #28 until their relevant checks have been completed in both Draft and Current modes and the results recorded on the issue.
+
+1. In **Dev / Test > Diagnostics**, run `Test Theatrical Date Parsing`; confirm representative complex date strings parse, spans retain their intended end date, and invalid input is reported.
+2. In the disposable copy, run `Ingest Season`, then `Explode Dates`. Check that each Parent event's Lineup instances retain stable UUIDs on repeat runs and that new/updated rows populate `EventOfTotal`, `EndDate`, `AfterToday`, `WithinQuarter`, `WithinMonth`, `SyncStatus`, and `LastUpdated`.
+3. Run `Verify Parent Lineup vs Lineup`. Confirm title/series/date/venue drift and missing/orphan rows create review items without silently applying field updates. Verify a clean match supersedes the corresponding drift review and an unresolved manual action is not overwritten.
+4. Run `Sync Lineup to Crew Log` and `Reconcile Logs`. Check UUID associations, titles, dates, start/end times, locations, multi-day `EndDate`, missing crew-log decisions, drift decisions, and orphan reporting. Confirm Draft routes to `Draft_Season_Log` and Current routes to `Crew_Calendar_Log`.
+5. In the controlled copy, approve a `CREWLOG_MISSING` or `LINEUP_CREW_DRIFT` review by setting `Decision=ACCEPT`, then run `Apply Reviewed Decisions`. Confirm exactly one active-season row matches the Lineup UUID and the decision is recorded in `Audit_Log`. Confirm a `Delete Pending` Lineup row is not pushed, and a locked/bypassed row remains unchanged.
+6. For merge/delete paths, first run `Preview Approved Deletes` or `Preview Lineup Delete Pending`. In the controlled copy only, check snapshots and registry lineage after applying a reviewed operation; confirm the keeper ID remains stable and pending decisions are repointed or superseded as expected.
+7. Run `Sync ID Registry`. Confirm `Fingerprint` snapshots, `Merged IDs`, current `SheetLocation`, and idLog links refer to the intended rows after the log sheets are sorted.
+8. Run `Lookup List Diagnostics`. Confirm `Venue`, `CrewStaff`, and `CallType` report `LOOKUP` as source and enum lists such as `Options` report `REFRULES`, with nonzero counts for every list that should drive a dropdown. Then run **Maintenance > Refresh Dropdowns** and verify the expected validations; any skipped empty list should be investigated in `Audit_Log`, not replaced with an empty validation.
+9. Run `Refresh Decision Row Links` and verify Import→Parent, Parent-only, and Parent-duplicate links. Treat links for newer Lineup/Crew review types, Audit_Log-to-decision references, and the broad Calls/calendar-log associations as unfinished until their scope is implemented and checked.
+
 ## Menu Organization
 
-- `Diagnostics`: context and health checks.
+- `Diagnostics`: context, health, and lookup-list checks.
 - `Verification`: whole-sheet comparisons and calendar comparison.
 - `Maintenance`: registry, headers, hashes, and dropdowns.
 - `Decision Review`: pending review queue and approved decision processing.
@@ -77,7 +91,7 @@ As detailed in [UI-Design.md](UI-Design.md), a future consolidated **Event Manag
 
 Protected sheets are skipped unless an explicit confirmation path is used.
 
-Do not run `Refresh Dropdowns` until the `ref`-backed enum lookup work is complete. `Options` and other enum values are owned by `ref`, while the current dropdown loader reads `Lookup`; an empty source list could install an empty validation rule.
+`Refresh Dropdowns` reads `Venue`, `CrewStaff`, and `CallType` from the `LOOKUP` role and shared enum lists such as `Options` from `REFRULES`. Run **Lookup List Diagnostics** first when checking a new or changed registry mapping. Empty lists are skipped and logged; verify the source data rather than attempting to refresh an empty dropdown.
 
 ## Map_Registry Maintenance
 
@@ -98,9 +112,11 @@ Do not run `Refresh Dropdowns` until the `ref`-backed enum lookup work is comple
 
 **Matching uses the universal `Engine.IO.compare` primitive.** It applies `SL.Utils.normalize` with `collapse` + `fold` to text, so titles that look identical but differ by smart quotes, en/em dashes, or zero-width characters from the `IMPORTRANGE` round trip still match directly instead of falling through to the rename-candidate path. Map_Registry types control date behavior: `Date` compares the local calendar date, `Time` compares time-of-day, and `DateTime` compares the full timestamp. Calendar start comparisons explicitly use full timestamp equality. A row that is genuinely renamed (same Opening/Range/Venue, title still different after folding) is still flagged `Manual Review` with an `ACCEPT_IMPORT` decision — that is the intended path for placeholder→real-title changes (ROADMAP #9).
 
-**Known open gap (issue #7):** a clean match today does nothing — a review status left by a prior run (e.g. `Data Drift Detected`) is not cleared, and the matching `IMPORT_PARENT` decision is not superseded, so a stale flag persists until a human resolves it. The heal-to-`Synced` + `markSuperseded` design is drafted for issue #7; do not treat "row stayed orange" as evidence of live drift until that lands.
+**Clean matches heal stale flags:** a clean import match resets `Manual Review` / `Data Drift Detected` rows to `Synced` and supersedes the matching `IMPORT_DRIFT` / `IMPORT_RENAME` decisions. Every clean, non-blocked match also stamps `LastSynced`, so active rows show the date of the last verification pass. Parent-to-Lineup verification likewise supersedes `PARENT_LINEUP_DRIFT` reviews for any Lineup performance that now matches, regardless of its current status.
 
 `Verify Parent Lineup vs Lineup` compares parsed Parent Lineup dates and venues to Lineup rows using the same comparator. It ignores Lineup rows marked `Delete Pending` or carrying a `BYPASS` status behavior while aligning each Parent schedule occurrence to its Lineup row; pending removals must not shift the date comparison for remaining performances. The Lineup `Date` field compares by calendar day, not hidden fractional-time precision. `Compare Draft Calendar vs Crew Log` likewise compares calendar title and full event start against the crew log.
+
+**Crew/Draft log deletes:** a log row with status `Delete Pending` / `To Delete on calendar`, or Options `Delete from Calendar`, is resolved by `Sync Lineup to Crew Log` and the crew calendar push. Rows with an EventID wait until calendar writes are enabled (the event is deleted first). If the Lineup row is gone, the row is snapshotted into `idLog.Fingerprint` (rows without a valid UUID snapshot into `Audit_Log`) and removed from the sheet. If the Lineup row still exists, the row is kept as a locked `Deleted` tombstone so it is not regenerated. Orphan crew rows raise `CREWLOG_ORPHAN` reviews (`MARK_CREW_DELETE` sets `Delete Pending`).
 
 Verification may update status and `LastSynced` when the current behavior allows it. `LOCKED` and `BYPASS` rows are not mutated, but detected differences are logged.
 
@@ -109,12 +125,12 @@ Verification may update status and `LastSynced` when the current behavior allows
 `decision_log` is the editable review queue. `Audit_Log` is historical output.
 `decision_log` acts strictly as an active to-do list.
 
-* **Universal Hyperlinking:** `refreshLinks()` generates rich-text cell links for **all** review types (`REVIEW_PARENT_ONLY`, `REVIEW_IMPORT_DRIFT`, `PARENT_DUPLICATE`) into `SourceLink` and `CandidateLink`.
+* **Decision-row links:** `refreshLinks()` generates links for Import→Parent, Parent-only, and Parent-duplicate reviews into `SourceLink` and `CandidateLink`. New Lineup/Crew review types and Audit_Log-to-decision links still need implementation/validation.
 * **Persistence:** Unresolved manual reviews (`PENDING`, `FAILED`) persist in `decision_log` across verification passes.
 * **Applied rows:** When a review item is applied, the engine logs the event details to `Audit_Log` and immediately deletes the row from `decision_log`.
 * **No re-prompt after apply:** If a later verification produces the same stable `ReviewID`, the engine checks `Audit_Log` and suppresses it when that review was already applied; any stale pending copy of that same ID is removed.
 * **Superseded rows:** `Refresh Resolved Parent-Only Reviews` and `Refresh Stale Parent Duplicate Reviews` mark resolved items `SUPERSEDED` (with a reason in `ActionDetails`) but keep the row for reference. Use `Archive Superseded Decisions` to delete all `SUPERSEDED` rows from `decision_log` (each is logged to `Audit_Log` first).
-* **`REVIEW_PARENT_ONLY` + `ACCEPT`:** a Parent-only review has no automatic mutation. Reviewing it `ACCEPT` (retain), `NOT_DUPLICATE` (retain as confirmed non-duplicate), or `REJECTED` (dropped) closes the decision and removes the row; there is no import row to copy from.
+* **`REVIEW_PARENT_ONLY` + `ACCEPT`:** retains the Parent row with no import source by setting it to `Retained`, so verification stops flagging it. `NOT_DUPLICATE` and `REJECTED` do the same. To remove the row instead, set `RequestedAction=MARK_DELETE` with `Decision=ACCEPT`.
 * **`REVIEW_IMPORT_DRIFT` / `ACCEPT_IMPORT`:** applies the import values over the Parent Lineup row. Requires the matching `import` row to still exist — if the import row was deleted upstream, the apply fails with "Import row could not be resolved" and the row stays `FAILED` for retry.
 
 For a Parent-to-Parent duplicate, compare `ParentTitle` (the proposed keeper)
@@ -175,7 +191,19 @@ available for correction. The deleted row snapshot is retained in
 `idLog.Fingerprint`. If a linked `CREWCAL` row has an `EventID`, a follow-up
 `LINEUP_DELETE_CLEANUP` decision is queued. Rows without an `EventID` and
 `DRAFTCAL` staging rows are retained and audited without a non-actionable
-review. Other `MARK_DELETE` review types are not applied as row deletions.
+review. `MARK_DELETE` on a Parent-targeted review (`PARENT_ONLY`, `IMPORT_DRIFT`, `IMPORT_RENAME`, `PARENT_ID_DUPLICATE`, `PARENT_DUPLICATE`'s duplicate row) does not delete immediately: it sets the Parent row to `Delete Pending`, and the next `Ingest Season` run removes it, supersedes related reviews, and logs it. `Preview Approved Deletes` also reports these targets.
+
+**Keeping a Parent row without an import source:** accept (or reject) a `PARENT_ONLY` review, or choose `MARK_BYPASS` on any Parent-targeted review. The row's status becomes `Retained` (add it to the `Status` sheet with behavior `BYPASS`), the decision is logged to `Audit_Log`, and later verification passes skip the row instead of asking again. Verify also sets `Retained` on parent-only rows whose review was already applied. Clear the status to put the row back under verification.
+
+**`SYNC_PARENT_TO_LINEUP`:** copies the reviewed fields (`ChangedFields`, default title, series, date, venue) from Parent Lineup onto that Lineup performance, aligned by position among the parent's non-`BYPASS` Lineup rows, refreshes `SyncHash`, then sets `Synced`. A blocked status fails the decision; a missing Lineup row supersedes it.
+
+**Decision history in `idLog`:** applied deletes and merges (`MARK_DELETE`, `MERGE_PARENT`, `MARK_CALENDAR_DELETE`) always write an `idLog` row (`Record Type=DECISIONS`, `Sync Status=Applied`, the decision snapshot in `Fingerprint`). Other applied decisions only update the row `Sync ID Registry` already created for them. Verification treats `Applied` idLog rows like `DECISION_APPLIED` audit entries, so history survives `Audit_Log` trimming.
+
+**Running Ingest instead of deciding:** `Ingest Season` and `Explode Dates` finish by refreshing reviews. Pending `PARENT_ONLY`, `IMPORT_DRIFT`, `IMPORT_RENAME` and `PARENT_LINEUP_DRIFT` reviews are superseded when their target row is gone or its status (`Retained`, `Bypassed`, `Delete Pending`, or any `LOCKED`/`BYPASS` behavior) makes them moot.
+
+**Parent vs Lineup alignment:** Lineup rows are paired with Parent dates by exact date and time first. Leftover rows pair in order and are flagged as a changed date. A Lineup row with no Parent date becomes a `LINEUP_EXTRA_PERFORMANCE` review (`MARK_DELETE` sets it `Delete Pending`; `Explode Dates` removes it with a snapshot). A Parent date with no Lineup row becomes a `LINEUP_MISSING_PERFORMANCE` review. Removing one performance from the import therefore no longer shifts every later row.
+
+**Duplicated `parentID`s:** `Verify Import vs Parent Lineup` keeps the ID on the import-matched row (else the first row) and gives every other row a `PARENT_ID_DUPLICATE` review plus the `Duplicate (ID Match)` status. Suggested action is `REASSIGN_PARENT_ID` (assign a new `parentID`; both rows are live events) when the row also matches import, otherwise `MARK_DELETE`. The apply step identifies the row by `CandidateRow` and title, never by the shared ID alone, and refuses to act when the row cannot be isolated.
 
 For Lineup rows manually marked `SyncStatus=Delete Pending`, run
 `Preview Lineup Delete Pending` and inspect the UUIDs, titles, and any blocked
@@ -207,6 +235,17 @@ Development wrappers must use `allowCalendarWrites: false`. Use pull-only or rec
 After syncing, `Venue_Cal_Log`, `Crew_Calendar_Log`, and `Draft_Season_Log`
 are sorted ascending by `Date`, then `Start`. The ID registry's sheet locations
 and links are refreshed after each sort.
+
+### Adopting Venue Events
+
+Reconcile flags a Crew log row as `Manual Review` / `Possible Adoption: <eventID>` when a venue calendar event looks like the same show (fuzzy title match on the same date and venue). Adoption is sheet-only and never writes to a calendar.
+
+1. `Calendar > Refresh Adoption Suggestions` runs reconcile and lists the proposed links without changing anything.
+2. `Calendar > Accept Adoption Suggestions` asks for confirmation, then sets each row's `EventID` to the venue event's ID and its status to `Adopted from Venue` (BYPASS), so pushing to the calendar neither recreates nor edits the venue's event. The Lineup `UUID` is also written to the matching `Venue_Cal_Log` row, and later venue pulls preserve it.
+
+After adoption and every registry sync, `UUID`/`parentID`/`eventID` cells on the Crew, Draft, and Venue logs are hyperlinked to their source rows.
+
+To undo an adoption, clear that row's `EventID` and set its status back to `Manual Review`. Suggestions are skipped when the venue event is gone or already linked to another crew row.
 
 ## Recovery
 

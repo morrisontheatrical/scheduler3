@@ -26,14 +26,9 @@ This file is the entrypoint for scheduler project documentation. The older monol
 
 ## Current Anchor
 
-The immediate implementation focus is refining the decision queue lifecycle, establishing identity lineage, and validating role-based sheet access:
-- Active engine sheet access is now abstracted behind `SheetRole` in `Sheet_Settings`; `Mode_Config.TargetSeason` selects Draft or Current Import/Parent/Lineup roles.
-- Complete the manual Draft/Live routing checks in `OPERATIONS.md` before closing issue #1. Bootstrap, registry repair, UI navigation, and legacy helpers remain intentional exceptions.
-- Generating universal cell hyperlinks across all `decision_log` review types.
-- Persisting pending manual reviews while automatically purging superseded items to `Audit_Log`.
-- Implementing `idLog` "Merged IDs" alias mapping with cascading `parentID` updates across child `Lineup` records.
-- Enforcing manual user action flags (`Bypassed`, `Delete Pending`, `Possible Duplicate`) during `ingest` and `verify` runs.
-
-A parallel, recently-started workstream is a `Map_Registry` / `Field_Names.csv` integrity pass: filling in blank `Data Type`/`Sync Behavior` cells, resolving duplicate/colliding `Field Name` rows (which silently break `assembleSheetMap()`'s column resolution), and reconciling `Field_Names.csv` back into sync with the live registry. See `ROADMAP.md`'s 2026-08-28 entries in Immediate Priorities and Decisions Made for the specifics found so far.
-
-The reference-data follow-up belongs with issue #9: `ref` owns enum values, but the current lookup loader reads `Lookup`. Until that loader merges the appropriate `ref` lists and rejects empty validation sources, do not run the `Refresh Dropdowns` maintenance action.
+The current gate is operational validation, not further implementation of features already reported complete:
+- Run the Draft/Current routing and reconciliation checklist in `OPERATIONS.md` using a disposable workbook copy and with calendar writes disabled. Record results before closing issues #1, #4, #7, #8, #10, #13, #24, #25, or #28.
+- `decision_log` review links, queue lifecycle, stable review IDs/evidence, idLog snapshots/merged aliases, and role-based routing are implemented in the code. Distinguish those code-complete items from their remaining live workbook verification.
+- `Engine.loadLookups()` now reads `LOOKUP` and `REFRULES` using roles. The **Lookup List Diagnostics** action reports each loaded list's source and count; dropdown refresh skips empty lists. Verify the live registry and rules before closing #9; broader Status/behavior/mode vocabulary normalization remains open.
+- Hyperlink scope is split: Import→Parent, Parent-only, and Parent-duplicate decision links (#6) and idLog links (#23) are implemented; newer Lineup/Crew review links, Audit_Log-to-decision links (#26), and the wider Calls/calendar-log associations (#27) remain to be defined and completed.
+- Once the validation gates pass, prioritize registry/reference integrity and the remaining Parent → Lineup → Crew Calendar gaps before sync-mode/reporting features. Keep UI and lower-risk maintenance work deferred unless operational needs change.

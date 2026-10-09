@@ -103,6 +103,80 @@ Engine.Calendar = (function() {
     const cal = CalendarApp.getCalendarById(calId);
     const event = cal.getEventById(eventId);
     if (event) event.deleteEvent();
+  },
+
+  /**
+   * Resolves a Calendars-sheet entry by its CalendarRole ("draft_season", "crew_calls", ...).
+   */
+  findByRole: function(ctx, calendarRole) {
+    const wanted = String(calendarRole || "").trim().toLowerCase();
+    return (ctx.calendars || []).find(c => c.role === wanted) || null;
+  },
+
+  /**
+   * Returns the sync-window date range used for reads and wipes.
+   */
+  getSyncWindowRange: function(ctx) {
+    const startDays = ctx.config.syncWindow.startDays || 14;
+    const endDays = ctx.config.syncWindow.endDays || 400;
+    const start = new Date();
+    start.setDate(start.getDate() - startDays);
+    const end = new Date();
+    end.setDate(end.getDate() + endDays);
+    return { start: start, end: end };
+  },
+
+  /**
+   * Resolves the calendar for a CalendarRole and checks it may be wiped.
+   * Returns { ok, reason, entry, cal, range, events }; events are only read, never deleted.
+   */
+  previewWipe: function(ctx, calendarRole) {
+    const entry = this.findByRole(ctx, calendarRole);
+    if (!entry) {
+      return { ok: false, reason: `No calendar with CalendarRole "${calendarRole}" on the Calendars sheet.` };
+    }
+    if (!entry.allowWrites || (ctx.runtime && ctx.runtime.allowCalendarWrites === false)) {
+      return { ok: false, reason: `Calendar writes are not allowed for "${entry.displayName || entry.venueName}" (allowCalendarWrites).`, entry: entry };
+    }
+    const cal = CalendarApp.getCalendarById(entry.id);
+    if (!cal) {
+      return { ok: false, reason: `Calendar not found for ID: ${entry.id}`, entry: entry };
+    }
+    const range = this.getSyncWindowRange(ctx);
+    return { ok: true, entry: entry, cal: cal, range: range, events: cal.getEvents(range.start, range.end) };
+  },
+
+  /**
+   * DESTRUCTIVE: deletes every event on the calendar with the given CalendarRole
+   * within the sync window. Callers must confirm with the user first (see previewWipe).
+   */
+  wipeCalendar: function(ctx, calendarRole) {
+    const preview = this.previewWipe(ctx, calendarRole);
+    if (!preview.ok) {
+      Engine.Log.error(ctx, "CAL_WIPE", preview.reason);
+      return { deleted: 0, failed: 0, skipped: true, reason: preview.reason };
+    }
+
+    let deleted = 0;
+    let failed = 0;
+    preview.events.forEach(function(event, index) {
+      try {
+        event.deleteEvent();
+        deleted++;
+      } catch (e) {
+        failed++;
+        Engine.Log.error(ctx, "CAL_WIPE", `Could not delete event "${event.getTitle()}": ${e.message}`);
+      }
+      // Pause periodically to stay under Google's rate limits
+      if (index % 50 === 0) Utilities.sleep(500);
+    });
+
+    Engine.Log.write(ctx, {
+      stage: "CAL_WIPE",
+      type: "CAL_CLEANUP",
+      details: `Wiped ${deleted} event(s) (${failed} failed) from "${preview.cal.getName()}" [${calendarRole}] between ${preview.range.start.toDateString()} and ${preview.range.end.toDateString()}.`
+    });
+    return { deleted: deleted, failed: failed, skipped: false, calendarName: preview.cal.getName() };
   }
 };
 })();

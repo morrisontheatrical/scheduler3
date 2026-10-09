@@ -35,7 +35,7 @@ Engine.IDService = {
       if (uniqueIdCol >= 0) newRow[uniqueIdCol] = entry.id;
       if (ctx.getCol("ID_LOG", "RecordType") >= 0) newRow[ctx.getCol("ID_LOG", "RecordType")] = entry.type;
       if (ctx.getCol("ID_LOG", "Title") >= 0) newRow[ctx.getCol("ID_LOG", "Title")] = entry.title;
-      if (ctx.getCol("ID_LOG", "ParentID") >= 0) newRow[ctx.getCol("ID_LOG", "ParentID")] = entry.parentId || "N/A";
+      if (ctx.getCol("ID_LOG", "parentID") >= 0) newRow[ctx.getCol("ID_LOG", "parentID")] = entry.parentId || "N/A";
       if (fingerprintCol >= 0 && entry.fingerprint) newRow[fingerprintCol] = entry.fingerprint;
       if (ctx.getCol("ID_LOG", "SheetLocation") >= 0) newRow[ctx.getCol("ID_LOG", "SheetLocation")] = entry.location || "N/A";
       if (ctx.getCol("ID_LOG", "SyncStatus") >= 0) newRow[ctx.getCol("ID_LOG", "SyncStatus")] = entry.status || "Active";
@@ -173,9 +173,7 @@ Engine.IDService = {
           const location = `${sheet.getName()}!R${i + 1}`;
           const titleCol = Engine.getColumnIndex(sheetMap, "Title");
           const eventNameCol = Engine.getColumnIndex(sheetMap, "EventName");
-          const parentIdCol = Engine.getColumnIndex(sheetMap, "ParentID") >= 0
-            ? Engine.getColumnIndex(sheetMap, "ParentID")
-            : Engine.getColumnIndex(sheetMap, "parentID");
+          const parentIdCol = Engine.getColumnIndex(sheetMap, "parentID");
           const title = titleCol >= 0 ? row[titleCol] : eventNameCol >= 0 ? row[eventNameCol] : (row[0] || "No Title");
           const parentId = parentIdCol >= 0 ? row[parentIdCol] : "";
           const rowObject = {};
@@ -188,6 +186,12 @@ Engine.IDService = {
           if (registry.has(id)) {
             // Keep the row snapshot and source location current, including after log sorting.
             const existing = registry.get(id);
+            if (existing.rowIdx === null) {
+              // Same UUID seen earlier in this pass (e.g. Lineup + Crew Cal) and still queued for append: refresh the queued row, no sheet write yet.
+              existing.data[sheetLocationCol] = location;
+              if (fingerprintCol >= 0) existing.data[fingerprintCol] = fingerprint;
+              continue;
+            }
             const oldLoc = existing.data[sheetLocationCol];
             const oldFingerprint = fingerprintCol >= 0 ? existing.data[fingerprintCol] : "";
             const preservesLineupTombstone =
@@ -203,7 +207,7 @@ Engine.IDService = {
               if (lastUpdatedCol >= 0) idLogSheet.getRange(existing.rowIdx, lastUpdatedCol + 1).setValue(now);
               const recordTypeCol = Engine.getColumnIndex(idLogMap, "RecordType");
               const titleIdCol = Engine.getColumnIndex(idLogMap, "Title");
-              const parentIdLogCol = Engine.getColumnIndex(idLogMap, "ParentID");
+              const parentIdLogCol = Engine.getColumnIndex(idLogMap, "parentID");
               if (recordTypeCol >= 0) idLogSheet.getRange(existing.rowIdx, recordTypeCol + 1).setValue(role);
               if (titleIdCol >= 0) idLogSheet.getRange(existing.rowIdx, titleIdCol + 1).setValue(title);
               if (parentIdLogCol >= 0) idLogSheet.getRange(existing.rowIdx, parentIdLogCol + 1).setValue(parentId);
@@ -217,7 +221,7 @@ Engine.IDService = {
             entry[uniqueIdCol] = id;
             if (Engine.getColumnIndex(idLogMap, "RecordType") >= 0) entry[Engine.getColumnIndex(idLogMap, "RecordType")] = role;
             if (Engine.getColumnIndex(idLogMap, "Title") >= 0) entry[Engine.getColumnIndex(idLogMap, "Title")] = title;
-            if (Engine.getColumnIndex(idLogMap, "ParentID") >= 0) entry[Engine.getColumnIndex(idLogMap, "ParentID")] = parentId;
+            if (Engine.getColumnIndex(idLogMap, "parentID") >= 0) entry[Engine.getColumnIndex(idLogMap, "parentID")] = parentId;
             if (fingerprintCol >= 0) entry[fingerprintCol] = fingerprint;
             if (sheetLocationCol >= 0) entry[sheetLocationCol] = location;
             if (Engine.getColumnIndex(idLogMap, "SyncStatus") >= 0) entry[Engine.getColumnIndex(idLogMap, "SyncStatus")] = "Active";
@@ -237,6 +241,7 @@ Engine.IDService = {
       }
       
       this.applyLinks(ctx);
+      this.applyLogLinks(ctx);
       Engine.Log.info(ctx, "ID_SERVICE", `Registry Sync: ${newEntries.length} new IDs added.`);
     },
 
@@ -253,7 +258,7 @@ Engine.IDService = {
 
     const uniqueIdCol = Engine.getColumnIndex(idLogMap, "UniqueID");
     const sheetLocationCol = Engine.getColumnIndex(idLogMap, "SheetLocation");
-    const parentIdCol = Engine.getColumnIndex(idLogMap, "ParentID");
+    const parentIdCol = Engine.getColumnIndex(idLogMap, "parentID");
     if (uniqueIdCol < 0 || sheetLocationCol < 0) return { linked: 0 };
 
     // Build parentID to row lookup across Parent Lineup
@@ -307,6 +312,158 @@ Engine.IDService = {
     return { linked: linkedCount };
   }
 };
+
+/**
+ * Hyperlinks associated (non-key) IDs on the calendar log sheets to their source rows (#27).
+ * Runs after every sort/write because patchRows/batchWrite overwrite cells with plain values.
+ * Only resolvable IDs are linked; anything else is left exactly as it was.
+ *   Crew/Draft log: UUID -> Lineup, parentID -> Parent, eventID -> Venue_Cal_Log (adopted events)
+ *   Venue log:      UUID -> Lineup, parentID -> Parent
+ */
+Engine.IDService.applyLogLinks = function(ctx, onlyRole) {
+  const buildIndex = (role, field) => {
+    const sheet = role && Engine.getSheetByRole(ctx, role);
+    const map = role && ctx.getMap(role);
+    const col = Engine.getColumnIndex(map, field);
+    if (!sheet || col < 0 || sheet.getLastRow() < 2) return null;
+    const index = new Map();
+    sheet.getRange(2, col + 1, sheet.getLastRow() - 1, 1).getValues().forEach((row, i) => {
+      const key = String(row[0] || "").trim();
+      if (key && !index.has(key)) index.set(key, i + 2);
+    });
+    return { gid: sheet.getSheetId(), index: index };
+  };
+
+  const targets = {
+    lineup: buildIndex(Engine.Roles.resolve(ctx, "LINEUP"), "UUID"),
+    parent: buildIndex(Engine.Roles.resolve(ctx, "PARENT"), "parentID"),
+    venue: buildIndex("VENUECAL", "eventID")
+  };
+  const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+  const specs = [
+    { role: isDraft ? "DRAFTCAL" : "CREWCAL", fields: [["UUID", "lineup"], ["parentID", "parent"], ["eventID", "venue"]] },
+    { role: "VENUECAL", fields: [["UUID", "lineup"], ["parentID", "parent"]] },
+    { role: Engine.Roles.resolve(ctx, "LINEUP"), fields: [["parentID", "parent"]] }
+  ];
+
+  let linked = 0;
+  specs.forEach(spec => {
+    if (onlyRole && spec.role !== onlyRole) return;
+    const sheet = Engine.getSheetByRole(ctx, spec.role);
+    const map = ctx.getMap(spec.role);
+    if (!sheet || !map || sheet.getLastRow() < 2) return;
+    const rowCount = sheet.getLastRow() - 1;
+
+    spec.fields.forEach(([field, targetName]) => {
+      const target = targets[targetName];
+      const col = Engine.getColumnIndex(map, field);
+      if (!target || col < 0) return;
+      const range = sheet.getRange(2, col + 1, rowCount, 1);
+      const values = range.getValues();
+      const formulas = range.getFormulas();
+      let changed = false;
+      const output = values.map((row, i) => {
+        let id = String(row[0] || "").trim();
+        // Recover cells an earlier pass wrote as a bare "=<id>" formula (displays #ERROR!).
+        const broken = /^=([^()"\s]+)$/.exec(String(formulas[i][0] || ""));
+        if (id === "#ERROR!" && broken) {
+          id = broken[1];
+          changed = true;
+          const recovered = target.index.get(id);
+          if (!recovered) return [id];
+        }
+        const targetRow = id && target.index.get(id);
+        if (!targetRow) return [formulas[i][0] || row[0]];
+        changed = true;
+        linked++;
+        return [`=HYPERLINK("#gid=${target.gid}&range=A${targetRow}","${id.replace(/"/g, '""')}")`];
+      });
+      // setValues: unresolved IDs stay plain text; "=HYPERLINK(...)" strings still become formulas.
+      if (changed) range.setValues(output);
+    });
+  });
+  return { linked: linked };
+};
+
+/**
+ * One pass that re-links every hyperlinked ID column (idLog, crew/draft/venue logs, Lineup,
+ * decision_log) and repaints status colors on the season's Parent, Lineup and crew/draft log
+ * sheets. Audit_Log is deliberately excluded: its links are written once per entry and the
+ * sheet is too large to rewrite on a timer.
+ */
+Engine.IDService.refreshAllLinks = function(ctx) {
+  const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+  const registry = Engine.IDService.applyLinks(ctx);
+  const logs = Engine.IDService.applyLogLinks(ctx);
+  const repainted = {};
+  [Engine.Roles.resolve(ctx, "PARENT"), Engine.Roles.resolve(ctx, "LINEUP"), isDraft ? "DRAFTCAL" : "CREWCAL"].forEach(role => {
+    if (role) repainted[role] = Engine.Status.repaintSheet(ctx, role);
+  });
+  const decisions = Engine.Decisions && typeof Engine.Decisions.refreshLinks === "function"
+    ? Engine.Decisions.refreshLinks(ctx)
+    : null;
+  return { registryLinked: registry.linked, logLinked: logs.linked, decisionLinks: decisions, repainted: repainted };
+};
+
+/**
+ * Links and colors for one sheet only. Audit_Log is intentionally excluded (append-only, high volume).
+ */
+Engine.IDService.refreshSheetLinks = function(ctx, role) {
+  const result = { role: role, linked: 0, repainted: 0 };
+  if (role === "ID_LOG") {
+    result.linked = Engine.IDService.applyLinks(ctx).linked;
+  } else if (role === "DECISIONS") {
+    result.decisionLinks = Engine.Decisions.refreshLinks(ctx);
+  } else {
+    result.linked = Engine.IDService.applyLogLinks(ctx, role).linked;
+    result.repainted = Engine.Status.repaintSheet(ctx, role);
+  }
+  return result;
+};
+
+function refreshActiveSheetLinks() {
+  const ctx = Engine.getContext();
+  const ui = SpreadsheetApp.getUi();
+  const active = ctx.ss.getActiveSheet();
+  const role = Object.keys(ctx.roles).find(key => ctx.roles[key] === active.getName());
+  if (!role) {
+    ui.alert(`"${active.getName()}" has no Sheet Role in Sheet_Settings, so it cannot be refreshed.`);
+    return null;
+  }
+  if (role === "AUDIT") {
+    ui.alert("Audit_Log is excluded from link refresh.");
+    return null;
+  }
+  Engine.Log.command(ctx, `Refresh Links: ${active.getName()}`);
+  const results = Engine.IDService.refreshSheetLinks(ctx, role);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: `Refresh Links: ${active.getName()}`, type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  ctx.ss.toast(`Linked ${results.linked || 0}, repainted ${results.repainted || 0} row(s).`, active.getName());
+  return results;
+}
+
+function refreshAllLinks() {
+  const ctx = Engine.getContext();
+  Engine.Log.command(ctx, "Refresh All Links");
+  const results = Engine.IDService.refreshAllLinks(ctx);
+  Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Refresh All Links", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
+  return results;
+}
+
+// Installable trigger target: runs silently on a timer and only logs when something throws.
+function scheduledLinkRefresh() {
+  try {
+    Engine.IDService.refreshAllLinks(Engine.getContext());
+  } catch (e) {
+    Engine.Log.error(Engine.getContext(), "LINK_REFRESH", e.message);
+  }
+}
+
+function installLinkRefreshTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === "scheduledLinkRefresh")
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger("scheduledLinkRefresh").timeBased().everyHours(1).create();
+}
 
 function refreshIDRegistryLinks() {
   const ctx = Engine.getContext();

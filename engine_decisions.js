@@ -358,19 +358,61 @@ Engine.Decisions = {
     const auditSheet = Engine.getSheetByRole(ctx, "AUDIT");
     const auditMap = ctx.getMap("AUDIT");
     const idCol = Engine.getColumnIndex(auditMap, "UniqueID");
-    const typeCol = Engine.getColumnIndex(auditMap, "Type") >= 0
-      ? Engine.getColumnIndex(auditMap, "Type")
-      : Engine.getColumnIndex(auditMap, "RecordType");
+    const detailsCol = Engine.getColumnIndex(auditMap, "LogDetails");
+    const typeCol = Engine.getColumnIndex(auditMap, "RecordType");
     const applied = new Set();
+    ctx.appliedReviewOutcomes = {};
     if (auditSheet && idCol >= 0 && typeCol >= 0) {
       auditSheet.getDataRange().getValues().slice(1).forEach(row => {
         if (String(row[typeCol] || "").trim().toUpperCase() === "DECISION_APPLIED" && row[idCol]) {
-          applied.add(String(row[idCol]).trim());
+          const id = String(row[idCol]).trim();
+          applied.add(id);
+          // Audit_Log is newest-first, so the first outcome seen is the latest.
+          if (detailsCol >= 0 && !(id in ctx.appliedReviewOutcomes)) ctx.appliedReviewOutcomes[id] = String(row[detailsCol] || "");
         }
+      });
+    }
+    // idLog is the durable history: Applied entries survive Audit_Log trimming.
+    const idSheet = Engine.getSheetByRole(ctx, "ID_LOG");
+    const idMap = ctx.getMap("ID_LOG");
+    const logIdCol = Engine.getColumnIndex(idMap, "UniqueID");
+    const logStatusCol = Engine.getColumnIndex(idMap, "SyncStatus");
+    const logDetailsCol = Engine.getColumnIndex(idMap, "LogDetails");
+    if (idSheet && logIdCol >= 0 && logStatusCol >= 0) {
+      idSheet.getDataRange().getValues().slice(1).forEach(row => {
+        if (String(row[logStatusCol] || "").trim() !== "Applied" || !row[logIdCol]) return;
+        const id = String(row[logIdCol]).trim();
+        applied.add(id);
+        if (!(id in ctx.appliedReviewOutcomes) && logDetailsCol >= 0) ctx.appliedReviewOutcomes[id] = String(row[logDetailsCol] || "");
       });
     }
     ctx.appliedReviewIDs = applied;
     return applied;
+  },
+
+  appliedReviewOutcome: function(ctx, reviewID) {
+    this.appliedReviewIDs(ctx);
+    return (ctx.appliedReviewOutcomes || {})[String(reviewID || "").trim()] || "";
+  },
+
+  // Deletes and merges always get a durable idLog record; other decisions only update an entry Sync ID Registry already made.
+  _recordInIdLog: function(ctx, decision, action, details) {
+    const reviewID = String(decision.ReviewID || "").trim();
+    if (!reviewID) return;
+    const durable = ["MARK_DELETE", "MERGE_PARENT", "MARK_CALENDAR_DELETE"].includes(action);
+    if (!durable && !(ctx.registry && ctx.registry[reviewID])) return;
+    const snapshot = {};
+    Object.keys(decision).forEach(key => { if (key !== "_rowNumber") snapshot[key] = decision[key]; });
+    Engine.IDService.upsert(ctx, {
+      id: reviewID,
+      type: "DECISIONS",
+      title: decision.CandidateTitle || decision.ParentTitle || "",
+      parentId: decision.ExistingParentID || "",
+      fingerprint: Engine.IO.serializeRow(snapshot),
+      location: "",
+      status: "Applied",
+      details: details
+    });
   },
 
   addPending: function(ctx, values) {
@@ -473,6 +515,13 @@ Engine.Decisions = {
     return { keepID: resolvedKeepID, duplicateID: resolvedDuplicateID };
   },
 
+  // SourceRow is only an import row when the review's SourceSheet is the active import sheet.
+  _importRowHint: function(ctx, decision) {
+    const iSheet = Engine.getSeasonSheet(ctx, "IMPORT");
+    if (!iSheet || String(decision.SourceSheet || "").trim() !== iSheet.getName()) return null;
+    return decision.SourceRow;
+  },
+
   stampManualReviews: function(ctx) {
     const table = this.ensureSchema(ctx);
     const decisions = this.pending(ctx);
@@ -505,7 +554,12 @@ Engine.Decisions = {
         String(decision.RequestedAction || "").trim().toUpperCase() === "MARK_DELETE"
       )
       .map(decision => {
-        const target = Engine.Ingest.previewLineupOrphanDeletion(ctx, decision);
+        const reviewType = String(decision.ReviewType || "");
+        const target = reviewType === "LINEUP_ORPHAN"
+          ? Engine.Ingest.previewLineupOrphanDeletion(ctx, decision)
+          : reviewType === "LINEUP_EXTRA_PERFORMANCE"
+            ? Engine.Ingest.previewLineupRowDeletion(ctx, decision)
+            : Engine.Ingest.previewParentDeletion(ctx, decision);
         return {
           reviewID: decision.ReviewID,
           uuid: target.uuid || decision.CandidateID || "",
@@ -546,7 +600,12 @@ Engine.Decisions = {
       let actionDetails = "";
       try {
         if (userDecision === "REJECTED") {
-          actionDetails = `Decision rejected by reviewer; no data change for ${decision.ReviewID}`;
+          if (String(decision.ReviewType || "") === "PARENT_ONLY") {
+            const kept = Engine.Ingest.retainParentRow(ctx, decision);
+            actionDetails = `Parent-only review rejected; row ${kept.parentID} ("${kept.title}") set to Retained.`;
+          } else {
+            actionDetails = `Decision rejected by reviewer; no data change for ${decision.ReviewID}`;
+          }
         } else if (userDecision === "DEFERRED") {
           results.skipped++;
           return;
@@ -554,7 +613,7 @@ Engine.Decisions = {
           results.skipped++;
           return;
         } else if (action === "REVIEW_IMPORT_DRIFT" && ["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) {
-          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true })) {
+          if (!decision.ExistingParentID || !Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true, importRow: this._importRowHint(ctx, decision) })) {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
@@ -565,20 +624,20 @@ Engine.Decisions = {
           // disposition and the decision row should be closed out.
           if (userDecision === "REJECTED") {
             actionDetails = "Parent-only row rejected for retention; no data change.";
-          } else if (userDecision === "NOT_DUPLICATE") {
-            actionDetails = "Reviewer confirmed parent-only row is not a duplicate; retained as-is.";
-          } else if (userDecision === "ACCEPT") {
-            actionDetails = "Parent-only row retained (no import source); decision closed.";
+          } else if (userDecision === "NOT_DUPLICATE" || userDecision === "ACCEPT") {
+            // Keep the row: Bypassed status stops later verify passes from asking again.
+            const kept = Engine.Ingest.retainParentRow(ctx, decision);
+            actionDetails = `Parent row ${kept.parentID} ("${kept.title}") retained without an import source and set to Retained.`;
           } else {
             results.skipped++;
             return;
           }
-        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "MARK_BYPASS", "REVIEW_DATE_SPAN"].includes(action)) {
+        } else if (["REVIEW_IMPORT_DRIFT", "REVIEW_DUPLICATE", "REJECT_MATCH", "REVIEW_DATE_SPAN"].includes(action)) {
           actionDetails = `Recorded decision ${userDecision}; no automatic data change for ${action}`;
         } else if (action === "ACCEPT_IMPORT") {
           if (!["ACCEPT", "ACCEPT_IMPORT"].includes(userDecision)) throw new Error("ACCEPT_IMPORT requires Decision=ACCEPT");
           if (!decision.ExistingParentID) throw new Error("ACCEPT_IMPORT requires ExistingParentID");
-          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true })) {
+          if (!Engine.Ingest.acceptImportDrift(ctx, decision.ExistingParentID, { force: true, importRow: this._importRowHint(ctx, decision) })) {
             throw new Error("Import row could not be resolved for the selected Parent Lineup row");
           }
           actionDetails = `Accepted import changes for ${decision.ExistingParentID}`;
@@ -598,37 +657,58 @@ Engine.Decisions = {
             throw new Error("Lineup calendar cleanup handler is unavailable.");
           }
           actionDetails = Engine.Ingest.applyLineupCalendarCleanup(ctx, decision, action);
+        } else if (action === "MARK_CREW_DELETE") {
+          if (userDecision !== "ACCEPT") throw new Error("MARK_CREW_DELETE requires Decision=ACCEPT");
+          const marked = Engine.Sync.markCrewRowDeletePending(ctx, decision);
+          actionDetails = `Crew log row ${marked.rowNumber} ("${marked.title}") marked Delete Pending; the next sync marks it Deleted.`;
+        } else if (action === "MARK_BYPASS") {
+          if (userDecision !== "ACCEPT") throw new Error("MARK_BYPASS requires Decision=ACCEPT");
+          const kept = Engine.Ingest.retainParentRow(ctx, decision);
+          actionDetails = `Parent row ${kept.parentID} ("${kept.title}") set to Retained; verification will not flag it again.`;
+        } else if (action === "REASSIGN_PARENT_ID") {
+          if (userDecision !== "ACCEPT") throw new Error("REASSIGN_PARENT_ID requires Decision=ACCEPT");
+          const reassigned = Engine.Ingest.reassignParentID(ctx, decision);
+          actionDetails = `Row ${reassigned.rowNumber} ("${reassigned.title}") reassigned from duplicated ${reassigned.oldID} to new parentID ${reassigned.newID}.`;
         } else if (action === "MARK_DELETE") {
           if (userDecision !== "ACCEPT") throw new Error("MARK_DELETE requires Decision=ACCEPT");
-          const deleted = Engine.Ingest.deleteLineupOrphan(ctx, decision);
-          actionDetails = `Deleted orphan Lineup row ${deleted.uuid} ("${deleted.title}") after saving its row snapshot in idLog.Fingerprint.`;
+          if (String(decision.ReviewType || "") === "LINEUP_ORPHAN") {
+            const deleted = Engine.Ingest.deleteLineupOrphan(ctx, decision);
+            actionDetails = `Deleted orphan Lineup row ${deleted.uuid} ("${deleted.title}") after saving its row snapshot in idLog.Fingerprint.`;
+          } else if (String(decision.ReviewType || "") === "LINEUP_EXTRA_PERFORMANCE") {
+            const marked = Engine.Ingest.markLineupDelete(ctx, decision);
+            actionDetails = `Lineup row ${marked.uuid} marked Delete Pending; Explode Dates removes it with a snapshot.`;
+          } else {
+            const marked = Engine.Ingest.markParentDelete(ctx, decision);
+            actionDetails = `Parent row ${marked.parentID} ("${marked.title}") marked Delete Pending; it is removed on the next Ingest Season run.`;
+          }
         } else if (action === "SYNC_PARENT_TO_LINEUP") {
           if (!["ACCEPT", "SYNC"].includes(userDecision)) throw new Error("SYNC_PARENT_TO_LINEUP requires Decision=ACCEPT");
-          const lRole = Engine.Roles.resolve(ctx, "LINEUP");
-          const lSheet = Engine.getSheetByRole(ctx, lRole);
-          const lMap = ctx.getMap(lRole);
-          const uuid = decision.CandidateID;
-          if (lSheet && lMap && uuid) {
-            const lData = lSheet.getDataRange().getValues();
-            const uuidCol = Engine.getColumnIndex(lMap, "UUID");
-            const rowIdx = lData.findIndex((r, idx) => idx > 0 && String(r[uuidCol]).trim() === String(uuid).trim());
-            if (rowIdx > 0) {
-              const statusCol = Engine.getColumnIndex(lMap, "SyncStatus");
-              const lastSyncedCol = Engine.getColumnIndex(lMap, "LastSynced");
-              if (statusCol >= 0) lSheet.getRange(rowIdx + 1, statusCol + 1).setValue("Synced");
-              if (lastSyncedCol >= 0) lSheet.getRange(rowIdx + 1, lastSyncedCol + 1).setValue(new Date());
-              Engine.Status.paint(ctx, lRole, rowIdx + 1, "Synced");
-              actionDetails = `Synced Lineup ${uuid} to Parent schedule.`;
-            } else {
-              actionDetails = `Lineup row for UUID ${uuid} not found; decision closed.`;
-            }
-          }
+          const synced = Engine.Ingest.syncParentToLineup(ctx, decision);
+          actionDetails = `Synced Lineup ${synced.uuid} from Parent Lineup: ${synced.fields.join(", ")}.`;
         } else if (action === "EXPLODE_LINEUP") {
           if (!["ACCEPT", "EXPLODE"].includes(userDecision)) throw new Error("EXPLODE_LINEUP requires Decision=ACCEPT");
           if (Engine.Ingest && typeof Engine.Ingest.goLineup === "function") {
             Engine.Ingest.goLineup();
             actionDetails = `Re-exploded dates for Parent ${decision.ExistingParentID || decision.SourceID}`;
           }
+        } else if (action === "PUSH_LINEUP_TO_CREWLOG") {
+          if (userDecision !== "ACCEPT") throw new Error("PUSH_LINEUP_TO_CREWLOG requires Decision=ACCEPT");
+          const uuid = String(decision.SourceID || decision.CandidateID || "").trim();
+          if (!uuid) throw new Error("PUSH_LINEUP_TO_CREWLOG requires the source Lineup UUID");
+
+          const syncResult = Engine.Ingest.syncLineupToLog(ctx, { uuid: uuid });
+          if (!syncResult) throw new Error("Could not resolve active-season Lineup and crew-log sheets.");
+          if (syncResult.skippedLocked) throw new Error(`A status blocks pushing Lineup UUID ${uuid} to the crew log.`);
+          if (syncResult.flaggedBadDate) throw new Error(`Lineup UUID ${uuid} has no valid date and was not pushed.`);
+          const isDraft = String((ctx.mode && ctx.mode.targetSeason) || "Current").trim().toUpperCase() === "DRAFT";
+          const crewRole = isDraft ? "DRAFTCAL" : "CREWCAL";
+          const linkedRows = scanSheet(crewRole, ctx).filter(row =>
+            row.Source === "Lineup" && String(row.UUID || "").trim() === uuid
+          );
+          if (linkedRows.length !== 1) {
+            throw new Error(`Expected one ${crewRole} row for Lineup UUID ${uuid}; found ${linkedRows.length}`);
+          }
+          actionDetails = `Pushed Lineup ${uuid} to ${crewRole}.`;
         } else {
           throw new Error(`Unsupported RequestedAction: ${action}`);
         }
@@ -638,9 +718,18 @@ Engine.Decisions = {
         if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(actionDetails);
         Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_APPLIED", details: actionDetails });
         this.appliedReviewIDs(ctx).add(String(decision.ReviewID || "").trim());
+        ctx.appliedReviewOutcomes[String(decision.ReviewID || "").trim()] = actionDetails;
+        this._recordInIdLog(ctx, decision, action, actionDetails);
         table.sheet.deleteRow(decision._rowNumber);
         results.applied++;
       } catch (error) {
+        if (error.supersede) {
+          // The target is gone, so there is nothing left to decide; retire the review instead of failing it.
+          this.markSuperseded(ctx, decision.ReviewID, error.message);
+          Engine.Log.write(ctx, { stage: "DECISION", sheetName: "decision_log", rowIdx: decision._rowNumber, id: decision.ReviewID, type: "DECISION_SUPERSEDED", details: error.message });
+          results.skipped++;
+          return;
+        }
         if (statusCol >= 0) table.sheet.getRange(decision._rowNumber, statusCol + 1).setValue("FAILED");
         if (actionedAtCol >= 0) table.sheet.getRange(decision._rowNumber, actionedAtCol + 1).setValue(new Date());
         if (detailsCol >= 0) table.sheet.getRange(decision._rowNumber, detailsCol + 1).setValue(error.message);
@@ -655,12 +744,6 @@ Engine.Decisions = {
 function ensureDecisionLogSchema() {
   const ctx = Engine.getContext();
   return Engine.Decisions.ensureSchema(ctx);
-}
-
-function openDecisionLog() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("decision_log");
-  if (sheet) SpreadsheetApp.getActiveSpreadsheet().setActiveSheet(sheet);
-  else SpreadsheetApp.getUi().alert("decision_log not found.");
 }
 
 function markDecisionReviewed(reviewID, decision, requestedAction, details) {

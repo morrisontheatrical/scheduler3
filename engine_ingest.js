@@ -84,6 +84,7 @@ function goParent() {
     if (name) pByName[name] = { row: row, rowIdx: idx + 2 };
   });
 
+  const usedParentIDs = new Set(pData.map(row => String(row[pCol("parentID")] || "").trim()).filter(Boolean));
   let created = 0, updated = 0, flaggedForReview = 0;
  
   iData.forEach(iRow => {
@@ -118,7 +119,12 @@ function goParent() {
       sourceFields.forEach(fieldName => {
         rowArray[pCol(fieldName)] = iRow[iCol(fieldName)];
       });
-      rowArray[pCol("parentID")] = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
+      let newParentID = "";
+      do {
+        newParentID = "P-" + Utilities.getUuid().split('-')[0].toUpperCase();
+      } while (usedParentIDs.has(newParentID));
+      usedParentIDs.add(newParentID);
+      rowArray[pCol("parentID")] = newParentID;
       rowArray[pCol("SyncStatus")] = "Active";
       if (pCol("LastSynced") >= 0) rowArray[pCol("LastSynced")] = new Date();
       if (pCol("LastUpdated") >= 0) rowArray[pCol("LastUpdated")] = new Date();
@@ -175,11 +181,19 @@ function goParent() {
     details: `Parent Lineup Updated: ${created} created, ${updated} updated, ${flaggedForReview} flagged for manual review (rename candidates), ${deletedPending} "Delete Pending" row(s) removed.`
   });
   const results = { created: created, updated: updated, flaggedForReview: flaggedForReview, deletedPending: deletedPending };
+  try {
+    results.supersededReviews = Engine.Ingest.refreshRelevantDecisions(ctx).superseded;
+  } catch (error) {
+    Engine.Log.warn(ctx, "INGEST", `Review refresh after ingest failed: ${error.message}`);
+  }
   Engine.Log.write(ctx, { stage: "USER_COMMAND", id: "Ingest Season", type: "COMMAND_COMPLETE", details: JSON.stringify(results) });
   return results;
 }
 
 Engine.Ingest = Engine.Ingest || {};
+
+// Statuses a reviewer set deliberately; verification must not re-flag or re-queue these rows.
+Engine.Ingest.DECIDED_STATUSES = ["Bypassed", "Retained", "Delete Pending"];
 
 Engine.Ingest.getParentSourceFields = function(ctxOrIMap, maybeIMapOrPMap, maybePMap) {
   let ctx = null;
@@ -790,13 +804,41 @@ function applyConfirmedParentMerges() {
 /**
  * STAGE 3: Explodes Parent Lineup into individual events in the Lineup sheet.
  */
+// Pairs Lineup rows with Parent dates by exact date+time first; leftovers pair in order as reschedules, the rest are extra/missing.
+Engine.Ingest.alignLineupToParent = function(ctx, children, expectedDates, lCol) {
+  const keyOf = value => Engine.Ingest.lineupOccurrenceKey(ctx, value, value);
+  const remaining = expectedDates.map(date => ({ date: date, key: keyOf(date), used: false }));
+  const pairs = [];
+  const unmatchedChildren = [];
+  children.forEach(child => {
+    const key = keyOf(child.row[lCol("Date")]);
+    const hit = key ? remaining.find(item => !item.used && item.key === key) : null;
+    if (hit) {
+      hit.used = true;
+      pairs.push({ child: child, expected: hit.date, kind: "MATCH" });
+    } else {
+      unmatchedChildren.push(child);
+    }
+  });
+  const unmatchedExpected = remaining.filter(item => !item.used);
+  const paired = Math.min(unmatchedChildren.length, unmatchedExpected.length);
+  for (let i = 0; i < paired; i++) {
+    pairs.push({ child: unmatchedChildren[i], expected: unmatchedExpected[i].date, kind: "MOVED" });
+  }
+  return {
+    pairs: pairs.sort((a, b) => a.child.rowIdx - b.child.rowIdx),
+    extras: unmatchedChildren.slice(paired),
+    missing: unmatchedExpected.slice(paired).map(item => item.date)
+  };
+};
+
 Engine.Ingest.lineupOccurrenceKey = function(ctx, dateValue, timeValue) {
-  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  const date = Engine.IO.isDate(dateValue) ? dateValue : new Date(dateValue);
   if (isNaN(date.getTime())) return "";
   const timeZone = ctx.timeZone || Session.getScriptTimeZone();
   const dateKey = Utilities.formatDate(date, timeZone, "yyyy-MM-dd");
   let timeKey = "";
-  if (timeValue instanceof Date && !isNaN(timeValue.getTime())) {
+  if (Engine.IO.isDate(timeValue) && !isNaN(timeValue.getTime())) {
     timeKey = Utilities.formatDate(timeValue, timeZone, "HH:mm:ss");
   } else {
     const match = String(timeValue || "").trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
@@ -879,8 +921,8 @@ function goLineup() {
     ].includes(fieldName)
   );
   const sameValue = function(left, right) {
-    const leftDate = left instanceof Date ? left : null;
-    const rightDate = right instanceof Date ? right : null;
+    const leftDate = Engine.IO.isDate(left) ? left : null;
+    const rightDate = Engine.IO.isDate(right) ? right : null;
     if (leftDate || rightDate) {
       const leftTime = new Date(left).getTime();
       const rightTime = new Date(right).getTime();
@@ -1004,7 +1046,7 @@ function goLineup() {
       values.Time = entry.date;
       values.RawDateStr = entry.raw || "";
       values.EventOfTotal = `${index + 1} of ${entries.length}`;
-      if (entry.endDate) values.EndDate = entry.endDate;
+      values.EndDate = entry.endDate || "";
 
       const identity = Engine.getLibraryModule("Identity");
       if (identity && typeof identity.generate === "function") {
@@ -1032,6 +1074,9 @@ function goLineup() {
 
         const changedFields = writeChangedFields(record, values);
         if (changedFields.length) {
+          if (lCol("LastUpdated") >= 0) {
+            lSheet.getRange(record.rowIdx, lCol("LastUpdated") + 1).setValue(new Date());
+          }
           Engine.Status.apply(ctx, lRole, record.rowIdx, "Active", {
             stage: "INGEST",
             id: record.uuid || parentID,
@@ -1073,6 +1118,11 @@ function goLineup() {
     });
   }
   const utils = Engine.getLibraryModule("Utils");
+  try {
+    Engine.Ingest.refreshRelevantDecisions(ctx);
+  } catch (error) {
+    Engine.Log.warn(ctx, "INGEST", `Review refresh after Explode Dates failed: ${error.message}`);
+  }
   if (utils && typeof utils.notify === "function") utils.notify("Lineup Explosion Complete", "Success");
 }
 
@@ -1088,6 +1138,25 @@ function goCrewLog(options) {
 }
 
 Engine.Ingest = Engine.Ingest || {};
+
+Engine.Ingest._lineupEndTime = function(ctx, lineupRow, lineupMap) {
+  const startCol = Engine.getColumnIndex(lineupMap, "Date");
+  const endDateCol = Engine.getColumnIndex(lineupMap, "EndDate");
+  const start = startCol >= 0 ? new Date(lineupRow[startCol]) : new Date(NaN);
+  if (isNaN(start.getTime())) return null;
+
+  const rawEndDate = endDateCol >= 0 ? lineupRow[endDateCol] : "";
+  if (rawEndDate) {
+    const end = new Date(rawEndDate);
+    if (!isNaN(end.getTime())) {
+      end.setHours(start.getHours(), start.getMinutes(), start.getSeconds(), start.getMilliseconds());
+      if (end > start) return end;
+    }
+  }
+
+  const configuredDuration = Number(ctx.mode && ctx.mode.defaultDuration) || 2;
+  return new Date(start.getTime() + configuredDuration * 60 * 60 * 1000);
+};
 
 /**
  * Parses the multiline DatesAndTimes cells used by Parent Lineup.
@@ -1289,7 +1358,7 @@ Engine.Ingest.createLineupDeletionCleanupDecision = function(ctx, role, sheet, c
   const uuidCol = Engine.getColumnIndex(logMap, "UUID");
   const sourceCol = Engine.getColumnIndex(logMap, "Source");
   const titleCol = Engine.getColumnIndex(logMap, "Title");
-  const eventIdCol = Engine.getColumnIndex(logMap, "EventID");
+  const eventIdCol = Engine.getColumnIndex(logMap, "eventID");
   if (uuidCol < 0) {
     Engine.Log.warn(ctx, "INGEST", `Cannot create calendar cleanup review for ${candidate.uuid}: ${logRole}.UUID is not mapped.`);
     return false;
@@ -1382,7 +1451,7 @@ Engine.Ingest.applyLineupCalendarCleanup = function(ctx, decision, action) {
   const uuidCol = Engine.getColumnIndex(map, "UUID");
   const sourceCol = Engine.getColumnIndex(map, "Source");
   const statusCol = Engine.getColumnIndex(map, "SyncStatus");
-  const eventIdCol = Engine.getColumnIndex(map, "EventID");
+  const eventIdCol = Engine.getColumnIndex(map, "eventID");
   const uuid = String(decision.CandidateID || "").trim();
   if (!uuid || uuidCol < 0 || statusCol < 0 || eventIdCol < 0) {
     throw new Error(`${role} must map UUID, SyncStatus, and EventID for calendar cleanup.`);
@@ -1538,7 +1607,11 @@ Engine.Ingest.previewLineupOrphanDeletion = function(ctx, decision) {
 
 Engine.Ingest.deleteLineupOrphan = function(ctx, decision) {
   const preview = Engine.Ingest.previewLineupOrphanDeletion(ctx, decision);
-  if (!preview.eligible) throw new Error(preview.reason);
+  if (!preview.eligible) {
+    const blocked = new Error(preview.reason);
+    blocked.supersede = /no longer/.test(preview.reason || "");
+    throw blocked;
+  }
 
   const lRole = Engine.Roles.resolve(ctx, "LINEUP");
   const lSheet = Engine.getSheetByRole(ctx, lRole);
@@ -1563,6 +1636,265 @@ Engine.Ingest.deleteLineupOrphan = function(ctx, decision) {
     rowNumber: preview.rowNumber
   });
   return result;
+};
+
+// Resolves exactly one Parent row for a review. parentID may be duplicated, so CandidateRow/CandidateTitle disambiguate.
+Engine.Ingest._resolveParentTarget = function(ctx, decision) {
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const pMap = ctx.getMap(pRole);
+  if (!pSheet || !pMap) throw new Error("Active Parent sheet/map is missing.");
+  const idCol = Engine.getColumnIndex(pMap, "parentID");
+  const titleCol = Engine.getColumnIndex(pMap, "EventName");
+  if (idCol < 0) throw new Error("Parent sheet must map parentID.");
+
+  const utils = Engine.getLibraryModule("Utils");
+  const normalize = value => utils.normalize(value, { collapse: true, fold: true });
+  const type = String(decision.ReviewType || "");
+  const parentID = String((type === "PARENT_DUPLICATE" ? decision.DuplicateParentID : decision.ExistingParentID) || decision.CandidateID || "").trim();
+  if (!parentID) throw new Error("Review has no parentID to act on.");
+
+  const data = pSheet.getDataRange().getValues();
+  let matches = data
+    .map((row, index) => ({ row: row, rowNumber: index + 1 }))
+    .filter(item => item.rowNumber > 1 && String(item.row[idCol] || "").trim() === parentID);
+  if (!matches.length) {
+    const gone = new Error(`Parent row ${parentID} no longer exists.`);
+    gone.supersede = true;
+    throw gone;
+  }
+
+  if (matches.length > 1) {
+    const hinted = Number(decision.CandidateRow);
+    if (String(decision.CandidateSheet || "") === pSheet.getName() && matches.some(item => item.rowNumber === hinted)) {
+      matches = matches.filter(item => item.rowNumber === hinted);
+    }
+  }
+  if (matches.length > 1 && titleCol >= 0 && decision.CandidateTitle) {
+    const wanted = normalize(decision.CandidateTitle);
+    const byTitle = matches.filter(item => normalize(item.row[titleCol]) === wanted);
+    if (byTitle.length) matches = byTitle;
+  }
+  if (matches.length > 1) {
+    throw new Error(`parentID ${parentID} is used by ${matches.length} Parent rows; resolve it with a PARENT_ID_DUPLICATE review first.`);
+  }
+
+  const match = matches[0];
+  return {
+    role: pRole,
+    sheet: pSheet,
+    map: pMap,
+    rowNumber: match.rowNumber,
+    parentID: parentID,
+    title: titleCol >= 0 ? match.row[titleCol] : ""
+  };
+};
+
+Engine.Ingest.previewParentDeletion = function(ctx, decision) {
+  try {
+    const target = this._resolveParentTarget(ctx, decision);
+    return { eligible: true, uuid: target.parentID, title: target.title, rowNumber: target.rowNumber };
+  } catch (error) {
+    return { eligible: false, reason: error.message };
+  }
+};
+
+// Delete Pending is applied (with decision supersede + audit entry) by the next Ingest Season run.
+Engine.Ingest.markParentDelete = function(ctx, decision) {
+  const target = this._resolveParentTarget(ctx, decision);
+  Engine.Status.apply(ctx, target.role, target.rowNumber, "Delete Pending", {
+    stage: "DECISION",
+    id: target.parentID,
+    details: `Marked for deletion per reviewed decision ${decision.ReviewID}.`
+  });
+  return target;
+};
+
+// Bypassed rows are skipped by verification so a retained row is not queued again.
+Engine.Ingest.retainParentRow = function(ctx, decision) {
+  const target = this._resolveParentTarget(ctx, decision);
+  Engine.Status.apply(ctx, target.role, target.rowNumber, "Retained", {
+    stage: "DECISION",
+    id: target.parentID,
+    details: `Retained per reviewed decision ${decision.ReviewID}; no matching import row required.`
+  });
+  return target;
+};
+
+Engine.Ingest.reassignParentID = function(ctx, decision) {
+  const target = this._resolveParentTarget(ctx, decision);
+  const idCol = Engine.getColumnIndex(target.map, "parentID");
+  const taken = new Set(target.sheet.getDataRange().getValues().slice(1).map(row => String(row[idCol] || "").trim()));
+  let newID = "";
+  do {
+    newID = "P-" + Utilities.getUuid().split("-")[0].toUpperCase();
+  } while (taken.has(newID));
+
+  target.sheet.getRange(target.rowNumber, idCol + 1).setValue(newID);
+  Engine.Status.apply(ctx, target.role, target.rowNumber, "Active", {
+    stage: "DECISION",
+    id: newID,
+    details: `parentID reassigned from duplicated ${target.parentID} per reviewed decision ${decision.ReviewID}.`
+  });
+  Engine.IDService.syncAll(ctx);
+  ctx.registry = Engine.IDService.loadRegistry(ctx);
+  return { rowNumber: target.rowNumber, title: target.title, oldID: target.parentID, newID: newID };
+};
+
+// Copies the reviewed fields (default title/series/date/venue) from Parent Lineup onto one Lineup performance.
+Engine.Ingest.syncParentToLineup = function(ctx, decision) {
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+  const pMap = ctx.getMap(pRole);
+  const lMap = ctx.getMap(lRole);
+  if (!pSheet || !lSheet || !pMap || !lMap) throw new Error("Active Parent or Lineup sheet/map is missing.");
+
+  const pCol = field => Engine.getColumnIndex(pMap, field);
+  const lCol = field => Engine.getColumnIndex(lMap, field);
+  const uuid = String(decision.CandidateID || "").trim();
+  if (!uuid) throw new Error("SYNC_PARENT_TO_LINEUP requires the Lineup UUID in CandidateID.");
+
+  const lData = lSheet.getDataRange().getValues();
+  const targetIdx = lData.findIndex((row, i) => i > 0 && String(row[lCol("UUID")] || "").trim() === uuid);
+  if (targetIdx < 0) {
+    const gone = new Error(`Lineup row ${uuid} no longer exists.`);
+    gone.supersede = true;
+    throw gone;
+  }
+  const target = lData[targetIdx];
+  const currentStatus = String(target[lCol("SyncStatus")] || "").trim();
+  if (Engine.Status.blocksWrite(ctx, currentStatus)) throw new Error(`Lineup row ${uuid} status "${currentStatus}" blocks sync.`);
+
+  const parentID = String(target[lCol("parentID")] || "").trim();
+  const parentRows = pSheet.getDataRange().getValues().slice(1).filter(row => String(row[pCol("parentID")] || "").trim() === parentID);
+  if (parentRows.length !== 1) throw new Error(`Expected one Parent row for ${parentID}; found ${parentRows.length}.`);
+  const pRow = parentRows[0];
+
+  // Align by exact date first (see alignLineupToParent) so a dropped performance cannot shift later rows.
+  const siblings = lData
+    .map((row, i) => ({ row: row, rowIdx: i + 1, i: i }))
+    .filter(item => item.i > 0 &&
+      String(item.row[lCol("parentID")] || "").trim() === parentID &&
+      !Engine.Status.getBehavior(ctx, String(item.row[lCol("SyncStatus")] || "").trim()).includes("BYPASS"));
+  const alignment = Engine.Ingest.alignLineupToParent(ctx, siblings, Engine.Ingest.parseParentDatesAndTimes(pRow[pCol("DatesAndTimes")]).dates, lCol);
+  const pair = alignment.pairs.find(item => item.child.i === targetIdx);
+  if (!pair) throw new Error(`Lineup row ${uuid} is no longer listed in Parent ${parentID}; use MARK_DELETE instead.`);
+  const expected = pair.expected;
+  const position = alignment.pairs.indexOf(pair);
+  if (!expected || isNaN(new Date(expected).getTime())) throw new Error(`Parent ${parentID} has no parsable date for Lineup position ${position + 1}.`);
+
+  const titleField = lCol("EventName") >= 0 ? "EventName" : lCol("Title") >= 0 ? "Title" : "";
+  const requested = String(decision.ChangedFields || "").split(",").map(field => field.trim()).filter(Boolean);
+  const values = {};
+  (requested.length ? requested : ["EventName", "Series", "Date", "Venue"]).forEach(field => {
+    if (field === "Date") {
+      values.Date = expected;
+      values.Time = expected;
+      return;
+    }
+    const destination = field === "EventName" ? titleField : field;
+    if (destination && lCol(destination) >= 0 && pCol(field) >= 0) values[destination] = pRow[pCol(field)];
+  });
+
+  const identity = Engine.getLibraryModule("Identity");
+  if (identity && typeof identity.generate === "function" && lCol("SyncHash") >= 0) {
+    const finalValue = field => values[field] !== undefined ? values[field] : target[lCol(field)];
+    values.SyncHash = identity.generate({
+      title: finalValue(titleField),
+      date: finalValue("Date"),
+      time: finalValue("Time"),
+      venue: finalValue("Venue")
+    }).hash;
+  }
+
+  const written = Object.keys(values).filter(field => lCol(field) >= 0);
+  written.forEach(field => lSheet.getRange(targetIdx + 1, lCol(field) + 1).setValue(values[field]));
+  if (lCol("LastUpdated") >= 0) lSheet.getRange(targetIdx + 1, lCol("LastUpdated") + 1).setValue(new Date());
+  Engine.Status.apply(ctx, lRole, targetIdx + 1, "Synced", {
+    stage: "DECISION",
+    id: uuid,
+    details: `Synced from Parent Lineup: ${written.filter(field => field !== "SyncHash" && field !== "Time").join(", ")}.`,
+    suppressLog: true
+  });
+  return { uuid: uuid, fields: written.filter(field => field !== "SyncHash" && field !== "Time") };
+};
+
+// Ingest runs make pending reviews moot when the target row is gone or its status says hands off.
+Engine.Ingest.supersedeDecidedReviews = function(ctx) {
+  const pRole = Engine.Roles.resolve(ctx, "PARENT");
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const pSheet = pRole && Engine.getSheetByRole(ctx, pRole);
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+  const pMap = ctx.getMap(pRole);
+  const lMap = ctx.getMap(lRole);
+  if (!pSheet || !lSheet || !pMap || !lMap) return { superseded: 0 };
+
+  const parentStatuses = {};
+  pSheet.getDataRange().getValues().slice(1).forEach(row => {
+    const id = String(row[Engine.getColumnIndex(pMap, "parentID")] || "").trim();
+    if (id) (parentStatuses[id] = parentStatuses[id] || []).push(String(row[Engine.getColumnIndex(pMap, "SyncStatus")] || "").trim());
+  });
+  const lineupStatuses = {};
+  lSheet.getDataRange().getValues().slice(1).forEach(row => {
+    const uuid = String(row[Engine.getColumnIndex(lMap, "UUID")] || "").trim();
+    if (uuid) lineupStatuses[uuid] = String(row[Engine.getColumnIndex(lMap, "SyncStatus")] || "").trim();
+  });
+
+  let superseded = 0;
+  Engine.Decisions.reviewable(ctx).forEach(decision => {
+    const type = String(decision.ReviewType || "");
+    let status = "";
+    if (type === "PARENT_LINEUP_DRIFT") {
+      status = lineupStatuses[String(decision.CandidateID || "").trim()] || "";
+    } else if (["PARENT_ONLY", "IMPORT_DRIFT", "IMPORT_RENAME"].includes(type)) {
+      const statuses = parentStatuses[String(decision.ExistingParentID || "").trim()] || [];
+      status = statuses.length === 1 ? statuses[0] : "";
+    }
+    if (!status) return;
+    if (Engine.Ingest.DECIDED_STATUSES.includes(status) || Engine.Status.blocksWrite(ctx, status)) {
+      if (Engine.Decisions.markSuperseded(ctx, decision.ReviewID, `Target row status "${status}" makes this review moot (superseded by ingest).`)) superseded++;
+    }
+  });
+  return { superseded: superseded };
+};
+
+// Marks one Lineup row Delete Pending; Explode Dates snapshots and removes it.
+Engine.Ingest.markLineupDelete = function(ctx, decision) {
+  const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+  const lSheet = lRole && Engine.getSheetByRole(ctx, lRole);
+  const lMap = ctx.getMap(lRole);
+  if (!lSheet || !lMap) throw new Error("Active Lineup sheet/map is missing.");
+  const uuidCol = Engine.getColumnIndex(lMap, "UUID");
+  const uuid = String(decision.CandidateID || "").trim();
+  const rows = lSheet.getDataRange().getValues()
+    .map((row, i) => ({ row: row, rowNumber: i + 1 }))
+    .filter(item => item.rowNumber > 1 && String(item.row[uuidCol] || "").trim() === uuid);
+  if (rows.length !== 1) {
+    const gone = new Error(rows.length ? `Lineup UUID ${uuid} is not unique.` : `Lineup row ${uuid} no longer exists.`);
+    gone.supersede = rows.length === 0;
+    throw gone;
+  }
+  Engine.Status.apply(ctx, lRole, rows[0].rowNumber, "Delete Pending", {
+    stage: "DECISION",
+    id: uuid,
+    details: `Marked for deletion per reviewed decision ${decision.ReviewID}.`
+  });
+  return { uuid: uuid, rowNumber: rows[0].rowNumber };
+};
+
+Engine.Ingest.previewLineupRowDeletion = function(ctx, decision) {
+  try {
+    const lRole = Engine.Roles.resolve(ctx, "LINEUP");
+    const lSheet = Engine.getSheetByRole(ctx, lRole);
+    const uuidCol = Engine.getColumnIndex(ctx.getMap(lRole), "UUID");
+    const uuid = String(decision.CandidateID || "").trim();
+    const hit = lSheet.getDataRange().getValues().findIndex((row, i) => i > 0 && String(row[uuidCol] || "").trim() === uuid);
+    return hit < 0 ? { eligible: false, reason: `Lineup row ${uuid} no longer exists.` } : { eligible: true, uuid: uuid, rowNumber: hit + 1, title: decision.CandidateTitle || "" };
+  } catch (error) {
+    return { eligible: false, reason: error.message };
+  }
 };
 
 function previewLineupDeletePending() {
@@ -1594,6 +1926,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   const lCol = fieldName => Engine.getColumnIndex(lMap, fieldName);
   const lData = lSheet.getDataRange().getValues();
   lData.shift();
+  const requestedUUID = String(options.uuid || "").trim();
 
   // Anchor identity: a log row is linked to its Lineup row via Source="Lineup" + matching UUID.
   const logRows = scanSheet(targetRole, ctx);
@@ -1602,16 +1935,26 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
     if (row.Source === "Lineup" && row.UUID) existingByUUID[row.UUID] = row;
   });
 
-  const defaultDuration = (ctx.mode && ctx.mode.defaultDuration) || 2;
   const newRows = [];
   const changedRows = [];
   let skippedLocked = 0;
   let flaggedBadDate = 0;
 
+  // Resolve crew-log delete requests first so deleted rows are not regenerated or updated below.
+  const deleteResult = Engine.Sync.applyLogDeletes(ctx, targetRole, logRows, null);
+  deleteResult.changed.forEach(row => changedRows.push(row));
+
   lData.forEach(lRow => {
     const uuid = lRow[lCol("UUID")];
+    if (requestedUUID && String(uuid || "").trim() !== requestedUUID) return;
     const title = lRow[lCol("EventName")];
     if (!uuid || !title) return;
+
+    const lineupStatus = String(lRow[lCol("SyncStatus")] || "").trim();
+    if (lineupStatus === "Delete Pending" || Engine.Status.blocksWrite(ctx, lineupStatus)) {
+      skippedLocked++;
+      return;
+    }
 
     const location = lRow[lCol("Venue")];
     const eventOfTotal = lRow[lCol("EventOfTotal")];
@@ -1638,7 +1981,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
       return; // Don't create a new row until the date is fixable.
     }
 
-    const end = new Date(start.getTime() + defaultDuration * 60 * 60 * 1000);
+    const end = Engine.Ingest._lineupEndTime(ctx, lRow, lMap);
 
     // NEW: no log row yet for this Lineup event.
     if (!existing) {
@@ -1651,7 +1994,9 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
         Description: eventOfTotal ? `Auto-synced from Lineup (${eventOfTotal})` : "Auto-synced from Lineup",
         Source: "Lineup",
         UUID: uuid,
+        parentID: lRow[lCol("parentID")] || "",
         SyncStatus: "Manual Review",
+        LastUpdated: new Date(),
         LastSynced: new Date()
       });
       return;
@@ -1665,14 +2010,21 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
       return;
     }
 
+    // Backfill the Parent link on rows created before parentID was written.
+    const lineupParentID = lRow[lCol("parentID")];
+    if (lineupParentID && !existing.parentID) {
+      existing.parentID = lineupParentID;
+      changedRows.push(existing);
+    }
+
     const comparison = Engine.IO.compare(ctx, {
-      source: { EventName: title, Start: start, Venue: location },
+      source: { EventName: title, Start: start, End: end, Venue: location },
       destination: existing,
       sourceRole: Engine.Roles.resolve(ctx, "LINEUP"),
       destinationRole: targetRole,
-      fields: ["EventName", "Start", "Venue"],
+      fields: ["EventName", "Start", "End", "Venue"],
       fieldAliases: { EventName: "Title", Venue: "Location" },
-      comparisonModes: { Start: "timestamp" },
+      comparisonModes: { Start: "timestamp", End: "timestamp" },
       identifier: uuid
     });
 
@@ -1680,12 +2032,14 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
       existing.Title = title;
       existing.Date = start;
       existing.Start = start;
+      existing.End = end;
       existing.Location = location;
+      existing.LastUpdated = new Date();
       Engine.Status.apply(ctx, targetRole, null, "Data Drift Detected", {
         details: "Lineup changed since the last sync.",
         targetObj: existing
       });
-      changedRows.push(existing);
+      if (!changedRows.includes(existing)) changedRows.push(existing);
     }
   });
 
@@ -1707,6 +2061,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   if (changedRows.length > 0) {
     patchRows(targetRole, changedRows, ctx);
   }
+  const removedRows = Engine.Sync.removeLogRows(ctx, targetRole, deleteResult.remove);
 
   Engine.IO.sortLogByDate(ctx, targetRole);
   Engine.IDService.syncAll(ctx);
@@ -1714,7 +2069,7 @@ Engine.Ingest.syncLineupToLog = function(ctx, options) {
   Engine.Log.write(ctx, {
     stage: "INGEST",
     type: "LINEUP_TO_LOG",
-    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s), flagged ${flaggedBadDate} row(s) with an unparseable date.`
+    details: `Added ${newRows.length} new row(s), updated ${changedRows.length} drifted row(s), skipped ${skippedLocked} locked/bypassed row(s), flagged ${flaggedBadDate} row(s) with an unparseable date, removed ${removedRows} row(s) and tombstoned ${deleteResult.tombstoned} per delete requests, ${deleteResult.needsCalendar} waiting on a calendar sync.`
   });
 
   return { added: newRows.length, updated: changedRows.length, skippedLocked: skippedLocked, flaggedBadDate: flaggedBadDate };
@@ -1899,6 +2254,8 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
 
   const applyReviewStatus = (rowIdx, parentID, statusName, details, decisionValues) => {
     const currentStatus = pSheet.getRange(rowIdx, pCol("SyncStatus") + 1).getValue();
+    // A reviewer already decided these rows (retain / delete); do not queue them again.
+    if (Engine.Ingest.DECIDED_STATUSES.includes(String(currentStatus || "").trim())) return false;
     if (Engine.Status.blocksWrite(ctx, currentStatus)) {
       Engine.Log.write(ctx, {
         stage: "VERIFY_IMPORT",
@@ -1982,7 +2339,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     });
     const drifted = !comparison.equal;
     const fieldComparison = comparison.changed.map(entry =>
-      `${entry.field}: import="${entry.source}" | Parent="${entry.destination}"`
+      `${entry.field}: import="${Engine.IO.formatValue(ctx, entry.source)}" | Parent="${Engine.IO.formatValue(ctx, entry.destination)}"`
     ).join(" | ");
 
     if (drifted || isRenameCandidate) {
@@ -2075,13 +2432,91 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
               Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Parent Lineup now cleanly matches import.");
             });
         }
+      } else if (!Engine.Status.blocksWrite(ctx, currentStatus) && pCol("LastSynced") >= 0) {
+        // Verified clean against import, so record that this pass confirmed the row.
+        pSheet.getRange(match.rowIdx, pCol("LastSynced") + 1).setValue(new Date());
       }
     }
   });
 
+  // Rows sharing a parentID: the import-matched (else first) row keeps the ID; the rest get a review.
+  const idRows = {};
+  pData.forEach((row, idx) => {
+    const id = String(row[pCol("parentID")] || "").trim();
+    if (id) (idRows[id] = idRows[id] || []).push(idx + 2);
+  });
+  const duplicateSecondary = {};
+  let duplicateParentIDs = 0;
+  Object.keys(idRows).filter(id => idRows[id].length > 1).forEach(id => {
+    const rows = idRows[id];
+    const primary = rows.find(rowNum => matchedParentRows[rowNum]) || rows[0];
+    rows.filter(rowNum => rowNum !== primary).forEach(rowNum => {
+      const row = pData[rowNum - 2];
+      const status = String(row[pCol("SyncStatus")] || "").trim();
+      if (Engine.Ingest.DECIDED_STATUSES.includes(status)) return;
+      duplicateSecondary[rowNum] = true;
+      duplicateParentIDs++;
+      const title = row[pCol("EventName")] || "";
+      const matchedImport = Boolean(matchedParentRows[rowNum]);
+      const suggested = matchedImport ? "REASSIGN_PARENT_ID" : "MARK_DELETE";
+      Engine.Status.apply(ctx, pRole, rowNum, "Duplicate (ID Match)", {
+        stage: "VERIFY_IMPORT",
+        id: id,
+        details: `parentID ${id} is also used by row ${primary}.`,
+        suppressLog: true
+      });
+      addDecision({
+        ReviewID: Engine.Decisions.stableReviewID("PARENT_ID_DUPLICATE", id, title, title),
+        ReviewType: "PARENT_ID_DUPLICATE",
+        SourceSheet: pSheetName,
+        SourceRow: rowNum,
+        SourceID: id,
+        CandidateSheet: pSheetName,
+        CandidateRow: rowNum,
+        CandidateID: id,
+        CandidateTitle: title,
+        ParentTitle: title,
+        ExistingParentID: id,
+        Evidence: `parentID ${id} is used by rows ${rows.join(", ")}. Row ${rowNum} "${title}" ${matchedImport ? "also matches an import row" : "has no import match"}; row ${primary} keeps the ID.`,
+        Confidence: "HIGH",
+        SuggestedAction: suggested,
+        SuggestionReason: matchedImport
+          ? "Both rows are live events; give this row its own parentID."
+          : "Leftover row with no import match; mark it for deletion, or choose MARK_BYPASS to keep it.",
+        RequestedAction: suggested,
+        Decision: "PENDING",
+        ActionStatus: "PENDING"
+      });
+      Engine.Log.write(ctx, {
+        stage: "VERIFY_IMPORT",
+        sheetName: pSheetName,
+        rowIdx: rowNum,
+        id: id,
+        type: "DUPLICATE_PARENT_ID",
+        details: `parentID ${id} is also used by row ${primary}.`
+      });
+    });
+  });
+
   pData.forEach((pRow, index) => {
     const rowIdx = index + 2;
-    if (matchedParentRows[rowIdx]) return;
+    if (matchedParentRows[rowIdx] || duplicateSecondary[rowIdx]) return;
+    const priorReviewID = Engine.Decisions.stableReviewID("PARENT_ONLY", "NONE", pRow[pCol("parentID")] || rowIdx, pRow[pCol("EventName")] || "");
+    const currentParentStatus = String(pRow[pCol("SyncStatus")] || "").trim();
+    if (Engine.Decisions.appliedReviewIDs(ctx).has(priorReviewID)) {
+      // Replay the reviewer's applied outcome; a delete decision must never decay into a retain.
+      const wasDelete = /Delete Pending/i.test(Engine.Decisions.appliedReviewOutcome(ctx, priorReviewID));
+      const target = wasDelete ? "Delete Pending" : "Retained";
+      if (currentParentStatus !== target && (wasDelete || !Engine.Ingest.DECIDED_STATUSES.includes(currentParentStatus))) {
+        Engine.Status.apply(ctx, pRole, rowIdx, target, {
+          stage: "VERIFY_IMPORT",
+          id: pRow[pCol("parentID")],
+          details: `Parent-only review ${priorReviewID} was already applied; row set to ${target}.`
+        });
+      }
+      return;
+    }
+    if (Engine.Ingest.DECIDED_STATUSES.includes(currentParentStatus)) return;
     parentOnly++;
     const likelyMatches = likelyParentMatches(pRow);
     const bestMatch = likelyMatches[0];
@@ -2159,7 +2594,7 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
   Engine.Log.write(ctx, {
     stage: "VERIFY_IMPORT",
     type: "VERIFY_IMPORT_COMPLETE",
-    details: `Checked ${iData.length} import rows. ${flagged} flagged (${renamedCandidate} possible rename), ${importOnly} import-only, ${parentOnly} Parent Lineup-only, ${parentDuplicateSuggestions.created} Parent duplicate suggestions created.`
+    details: `Checked ${iData.length} import rows.\n${flagged} flagged (${renamedCandidate} possible rename)\n${importOnly} import-only\n${parentOnly} Parent Lineup-only\n${parentDuplicateSuggestions.created} Parent duplicate suggestions created\n${duplicateParentIDs} duplicated parentID row(s)`
   });
 
   return {
@@ -2168,7 +2603,8 @@ Engine.Ingest.verifyImportToParent = function(ctx) {
     renamedCandidate: renamedCandidate,
     importOnly: importOnly,
     parentOnly: parentOnly,
-    parentDuplicateSuggestions: parentDuplicateSuggestions.created
+    parentDuplicateSuggestions: parentDuplicateSuggestions.created,
+    duplicateParentIDs: duplicateParentIDs
   };
 };
 
@@ -2312,6 +2748,12 @@ Engine.Ingest.refreshRelevantDecisions = function(ctx) {
     Engine.Log.warn(ctx, "DECISION", `refreshRelevantDecisions Lineup pass: ${lErr.message}`);
   }
 
+  try {
+    totalSuperseded += Engine.Ingest.supersedeDecidedReviews(ctx).superseded;
+  } catch (sErr) {
+    Engine.Log.warn(ctx, "DECISION", `supersedeDecidedReviews: ${sErr.message}`);
+  }
+
   return { superseded: totalSuperseded };
 };
 
@@ -2379,9 +2821,15 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
 
     const parsedDates = Engine.Ingest.parseParentDatesAndTimes(rawDates);
     const expectedDates = parsedDates.dates;
+    // Span-only rows ("X through Y") parse fine; how they explode depends on the span policy, so there
+    // are no individual dates to align against.
+    if (expectedDates.length === 0 && parsedDates.spans.length > 0) return;
     if (expectedDates.length === 0) {
+      const parentRowNum = pData.indexOf(pRow) + 2;
+      // A reviewer-decided row (Bypassed / Delete Pending) must not be reset to Manual Review.
+      if (Engine.Status.blocksWrite(ctx, pRow[pCol("SyncStatus")])) return;
       unparseable++;
-      Engine.Status.apply(ctx, pRole, pData.indexOf(pRow) + 2, "Manual Review", {
+      Engine.Status.apply(ctx, pRole, parentRowNum, "Manual Review", {
         stage: "VERIFY_PARENT",
         id: parentID,
         type: "UNPARSEABLE_DATES",
@@ -2391,9 +2839,45 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
     }
 
     const children = lByParent[parentID] || [];
-    children.forEach((child, index) => {
+    const alignment = Engine.Ingest.alignLineupToParent(ctx, children, expectedDates, lCol);
+
+    // Performances the Parent no longer lists (e.g. a cancelled show); never shift later rows onto the wrong date.
+    alignment.extras.forEach(child => {
       checked++;
-      const expected = expectedDates[index];
+      flagged++;
+      const uuid = child.row[lCol("UUID")] || "NO_UUID";
+      const shown = Engine.IO.formatValue(ctx, child.row[lCol("Date")]);
+      const details = `Performance ${shown} is no longer listed in Parent Lineup.`;
+      Engine.Status.apply(ctx, lRole, child.rowIdx, "Manual Review", { stage: "VERIFY_PARENT", id: uuid, details: details, suppressLog: true });
+      Engine.Log.write(ctx, { stage: "VERIFY_PARENT", sheetName: lSheet.getName(), rowIdx: child.rowIdx, id: uuid, type: "EXTRA_PERFORMANCE", details: details });
+      if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
+        Engine.Decisions.addPending(ctx, {
+          ReviewID: Engine.Decisions.stableReviewID("LINEUP_EXTRA_PERFORMANCE", parentID, uuid, shown),
+          ReviewType: "LINEUP_EXTRA_PERFORMANCE",
+          SourceSheet: pSheet.getName(),
+          SourceRow: pData.indexOf(pRow) + 2,
+          SourceID: parentID,
+          CandidateSheet: lSheet.getName(),
+          CandidateRow: child.rowIdx,
+          CandidateID: uuid,
+          CandidateTitle: child.row[lCol("EventName")] || child.row[lCol("Title")] || "",
+          ParentTitle: pRow[pCol("EventName")] || "",
+          ExistingParentID: parentID,
+          Evidence: details,
+          Confidence: "HIGH",
+          SuggestedAction: "MARK_DELETE",
+          SuggestionReason: "Parent Lineup dropped this performance. Accept to mark the Lineup row Delete Pending; Explode Dates then removes it with a snapshot and tombstone.",
+          RequestedAction: "MARK_DELETE",
+          Decision: "PENDING",
+          ActionStatus: "PENDING"
+        });
+      }
+    });
+
+    alignment.pairs.forEach(pair => {
+      const child = pair.child;
+      checked++;
+      const expected = pair.expected;
       const expectedValid = expected && !isNaN(new Date(expected).getTime());
       const parentTitle = pRow[pCol("EventName")];
       const parentSeries = pCol("Series") >= 0 ? pRow[pCol("Series")] : "";
@@ -2417,8 +2901,8 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
         fieldAliases: lineupTitleField ? { EventName: lineupTitleField } : {},
         sourceRole: pRole,
         destinationRole: lRole,
-        // Compare the performance's calendar day, not hidden fractional time.
-        comparisonModes: { Date: "date" },
+        // Exact-date pairs compare by calendar day; rescheduled pairs compare the full timestamp.
+        comparisonModes: { Date: pair.kind === "MOVED" ? "timestamp" : "date" },
         fields: compareFields,
         identifier: child.row[lCol("UUID")] || parentID
       });
@@ -2439,11 +2923,12 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
           });
           return;
         }
-        const statusCol = lCol("SyncStatus");
-        const lastSyncedCol = lCol("LastSynced");
-        if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Manual Review");
-        if (lastSyncedCol >= 0) lSheet.getRange(child.rowIdx, lastSyncedCol + 1).setValue(new Date());
-        Engine.Status.paint(ctx, lRole, child.rowIdx, "Manual Review");
+        Engine.Status.apply(ctx, lRole, child.rowIdx, "Manual Review", {
+          stage: "VERIFY_PARENT",
+          id: child.row[lCol("UUID")],
+          details: details,
+          suppressLog: true
+        });
         Engine.Log.write(ctx, {
           stage: "VERIFY_PARENT",
           sheetName: lSheet.getName(),
@@ -2456,7 +2941,13 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
         // Queue structured decision in decision_log
         const uuid = child.row[lCol("UUID")] || "NO_UUID";
         const evidenceStr = comparison.changed
-          ? comparison.changed.map(e => `${e.field}: Parent="${e.source}" | Lineup="${e.destination}"`).join(" | ")
+          ? comparison.changed.map(e => {
+            const shownParent = Engine.IO.formatValue(ctx, e.source);
+            const shownLineup = Engine.IO.formatValue(ctx, e.destination);
+            // Show normalized forms only when the displayed values look identical.
+            const note = shownParent === shownLineup ? ` [compared as ${e.normalizedSource} vs ${e.normalizedDestination}]` : "";
+            return `${e.field}: Parent="${shownParent}" | Lineup="${shownLineup}"${note}`;
+          }).join(" | ")
           : details;
         if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
           const reviewId = typeof Engine.Decisions.stableReviewID === "function"
@@ -2492,26 +2983,28 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
           const statusCol = lCol("SyncStatus");
           if (statusCol >= 0) lSheet.getRange(child.rowIdx, statusCol + 1).setValue("Synced");
           Engine.Status.paint(ctx, lRole, child.rowIdx, "Synced");
-
-          if (uuid && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
-            Engine.Decisions.reviewable(ctx)
-              .filter(d => (d.CandidateID === uuid || d.SourceID === parentID) && d.ReviewType === "PARENT_LINEUP_DRIFT")
-              .forEach(d => {
-                Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Lineup performance cleanly matches Parent.");
-              });
-          }
+        }
+        if (!Engine.Status.blocksWrite(ctx, currentStatus) && lCol("LastSynced") >= 0) {
+          lSheet.getRange(child.rowIdx, lCol("LastSynced") + 1).setValue(new Date());
+        }
+        // Supersede stale drift reviews for this performance even when its status is no longer Manual Review.
+        if (uuid && Engine.Decisions && typeof Engine.Decisions.reviewable === "function") {
+          Engine.Decisions.reviewable(ctx)
+            .filter(d => d.CandidateID === uuid && d.ReviewType === "PARENT_LINEUP_DRIFT")
+            .forEach(d => {
+              Engine.Decisions.markSuperseded(ctx, d.ReviewID, "Drift resolved: Lineup performance cleanly matches Parent.");
+            });
         }
       }
     });
 
     // Check if Parent expected more performances than exist in Lineup
-    if (expectedDates.length > children.length) {
+    if (alignment.missing.length > 0) {
       flagged++;
-      Engine.Log.warn(ctx, "VERIFY_PARENT", `Parent ${parentID} expects ${expectedDates.length} performances, but Lineup only has ${children.length}.`);
+      const missingText = alignment.missing.map(date => Engine.IO.formatValue(ctx, date)).join(", ");
+      Engine.Log.warn(ctx, "VERIFY_PARENT", `Parent ${parentID} lists performance(s) not in Lineup: ${missingText}.`);
       if (Engine.Decisions && typeof Engine.Decisions.addPending === "function") {
-        const reviewId = typeof Engine.Decisions.stableReviewID === "function"
-          ? Engine.Decisions.stableReviewID("LINEUP_MISSING", parentID, `count-${expectedDates.length}-${children.length}`)
-          : `LINEUP_MISSING_${parentID}`;
+        const reviewId = Engine.Decisions.stableReviewID("LINEUP_MISSING", parentID, "missing", missingText);
         Engine.Decisions.addPending(ctx, {
           ReviewID: reviewId,
           ReviewType: "LINEUP_MISSING_PERFORMANCE",
@@ -2520,7 +3013,7 @@ Engine.Ingest.verifyParentToLineup = function(ctx) {
           SourceID: parentID,
           ParentTitle: pRow[pCol("EventName")] || "",
           ExistingParentID: parentID,
-          Evidence: `Expected ${expectedDates.length} performances (${expectedDates.join(", ")}), found ${children.length} in Lineup.`,
+          Evidence: `Parent lists ${alignment.missing.length} performance(s) not in Lineup: ${missingText}.`,
           Confidence: "HIGH",
           SuggestedAction: "EXPLODE_LINEUP",
           SuggestionReason: "Parent DatesAndTimes has additional performances not yet exploded to Lineup.",
@@ -2635,7 +3128,15 @@ Engine.Ingest.acceptImportDrift = function(ctx, parentID, options) {
   iData.shift();
  
   const pName = normalize(pRow[pCol("EventName")]);
-  let importRowIdx = iData.findIndex(row => normalize(row[iCol("EventName")]) === pName);
+  let importRowIdx = -1;
+  // Prefer the exact import row recorded on the review; a renamed event cannot be found by name.
+  const hintedRow = Number(options.importRow);
+  if (Number.isInteger(hintedRow) && hintedRow >= 2 && hintedRow - 2 < iData.length) {
+    importRowIdx = hintedRow - 2;
+  }
+  if (importRowIdx === -1) {
+    importRowIdx = iData.findIndex(row => normalize(row[iCol("EventName")]) === pName);
+  }
 
   if (importRowIdx === -1) {
     // Same fallback used everywhere else: Opening+Range+Venue triple match.
