@@ -57,7 +57,7 @@ function onOpen() {
     .addItem('Verify Parent Lineup vs Lineup', 'goVerifyParentToLineup')
     .addSeparator()
     .addItem('View Audit Log', 'openAuditLog')
-    .addItem('Custom Runtime', 'goCustomRuntime')
+    //.addItem('Custom Runtime', 'goCustomRuntime') TO BE IMPLEMENTED
     .addToUi();
 
     ui.createMenu('Calendar')
@@ -291,11 +291,6 @@ function goHealthCheck() {
   }
 
   return reports;
-}
-
-function resetHeadersMenu() {
-  const ctx = Engine.getContext();
-  Engine.Maintenance.resetHeaders(ctx);
 }
 
 /**

@@ -178,7 +178,7 @@ specific UUID, and Delete Pending or blocked Lineup rows are not pushed.
 | `callID` | The call row's own identity, independent of the event it's attached to. |
 | `eventID` | Populated once this call is pushed to a Google Calendar (via `Crew_Calendar_Log`); the calendar event ID for the call itself. |
 
-`Calls` → `Crew_Calendar_Log` sync (`syncCallsToCrewLog()` in `0_sync calls and crew log.js`) currently exists only as a **deprecated legacy path** — full re-integration of Calls into the `Engine.*` sync pipeline is open work (see `LEGACY_FEATURES.md` / ROADMAP.md).
+`Calls` → `Crew_Calendar_Log` sync previously existed only as a deprecated legacy path (`syncCallsToCrewLog()`, since removed); full re-integration of Calls into the `Engine.*` sync pipeline is open work (see `LEGACY_FEATURES.md` / ROADMAP.md).
 
 ## Role-Based Sheet Access (`SheetRole`)
 

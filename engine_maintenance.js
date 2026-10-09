@@ -78,7 +78,15 @@ Engine.Maintenance = {
       }
     });
 
-    return reports.length > 0 ? reports : ["✅ System Healthy"];
+    const healthy = reports.length === 0;
+    Engine.Log.info(ctx, "HEALTH_CHECK", healthy ? "System healthy." : `Health check found ${reports.length} issue(s).`);
+    reports.forEach(report => {
+      const text = report.replace(/^(❌|⚠️)\s*/, "");
+      if (report.indexOf("❌") === 0) Engine.Log.error(ctx, "HEALTH_CHECK", text);
+      else Engine.Log.warn(ctx, "HEALTH_CHECK", text);
+    });
+
+    return healthy ? ["✅ System Healthy"] : reports;
   },
 
   /**
@@ -295,8 +303,13 @@ Engine.Maintenance = {
         newHeaders[colIdx] = Engine.getDisplayName(sheetDef, fieldName);
       }
 
-      sheet.getRange(1, 1, 1, newHeaders.length).setValues([newHeaders]);
-      //sheet.getRange(1, 1, 1, newHeaders.length).setFontWeight("bold").setBackground("#eeeeee");
+      // Write only registered columns whose header actually differs. Unregistered gap columns keep
+      // their existing headers, and blank values are never written (a table header cell must have a value).
+      const existingHeaders = sheet.getRange(1, 1, 1, newHeaders.length).getValues()[0];
+      newHeaders.forEach((header, colIdx) => {
+        if (header === "" || String(existingHeaders[colIdx]) === String(header)) return;
+        sheet.getRange(1, colIdx + 1).setValue(header);
+      });
 
       Engine.Log.write(ctx, {
         stage: "MAINTENANCE",
